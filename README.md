@@ -35,10 +35,10 @@ under 30 MB. Actual usage depends on the number of containers and log volume.
 
 ## Screenshots
 
-<img width="500" alt="VPSiner host overview" src="https://github.com/user-attachments/assets/caf9b501-3f45-4679-a4a3-2156605def54" />
-<img width="500" alt="VPSiner containers view" src="https://github.com/user-attachments/assets/d686b91d-1313-4be8-ab69-25bed08550cd" />
-<img width="500" alt="VPSiner container detail" src="https://github.com/user-attachments/assets/1ad1666b-b120-4c11-a9f2-703895705854" />
-<img width="500" alt="VPSiner logs explorer" src="https://github.com/user-attachments/assets/c1580420-2a9e-4ade-8ebd-add5a8acefe7" />
+<img width="400" alt="VPSiner host overview" src="https://github.com/user-attachments/assets/caf9b501-3f45-4679-a4a3-2156605def54" />
+<img width="400" alt="VPSiner containers view" src="https://github.com/user-attachments/assets/d686b91d-1313-4be8-ab69-25bed08550cd" />
+<img width="400" alt="VPSiner container detail" src="https://github.com/user-attachments/assets/1ad1666b-b120-4c11-a9f2-703895705854" />
+<img width="400" alt="VPSiner logs explorer" src="https://github.com/user-attachments/assets/c1580420-2a9e-4ade-8ebd-add5a8acefe7" />
 
 ## Quick start
 
