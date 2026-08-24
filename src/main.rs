@@ -1,0 +1,289 @@
+mod api;
+mod config;
+mod docker;
+mod error;
+mod logs;
+mod metrics;
+mod model;
+mod retention;
+mod state;
+
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+
+use axum::Router;
+use tower_http::services::{ServeDir, ServeFile};
+
+use crate::config::{Config, DockerControlsMode};
+use crate::docker::BollardDocker;
+use crate::logs::store::SqliteLogStore;
+use crate::metrics::host::SysinfoHost;
+use crate::metrics::store::SqliteMetricsStore;
+use crate::state::AppState;
+
+#[tokio::main]
+async fn main() {
+    let log_filter = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
+    tracing_subscriber::fmt()
+        .with_env_filter(log_filter)
+        .with_target(false)
+        .init();
+
+    let config = Config::from_env();
+    let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
+
+    tracing::info!("Starting vpsiner on http://{}", addr);
+    tracing::info!(
+        retention_weeks = config.retention_weeks,
+        "configured data retention"
+    );
+    if let Some(static_dir) = &config.static_dir {
+        tracing::info!("Static assets directory: {}", static_dir.display());
+    } else {
+        tracing::info!("Static file serving disabled");
+    }
+
+    // Composition root: concrete implementations are chosen here and nowhere else.
+    let state = AppState::new(
+        config.clone(),
+        Arc::new(BollardDocker::new(
+            &config.docker_host,
+            config.docker_timeout_secs,
+        )),
+        Arc::new(SqliteMetricsStore::new(config.data_path.join("metrics.db"))),
+        Arc::new(SqliteLogStore::new(config.data_path.join("logs"))),
+        Arc::new(SysinfoHost::default()),
+    );
+
+    tracing::info!(
+        retention_weeks = config.retention_weeks,
+        "retention cleanup worker started"
+    );
+    retention::cleanup_once(&state.metrics, &state.logs, config.retention_weeks).await;
+    tokio::spawn(retention::run(
+        state.metrics.clone(),
+        state.logs.clone(),
+        config.retention_weeks,
+    ));
+
+    tokio::spawn(metrics::collector::run(
+        state.host.clone(),
+        state.metrics.clone(),
+        state.logs.clone(),
+        config.collect_interval,
+    ));
+    tokio::spawn(metrics::collector::run_containers(
+        state.docker.clone(),
+        state.metrics.clone(),
+        config.collect_interval,
+    ));
+    tokio::spawn(metrics::collector::run_registry(
+        state.docker.clone(),
+        state.containers.clone(),
+    ));
+    tokio::spawn(logs::run_ingestion(
+        state.docker.clone(),
+        state.logs.clone(),
+        config.log_flush_interval,
+        config.retention_weeks,
+    ));
+
+    match config.docker_controls_mode {
+        DockerControlsMode::Enabled => {
+            state
+                .docker_controls_available
+                .store(true, Ordering::Relaxed);
+            tracing::info!("docker container controls forced enabled via VPSINER_DOCKER_CONTROLS");
+        }
+        DockerControlsMode::Disabled => {
+            tracing::info!("docker container controls forced disabled via VPSINER_DOCKER_CONTROLS");
+        }
+        DockerControlsMode::Auto => {
+            tracing::info!("probing docker socket for container control support");
+            tokio::spawn(docker::run_write_probe(
+                state.docker.clone(),
+                state.docker_controls_available.clone(),
+                config.docker_controls_probe_interval,
+            ));
+        }
+    }
+
+    let app = build_router(state, &config);
+
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .expect("failed to bind TCP listener");
+
+    axum::serve(listener, app)
+        .await
+        .expect("server failed to start");
+}
+
+fn build_router(state: AppState, config: &Config) -> Router {
+    let router = Router::new().nest("/api", api::router());
+
+    if let Some(static_dir) = &config.static_dir {
+        // Unmatched paths fall back to index.html so the Vue router can handle deep links.
+        let spa = ServeDir::new(static_dir)
+            .append_index_html_on_directories(true)
+            .fallback(ServeFile::new(static_dir.join("index.html")));
+        router.fallback_service(spa).with_state(state)
+    } else {
+        router.with_state(state)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    use crate::docker::MockDockerService;
+    use crate::error::AppError;
+    use crate::logs::store::MockLogStore;
+    use crate::metrics::host::MockHostMetricsSource;
+    use crate::metrics::store::MockMetricsStore;
+    use crate::model::{ContainerState, ContainerSummary};
+
+    fn test_config() -> Config {
+        Config {
+            docker_host: "tcp://127.0.0.1:2375".into(),
+            docker_timeout_secs: 30,
+            data_path: "/tmp/vpsiner-test".into(),
+            static_dir: None,
+            port: 3000,
+            retention_weeks: 12,
+            collect_interval: std::time::Duration::from_secs(10),
+            log_flush_interval: std::time::Duration::from_millis(500),
+            docker_controls_mode: crate::config::DockerControlsMode::Disabled,
+            docker_controls_probe_interval: std::time::Duration::from_secs(60),
+        }
+    }
+
+    fn state_with_docker(docker: MockDockerService) -> (AppState, Config) {
+        let config = test_config();
+        let state = AppState::new(
+            config.clone(),
+            Arc::new(docker),
+            Arc::new(MockMetricsStore::new()),
+            Arc::new(MockLogStore::new()),
+            Arc::new(MockHostMetricsSource::new()),
+        );
+        // Most tests exercise action logic assuming controls are available; detection itself is
+        // covered separately.
+        state
+            .docker_controls_available
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        (state, config)
+    }
+
+    #[tokio::test]
+    async fn lists_containers_from_the_injected_docker_service() {
+        let mut docker = MockDockerService::new();
+        docker.expect_list_containers().times(1).returning(|| {
+            Ok(vec![ContainerSummary {
+                id: "abc123".into(),
+                name: "web".into(),
+                log_group: "shop-web".into(),
+                image: "nginx:latest".into(),
+                image_sha: String::new(),
+                ports: Vec::new(),
+                labels: Vec::new(),
+                state: ContainerState::Running,
+                started_at: Some(1_700_000_000_000),
+            }])
+        });
+
+        let (state, config) = state_with_docker(docker);
+        let response = build_router(state, &config)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/containers")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let containers: Vec<ContainerSummary> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(containers[0].log_group, "shop-web");
+    }
+
+    #[tokio::test]
+    async fn maps_docker_failures_to_bad_gateway() {
+        let mut docker = MockDockerService::new();
+        docker
+            .expect_container_state()
+            .withf(|id| id == "abc123")
+            .returning(|_| Ok(ContainerState::Exited));
+        docker
+            .expect_start_container()
+            .withf(|id| id == "abc123")
+            .returning(|_| Err(AppError::Docker("socket unreachable".into())));
+
+        let (state, config) = state_with_docker(docker);
+        let response = build_router(state, &config)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/containers/abc123/start")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[tokio::test]
+    async fn rejects_container_actions_when_controls_are_unavailable() {
+        // Mock has no expectations set: the request must be rejected before touching Docker.
+        let docker = MockDockerService::new();
+        let (state, config) = state_with_docker(docker);
+        state
+            .docker_controls_available
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+
+        let response = build_router(state, &config)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/containers/abc123/start")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn health_reports_the_backend_version() {
+        let (state, config) = state_with_docker(MockDockerService::new());
+        let response = build_router(state, &config)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let health: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(health["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(health["retention_weeks"], 12);
+    }
+}

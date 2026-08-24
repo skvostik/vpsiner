@@ -1,0 +1,13 @@
+@import 'tailwindcss';
+
+/* n-global-style themes the body; html needs to match so overscroll areas don't flash white. */
+html {
+  color-scheme: light dark;
+  background-color: #fff;
+}
+
+@media (prefers-color-scheme: dark) {
+  html {
+    background-color: #101014;
+  }
+}

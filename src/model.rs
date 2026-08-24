@@ -1,0 +1,236 @@
+//! Domain types shared across the service boundaries.
+//! Nothing from bollard, sqlx or sysinfo may leak through a trait — it is mapped here first.
+
+use std::collections::HashMap;
+
+use serde::{Deserialize, Serialize};
+
+/// Unix timestamp in milliseconds.
+pub type TimestampMs = i64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ContainerState {
+    Created,
+    Restarting,
+    Running,
+    Removing,
+    Paused,
+    Exited,
+    Dead,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContainerSummary {
+    pub id: String,
+    pub name: String,
+    pub log_group: String,
+    pub image: String,
+    pub image_sha: String,
+    pub ports: Vec<String>,
+    pub labels: Vec<String>,
+    pub state: ContainerState,
+    pub started_at: Option<TimestampMs>,
+}
+
+pub fn short_container_id(id: &str) -> &str {
+    id.get(..12).unwrap_or(id)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DockerInfo {
+    pub version: String,
+    pub engine: String,
+    pub containers_running: u64,
+}
+
+pub fn resolve_log_group(labels: &std::collections::HashMap<String, String>, name: &str) -> String {
+    if let Some(value) = labels
+        .get("vpsiner.log_group")
+        .filter(|value| !value.trim().is_empty())
+    {
+        return value.trim().to_string();
+    }
+
+    let compose_project = labels
+        .get("com.docker.compose.project")
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| value.trim().to_string());
+    let compose_service = labels
+        .get("com.docker.compose.service")
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| value.trim().to_string());
+
+    if let (Some(project), Some(service)) = (compose_project, compose_service) {
+        return format!("{project}-{service}");
+    }
+
+    name.trim_start_matches('/').to_string()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DockerEventKind {
+    Create,
+    Start,
+    Die,
+    Destroy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DockerEvent {
+    pub ts: TimestampMs,
+    pub kind: DockerEventKind,
+    pub container_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct HostSample {
+    pub ts: TimestampMs,
+    pub cpu_pct: f64,
+    pub mem_used: u64,
+    pub mem_total: u64,
+    pub storage_used: u64,
+    pub storage_total: u64,
+    pub metrics_size: u64,
+    pub logs_size: u64,
+    pub net_rx: u64,
+    pub net_tx: u64,
+    pub disk_read: u64,
+    pub disk_write: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContainerSample {
+    pub ts: TimestampMs,
+    pub log_group: String,
+    pub cid: String,
+    pub cpu_pct: f64,
+    pub mem_used: u64,
+    pub mem_limit: u64,
+    pub net_rx: u64,
+    pub net_tx: u64,
+    pub blk_read: u64,
+    pub blk_write: u64,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContainerGroupSample {
+    pub ts: TimestampMs,
+    pub log_group: String,
+    pub cpu_pct: f64,
+    pub mem_used: u64,
+    pub mem_limit: u64,
+    pub net_rx: u64,
+    pub net_tx: u64,
+    pub blk_read: u64,
+    pub blk_write: u64,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContainerGroupMetrics {
+    pub sum: Vec<ContainerGroupSample>,
+    pub containers: HashMap<String, Vec<ContainerSample>>,
+}
+
+#[allow(dead_code)]
+pub type ContainerMetricsByLogGroup = HashMap<String, Vec<ContainerGroupSample>>;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContainerStats {
+    pub ts: TimestampMs,
+    pub cid: String,
+    pub cpu_pct: f64,
+    pub mem_used: u64,
+    pub mem_limit: u64,
+    pub net_rx: u64,
+    pub net_tx: u64,
+    pub blk_read: u64,
+    pub blk_write: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogStream {
+    Stdout,
+    Stderr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogLine {
+    pub ts: TimestampMs,
+    pub cid: String,
+    pub stream: LogStream,
+    pub level: Option<LogLevel>,
+    /// Log text with ANSI escape codes stripped.
+    pub line: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogPage {
+    pub items: Vec<LogLine>,
+    pub older_cursor: Option<String>,
+    pub newer_cursor: Option<String>,
+    pub has_older: bool,
+    pub has_newer: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogGroupSummary {
+    pub log_group: String,
+    pub last_received: Option<TimestampMs>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogGroupStatus {
+    pub last_received: Option<TimestampMs>,
+    pub live: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogFilter {
+    pub from: Option<TimestampMs>,
+    pub to: Option<TimestampMs>,
+    pub query: Option<String>,
+    pub levels: Vec<LogLevel>,
+    pub streams: Vec<LogStream>,
+    pub limit: Option<u32>,
+    pub before: Option<String>,
+    pub after: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimeRange {
+    pub from: TimestampMs,
+    pub to: TimestampMs,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetricsResolution {
+    TenSeconds,
+    OneMinute,
+    FiveMinutes,
+    OneHour,
+}
+
+impl MetricsResolution {
+    pub fn bucket_ms(self) -> i64 {
+        match self {
+            MetricsResolution::TenSeconds => 10_000,
+            MetricsResolution::OneMinute => 60_000,
+            MetricsResolution::FiveMinutes => 300_000,
+            MetricsResolution::OneHour => 3_600_000,
+        }
+    }
+}

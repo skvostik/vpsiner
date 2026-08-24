@@ -1,0 +1,46 @@
+pub mod containers;
+pub mod logs;
+pub mod metrics;
+
+use axum::{Json, Router, extract::State, routing::get, routing::post};
+use serde::Serialize;
+use std::sync::atomic::Ordering;
+
+use crate::state::AppState;
+
+#[derive(Serialize)]
+pub struct HealthResponse {
+    pub ok: bool,
+    pub service: &'static str,
+    pub version: &'static str,
+    pub port: u16,
+    pub sample_interval_ms: u64,
+    pub retention_weeks: u32,
+    pub docker_controls_available: bool,
+}
+
+pub fn router() -> Router<AppState> {
+    Router::new()
+        .route("/health", get(health))
+        .route("/containers", get(containers::list))
+        .route("/containers/{id}/start", post(containers::start))
+        .route("/containers/{id}/stop", post(containers::stop))
+        .route("/containers/{id}/restart", post(containers::restart))
+        .route("/metrics/host", get(metrics::host))
+        .route("/metrics/containers/{log_group}", get(metrics::container))
+        .route("/metrics/containers", get(metrics::containers_history))
+        .route("/logs", get(logs::list_groups))
+        .route("/logs/{log_group}", get(logs::query))
+}
+
+async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
+    Json(HealthResponse {
+        ok: true,
+        service: "vpsiner",
+        version: env!("CARGO_PKG_VERSION"),
+        port: state.config.port,
+        sample_interval_ms: state.config.collect_interval.as_millis() as u64,
+        retention_weeks: state.config.retention_weeks,
+        docker_controls_available: state.docker_controls_available.load(Ordering::Relaxed),
+    })
+}
