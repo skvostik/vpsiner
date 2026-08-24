@@ -6,11 +6,14 @@ COPY frontend/ .
 RUN npm run build
 
 FROM rust:1.98-slim AS backend
+ARG APP_VERSION=0.0.1
 WORKDIR /app
 COPY --from=frontend /app/frontend/dist ./frontend/dist
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-RUN cargo build --release --locked
+RUN sed -i "0,/^version = \".*\"/s//version = \"${APP_VERSION}\"/" Cargo.toml \
+	&& sed -i "/^name = \"vpsiner\"$/{n;s/^version = \".*\"/version = \"${APP_VERSION}\"/;}" Cargo.lock \
+	&& cargo build --release --locked
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
