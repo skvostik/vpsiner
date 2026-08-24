@@ -47,7 +47,6 @@ jobs:
         with:
           context: .
           push: true
-          platforms: linux/amd64
           tags: |
             ${{ env.IMAGE_NAME }}:latest
             ${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
