@@ -6,10 +6,11 @@ place, and can start, stop, or restart containers from its web interface.
 
 It is built for home labs and small servers: one container, one Docker host, no
 external services. In a typical home-lab setup, observed memory consumption is
-under 30 MB. Actual usage depends on the number of containers and log volume.
+under 50 MB. Actual usage depends on the number of containers and log volume.
 
 - [VPSiner](#vpsiner)
   - [Features](#features)
+  - [Screenshots](#screenshots)
   - [Quick start](#quick-start)
     - [Add some test logs](#add-some-test-logs)
   - [Configuration](#configuration)
