@@ -1,19 +1,13 @@
 pub mod store;
 
 use base64::Engine;
-use futures_util::{
-    StreamExt,
-    stream::{self, BoxStream},
-};
-use std::collections::HashSet;
+use futures_util::StreamExt;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
 
 use crate::docker::DockerService;
-use crate::logs::store::{LogResumeBoundary, LogStore};
-use crate::model::{ContainerState, LogLevel, short_container_id};
-use crate::retention::retention_cutoff_ms;
+use crate::logs::store::LogStore;
+use crate::model::LogLevel;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LogCursor {
@@ -239,229 +233,49 @@ pub fn parse_docker_timestamp(raw: &str) -> (i64, &str) {
     (ts, message)
 }
 
-fn should_follow(state: ContainerState) -> bool {
-    state == ContainerState::Running
+#[cfg(test)]
+fn should_follow(state: crate::model::ContainerState) -> bool {
+    state == crate::model::ContainerState::Running
 }
 
 pub async fn run_ingestion(
     docker: Arc<dyn DockerService>,
     logs: Arc<dyn LogStore>,
     flush_interval: Duration,
-    retention_weeks: u32,
+    _retention_weeks: u32,
 ) {
-    let containers = match docker.list_containers().await {
-        Ok(containers) => containers,
-        Err(err) => {
-            tracing::error!(error = %err, "failed to list containers for log ingestion");
-            return;
-        }
-    };
-    tracing::info!(containers = containers.len(), "log ingestion initialized");
-    let mut container_events: BoxStream<
-        'static,
-        crate::error::AppResult<crate::model::DockerEvent>,
-    > = match docker.events().await {
-        Ok(events) => events,
-        Err(err) => {
-            tracing::warn!(error = %err, "failed to open Docker event stream for log ingestion; using discovery fallback");
-            Box::pin(stream::pending())
-        }
-    };
-    let (sender, mut receiver) = mpsc::channel(512);
-    let mut tracked_containers = HashSet::new();
-
-    for container in containers {
-        let follow = should_follow(container.state);
-        if follow {
-            tracked_containers.insert(container.id.clone());
-        }
-        tracing::debug!(container_name = %container.name, container_id = %short_container_id(&container.id), log_group = %container.log_group, follow, "starting log ingestion");
-        spawn_container_stream(
-            Arc::clone(&docker),
-            Arc::clone(&logs),
-            sender.clone(),
-            container.id,
-            container.name,
-            container.log_group,
-            retention_weeks,
-            follow,
-        );
-    }
+    tracing::info!("log ingestion initialized");
+    let mut receiver = docker.logs();
     let mut buffer: std::collections::HashMap<String, Vec<crate::model::LogLine>> =
         std::collections::HashMap::new();
-    let mut collected: std::collections::HashMap<(String, String, String), usize> =
-        std::collections::HashMap::new();
     let mut flush_timer = tokio::time::interval(flush_interval);
-    let mut discovery_timer = tokio::time::interval(Duration::from_secs(30));
     loop {
         tokio::select! {
-            Some((container_id, container_name, group, line)) = receiver.recv() => {
+            Some(line) = receiver.next() => {
                 match line {
                     Ok(line) => {
-                        *collected.entry((container_id, container_name, group.clone())).or_default() += 1;
+                        let group = line.log_group.clone();
                         let group_buffer = buffer.entry(group).or_default();
                         group_buffer.push(line);
                         if group_buffer.len() >= 100 {
-                            flush_buffers(&logs, &mut buffer, &mut collected).await;
+                            flush_buffers(&logs, &mut buffer).await;
                         }
                     }
-                    Err(err) => tracing::warn!(container_id = %short_container_id(&container_id), container_name = %container_name, log_group = %group, error = %err, "container log stream error"),
+                    Err(err) => tracing::warn!(error = %err, "Docker log stream error"),
                 }
             }
-            _ = flush_timer.tick() => flush_buffers(&logs, &mut buffer, &mut collected).await,
-            Some(event) = container_events.next() => {
-                match event {
-                    Ok(event) => {
-                        tracing::debug!(kind = ?event.kind, container_id = %short_container_id(&event.container_id), "refreshing log ingestion after Docker event");
-                        if let Ok(containers) = docker.list_containers().await {
-                    let running_ids = containers.iter()
-                        .filter(|container| container.state == ContainerState::Running)
-                        .map(|container| container.id.clone())
-                        .collect::<HashSet<_>>();
-                    tracked_containers.retain(|id| running_ids.contains(id));
-                    for container in containers {
-                        if container.state == ContainerState::Running && tracked_containers.insert(container.id.clone()) {
-                            tracing::info!(container_name = %container.name, container_id = %short_container_id(&container.id), log_group = %container.log_group, "starting event-discovered log ingestion");
-                            spawn_container_stream(Arc::clone(&docker), Arc::clone(&logs), sender.clone(), container.id, container.name, container.log_group, retention_weeks, true);
-                        }
-                    }
-                        } else {
-                            tracing::warn!("failed to refresh log ingestion after Docker event");
-                        }
-                    }
-                    Err(err) => tracing::warn!(error = %err, "Docker log ingestion event stream error"),
-                }
-            }
-            _ = discovery_timer.tick() => {
-                match docker.list_containers().await {
-                    Ok(containers) => {
-                        let running_count = containers.iter().filter(|container| container.state == ContainerState::Running).count();
-                        tracing::debug!(containers = containers.len(), running = running_count, "rediscovered containers for log ingestion");
-                        let running_ids = containers.iter()
-                            .filter(|container| container.state == ContainerState::Running)
-                            .map(|container| container.id.clone())
-                            .collect::<HashSet<_>>();
-                        tracked_containers.retain(|id| running_ids.contains(id));
-                        for container in containers {
-                            if container.state == ContainerState::Running && tracked_containers.insert(container.id.clone()) {
-                                tracing::info!(container_name = %container.name, container_id = %short_container_id(&container.id), log_group = %container.log_group, "discovered running container for log ingestion");
-                                spawn_container_stream(Arc::clone(&docker), Arc::clone(&logs), sender.clone(), container.id, container.name, container.log_group, retention_weeks, true);
-                            }
-                        }
-                    }
-                    Err(err) => tracing::warn!(error = %err, "failed to rediscover containers for log ingestion"),
-                }
-            }
+            _ = flush_timer.tick() => flush_buffers(&logs, &mut buffer).await,
             else => {
-                flush_buffers(&logs, &mut buffer, &mut collected).await;
+                flush_buffers(&logs, &mut buffer).await;
                 return;
             }
         }
     }
 }
 
-fn spawn_container_stream(
-    docker: Arc<dyn DockerService>,
-    logs: Arc<dyn LogStore>,
-    sender: mpsc::Sender<(
-        String,
-        String,
-        String,
-        crate::error::AppResult<crate::model::LogLine>,
-    )>,
-    container_id: String,
-    container_name: String,
-    log_group: String,
-    retention_weeks: u32,
-    follow: bool,
-) {
-    tokio::spawn(async move {
-        let short_id = short_container_id(&container_id).to_string();
-        let mut boundary = match logs.resume_boundary(&log_group, &container_id).await {
-            Ok(boundary) => boundary,
-            Err(err) => {
-                tracing::warn!(container_id = %short_id, container_name = %container_name, log_group = %log_group, follow, error = %err, "failed to determine log backfill boundary");
-                return;
-            }
-        };
-        let since_ms = boundary.as_ref().map(|value| value.ts).unwrap_or_else(|| {
-            retention_cutoff_ms(time::OffsetDateTime::now_utc(), retention_weeks)
-        });
-        let backfill_since = format_timestamp_ms(since_ms);
-        let Ok(since_secs) = i32::try_from(since_ms.div_euclid(1_000)) else {
-            tracing::warn!(
-                container_id = %short_id,
-                container_name = %container_name,
-                log_group = %log_group,
-                follow,
-                backfill_since = %backfill_since,
-                "log backfill timestamp is outside Docker's supported range"
-            );
-            return;
-        };
-        tracing::info!(
-            container_id = %short_id,
-            container_name = %container_name,
-            log_group = %log_group,
-            follow,
-            backfill_since = %backfill_since,
-            "starting log backfill"
-        );
-        let backfill_until_ms = time::OffsetDateTime::now_utc()
-            .unix_timestamp_nanos()
-            .div_euclid(1_000_000) as i64;
-        let mut stream = match docker.log_stream(&container_id, since_secs, follow).await {
-            Ok(stream) => stream,
-            Err(err) => {
-                tracing::warn!(container_id = %short_id, container_name = %container_name, log_group = %log_group, follow, backfill_since = %backfill_since, error = %err, "failed to open container log stream");
-                return;
-            }
-        };
-        tracing::info!(container_id = %short_id, container_name = %container_name, log_group = %log_group, follow, "container log stream connected");
-        let mut backfilled_lines = 0_u64;
-        let mut backfill_reported = false;
-        while let Some(line) = stream.next().await {
-            let line = match line {
-                Ok(line) => line,
-                Err(err) => {
-                    tracing::warn!(container_id = %short_id, container_name = %container_name, log_group = %log_group, follow, backfill_since = %backfill_since, error = %err, "container log stream error");
-                    continue;
-                }
-            };
-            if !accept_backfilled_line(&mut boundary, &line) {
-                continue;
-            }
-            if !backfill_reported {
-                if !follow || line.ts <= backfill_until_ms {
-                    backfilled_lines += 1;
-                } else {
-                    tracing::info!(container_id = %short_id, container_name = %container_name, log_group = %log_group, backfilled_lines, "log backfill completed");
-                    backfill_reported = true;
-                }
-            }
-            if sender
-                .send((
-                    container_id.clone(),
-                    container_name.clone(),
-                    log_group.clone(),
-                    Ok(line),
-                ))
-                .await
-                .is_err()
-            {
-                tracing::debug!(container_id = %short_id, container_name = %container_name, "log ingestion receiver closed");
-                return;
-            }
-        }
-        if !backfill_reported {
-            tracing::info!(container_id = %short_id, container_name = %container_name, log_group = %log_group, backfilled_lines, "log backfill completed");
-        }
-        tracing::info!(container_id = %short_id, container_name = %container_name, log_group = %log_group, "container log stream disconnected");
-    });
-}
-
+#[cfg(test)]
 fn accept_backfilled_line(
-    boundary: &mut Option<LogResumeBoundary>,
+    boundary: &mut Option<crate::logs::store::LogResumeBoundary>,
     line: &crate::model::LogLine,
 ) -> bool {
     let Some(stored) = boundary else {
@@ -488,31 +302,25 @@ fn accept_backfilled_line(
 async fn flush_buffers(
     logs: &Arc<dyn LogStore>,
     buffers: &mut std::collections::HashMap<String, Vec<crate::model::LogLine>>,
-    collected: &mut std::collections::HashMap<(String, String, String), usize>,
 ) {
     let pending = std::mem::take(buffers);
-    let counts = std::mem::take(collected);
     for (group, lines) in pending {
-        let count = lines.len();
         if let Err(err) = logs.append(&group, lines).await {
             tracing::warn!(log_group = %group, error = %err, "failed to persist container logs");
-        } else {
-            tracing::debug!(log_group = %group, logs = count, "persisted collected logs");
         }
-    }
-    for ((container_id, container_name, group), count) in counts {
-        tracing::debug!(container_id = %short_container_id(&container_id), container_name = %container_name, log_group = %group, logs = count, "collected logs for container");
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{LogLine, LogStream};
+    use crate::logs::store::LogResumeBoundary;
+    use crate::model::{ContainerState, LogLine, LogStream};
 
     fn log_line(ts: i64, stream: LogStream, line: &str) -> LogLine {
         LogLine {
             ts,
+            log_group: "group".into(),
             cid: "abc123".into(),
             stream,
             level: None,

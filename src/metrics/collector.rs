@@ -1,14 +1,11 @@
 use futures_util::StreamExt;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use crate::docker::DockerService;
 use crate::logs::store::LogStore;
 use crate::metrics::host::HostMetricsSource;
 use crate::metrics::store::MetricsStore;
-use crate::model::{ContainerSample, ContainerState, short_container_id};
-use crate::state::ContainerRegistry;
-use tokio::sync::RwLock;
 
 pub async fn collect_once(
     host: &Arc<dyn HostMetricsSource>,
@@ -39,128 +36,24 @@ pub async fn collect_once(
     }
 }
 
-pub async fn collect_containers_once(
-    docker: &Arc<dyn DockerService>,
-    metrics: &Arc<dyn MetricsStore>,
-) {
-    let containers = match docker.list_containers().await {
-        Ok(containers) => containers,
-        Err(err) => {
-            tracing::error!(error = %err, "failed to list containers for metrics");
-            return;
-        }
-    };
-
-    let mut samples = Vec::new();
-    let collection_ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as i64)
-        .unwrap_or_default();
-    for container in containers {
-        if container.state != ContainerState::Running {
-            continue;
-        }
-
-        let mut stream = match docker.stats_stream(&container.id).await {
-            Ok(stream) => stream,
-            Err(err) => {
-                tracing::warn!(container = %container.name, error = %err, "failed to open container stats");
-                continue;
-            }
-        };
-
-        match stream.next().await {
-            Some(Ok(stats)) => {
-                tracing::debug!(container = %container.name, cpu_pct = stats.cpu_pct, mem_used = stats.mem_used, "collected container metrics");
-                samples.push(ContainerSample {
-                    ts: collection_ts,
-                    log_group: container.log_group,
-                    cid: stats.cid,
-                    cpu_pct: stats.cpu_pct,
-                    mem_used: stats.mem_used,
-                    mem_limit: stats.mem_limit,
-                    net_rx: stats.net_rx,
-                    net_tx: stats.net_tx,
-                    blk_read: stats.blk_read,
-                    blk_write: stats.blk_write,
-                });
-            }
-            Some(Err(err)) => {
-                tracing::warn!(container = %container.name, error = %err, "failed to read container stats")
-            }
-            None => {
-                tracing::warn!(container = %container.name, "container stats stream ended without a sample")
-            }
-        }
-    }
-
-    if let Err(err) = metrics.insert_containers(samples).await {
-        tracing::error!(error = %err, "failed to persist container metrics");
-    }
-}
-
 pub async fn run_containers(
     docker: Arc<dyn DockerService>,
     metrics: Arc<dyn MetricsStore>,
-    interval: Duration,
+    _interval: Duration,
 ) {
-    let mut ticker = tokio::time::interval(interval);
-    loop {
-        ticker.tick().await;
-        collect_containers_once(&docker, &metrics).await;
-    }
-}
-
-pub async fn run_registry(
-    docker: Arc<dyn DockerService>,
-    registry: Arc<RwLock<ContainerRegistry>>,
-) {
-    match docker.list_containers().await {
-        Ok(containers) => {
-            let mut current = registry.write().await;
-            current.clear();
-            current.extend(
-                containers
-                    .into_iter()
-                    .map(|container| (container.log_group.clone(), container)),
-            );
-        }
-        Err(err) => tracing::error!(error = %err, "failed to initialize container registry"),
-    }
-
-    let mut events = match docker.events().await {
-        Ok(events) => events,
-        Err(err) => {
-            tracing::error!(error = %err, "failed to open Docker event stream");
-            return;
-        }
-    };
-
-    while let Some(event) = events.next().await {
-        match event {
-            Ok(event) => {
-                tracing::debug!(kind = ?event.kind, container_id = %short_container_id(&event.container_id), "Docker container event received");
-                match docker.list_containers().await {
-                    Ok(containers) => {
-                        let mut current = registry.write().await;
-                        current.clear();
-                        current.extend(
-                            containers
-                                .into_iter()
-                                .map(|container| (container.log_group.clone(), container)),
-                        );
-                        tracing::debug!(kind = ?event.kind, container_id = %short_container_id(&event.container_id), "container registry synchronized");
-                    }
-                    Err(err) => {
-                        tracing::warn!(error = %err, "failed to refresh container registry after event")
-                    }
+    let mut samples = docker.container_samples();
+    while let Some(result) = samples.next().await {
+        match result {
+            Ok(samples) => {
+                if let Err(err) = metrics.insert_containers(samples).await {
+                    tracing::error!(error = %err, "failed to persist container metrics");
                 }
             }
-            Err(err) => tracing::warn!(error = %err, "Docker event stream error"),
+            Err(err) => tracing::warn!(error = %err, "container metrics stream error"),
         }
     }
 
-    tracing::warn!("Docker event stream ended");
+    tracing::warn!("container metrics stream ended");
 }
 
 pub async fn run(
@@ -185,7 +78,7 @@ mod tests {
     use crate::logs::store::MockLogStore;
     use crate::metrics::host::MockHostMetricsSource;
     use crate::metrics::store::MockMetricsStore;
-    use crate::model::{ContainerState, ContainerStats, ContainerSummary, HostSample};
+    use crate::model::{ContainerSample, HostSample};
 
     #[tokio::test]
     async fn adds_database_sizes_to_host_samples() {
@@ -227,37 +120,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn enriches_stats_with_container_log_group() {
+    async fn persists_container_sample_batches() {
         let mut docker = MockDockerService::new();
-        docker.expect_list_containers().returning(|| {
-            Ok(vec![ContainerSummary {
-                id: "container-id".into(),
-                name: "web-1".into(),
+        docker.expect_container_samples().returning(|| {
+            Box::pin(stream::iter(vec![Ok(vec![ContainerSample {
+                ts: 123,
                 log_group: "shop-web".into(),
-                image: "nginx:latest".into(),
-                image_sha: String::new(),
-                ports: Vec::new(),
-                labels: Vec::new(),
-                state: ContainerState::Running,
-                started_at: Some(1_700_000_000_000),
-            }])
+                cid: "short-id".into(),
+                cpu_pct: 12.5,
+                mem_used: 100,
+                mem_limit: 200,
+                net_rx: 300,
+                net_tx: 400,
+                blk_read: 500,
+                blk_write: 600,
+            }])])) as BoxStream<'static, _>
         });
-        docker
-            .expect_stats_stream()
-            .withf(|id| id == "container-id")
-            .returning(|_| {
-                Ok(Box::pin(stream::iter(vec![Ok(ContainerStats {
-                    ts: 123,
-                    cid: "short-id".into(),
-                    cpu_pct: 12.5,
-                    mem_used: 100,
-                    mem_limit: 200,
-                    net_rx: 300,
-                    net_tx: 400,
-                    blk_read: 500,
-                    blk_write: 600,
-                })])) as BoxStream<'static, _>)
-            });
 
         let mut metrics = MockMetricsStore::new();
         metrics
@@ -271,6 +149,6 @@ mod tests {
 
         let docker: Arc<dyn DockerService> = Arc::new(docker);
         let metrics: Arc<dyn MetricsStore> = Arc::new(metrics);
-        collect_containers_once(&docker, &metrics).await;
+        run_containers(docker, metrics, std::time::Duration::from_secs(10)).await;
     }
 }

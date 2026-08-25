@@ -87,6 +87,7 @@ export interface TimeRange {
 
 export interface LogLine {
   ts: number
+  log_group: string
   cid: string
   stream: LogStream
   level: LogLevel | null

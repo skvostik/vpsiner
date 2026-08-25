@@ -48,7 +48,7 @@ Example response:
 
 `retention_weeks` is the configured metrics and logs retention window in weeks.
 
-`docker_controls_available` indicates whether the `/api/containers/{id}/start|stop|restart` endpoints are usable against the current Docker socket/proxy. By default (`VPSINER_DOCKER_CONTROLS=auto`) the backend probes the socket at startup and periodically thereafter — see [README.md](README.md) — since a socket proxy's policy can change without restarting the app. Clients should poll `/api/health` and show/hide container lifecycle controls based on this flag. This is also enforced server-side: while `docker_controls_available` is `false` (including when `VPSINER_DOCKER_CONTROLS=disabled`), the action endpoints reject every request with `403 Forbidden` before touching Docker at all.
+`docker_controls_available` indicates whether the `/api/containers/{id}/start|stop|restart` endpoints are currently available. Clients should poll `/api/health` and show/hide container lifecycle controls based on this flag. This is enforced server-side: while `docker_controls_available` is `false`, action endpoints return `403 Forbidden`.
 
 ---
 
@@ -77,7 +77,7 @@ Example response:
     "ports": ["80:80", "443:443"],
     "labels": ["com.docker.compose.project=project", "com.docker.compose.service=web"],
     "state": "running",
-    "started_at": 1720000000000
+    "started_at": null
   },
   {
     "id": "5aa2bca1f0db",
@@ -104,7 +104,7 @@ Allowed `state` values:
 
 Containers no longer available are not listed; there is no `removed` state.
 
-`started_at` is the Docker start timestamp in Unix milliseconds for running containers. It is `null` for non-running containers or when Docker does not provide a valid start timestamp.
+`started_at` is nullable. For running containers it is the best available Docker start timestamp in Unix milliseconds. Clients must tolerate `null` for any state.
 
 ---
 
@@ -114,7 +114,7 @@ Containers no longer available are not listed; there is no `removed` state.
 ### POST `/api/containers/{id}/stop`
 ### POST `/api/containers/{id}/restart`
 
-Starts, stops, or restarts a container by ID or name.
+Starts, stops, or restarts a container by full container ID.
 
 The API intentionally exposes only these three non-destructive control actions. It does not expose destructive actions such as remove, and it does not expose pause as a separate action.
 
@@ -127,9 +127,9 @@ State transition behavior:
 - from `created`: `start` starts the container; `stop` is a no-op success; `restart` starts the container
 - from `exited`: `start` starts the container; `stop` is a no-op success; `restart` starts the container
 - from `running`: `start` is a no-op success; `stop` stops the container; `restart` restarts the container
-- from `paused`: `start` resumes the container; `stop` stops the container; `restart` resumes and restarts the container
-- from `restarting`: `stop` is allowed and SHOULD stop the container; `start` and `restart` SHOULD return `409 Conflict`
-- from `removing`: the container is being removed; control actions SHOULD return `409 Conflict`
+- from `paused`: `start` submits a Docker start request; `stop` stops the container; `restart` submits a Docker restart request
+- from `restarting`: `stop` submits a Docker stop request; `start` and `restart` return `409 Conflict`
+- from `removing`: the container is being removed; control actions return `409 Conflict`
 - from `dead`: control actions return `409 Conflict`
 
 Idempotency:
@@ -138,10 +138,10 @@ Idempotency:
 - transition/broken states return `409 Conflict` when the requested action cannot be applied safely
 
 Availability:
-- returns `403 Forbidden` immediately, without contacting Docker, when `docker_controls_available` (see `GET /api/health`) is `false` — including when the operator forced `VPSINER_DOCKER_CONTROLS=disabled`
+- returns `403 Forbidden` when `docker_controls_available` (see `GET /api/health`) is `false`
 
 Parameters:
-- `id` (path) – container ID or name
+- `id` (path) – full container ID
 
 Example: `POST /api/containers/8af7d6c1273d/start`
 
@@ -213,7 +213,7 @@ Returns container metrics for a single `log_group`.
 
 The response contains:
 - `sum`: one time series aggregated across all container IDs in this `log_group` at each timestamp
-- `containers`: individual time series keyed by container ID, for inspecting each sampled container separately
+- `containers`: individual time series keyed by container ID, for viewing each sampled container separately
 
 `sum` aggregates the metric values for all container samples in the `log_group` that share a timestamp.
 
@@ -412,7 +412,7 @@ Example response:
 
 Returns paginated logs for the given group.
 
-Each log line includes its source container ID and a single text field (`line`) with ANSI/VT100 color escape sequences removed. `q` text search matches against `line`. The backend does not parse any other structured fields out of the text — that is left up to clients.
+Each log line includes its `log_group`, source container ID, and a single text field (`line`) with ANSI/VT100 color escape sequences removed. `q` text search matches against `line`. The backend does not parse any other structured fields out of the text — that is left up to clients.
 
 Ordering:
 - results MUST be returned in ascending time order: oldest entries first
@@ -462,6 +462,7 @@ Example response:
   "items": [
     {
       "ts": 1720000234567,
+      "log_group": "project-web",
       "cid": "8af7d6c1273d",
       "stream": "stdout",
       "level": "info",
@@ -469,6 +470,7 @@ Example response:
     },
     {
       "ts": 1720000241000,
+      "log_group": "project-web",
       "cid": "91bc832df407",
       "stream": "stderr",
       "level": "error",
@@ -483,7 +485,7 @@ Example response:
 ```
 
 Notes:
-- `items` contains log entries with `cid`, `stream`, `level`, and `line` values
+- `items` contains log entries with `log_group`, `cid`, `stream`, `level`, and `line` values
 - if `has_older` is `true`, the request can be repeated with `before=older_cursor` to fetch the next older page
 - `newer_cursor` can be used with `after=newer_cursor` for live polling even when `has_newer` is `false`; the response may contain an empty `items` array when no newer logs exist yet
 - if an `after` request returns no new items, `newer_cursor` repeats the submitted `after` cursor
@@ -519,7 +521,7 @@ Notes:
   "ports": ["string"],
   "labels": ["string"],
   "state": "created | restarting | running | removing | paused | exited | dead",
-  "started_at": 1234567890123
+  "started_at": null
 }
 ```
 
@@ -630,6 +632,7 @@ Notes:
 ```json
 {
   "ts": 1234567890123,
+  "log_group": "string",
   "cid": "string",
   "stream": "stdout | stderr",
   "level": "debug | info | warn | error | null",
@@ -643,6 +646,7 @@ Notes:
   "items": [
     {
       "ts": 1234567890123,
+      "log_group": "string",
       "cid": "string",
       "stream": "stdout",
       "level": "info",

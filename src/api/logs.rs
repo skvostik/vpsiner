@@ -88,7 +88,7 @@ pub async fn list_groups(
     State(state): State<AppState>,
 ) -> AppResult<Json<BTreeMap<String, LogGroupStatus>>> {
     let stored = state.logs.list_groups().await?;
-    let containers = state.docker.list_containers().await?;
+    let containers = state.docker.containers();
     Ok(Json(merge_log_groups(stored, containers)))
 }
 

@@ -33,15 +33,14 @@ pub struct ContainerSummary {
     pub started_at: Option<TimestampMs>,
 }
 
-pub fn short_container_id(id: &str) -> &str {
-    id.get(..12).unwrap_or(id)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContainerCommandResult {
+    Submitted,
+    Noop,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DockerInfo {
-    pub version: String,
-    pub engine: String,
-    pub containers_running: u64,
+pub fn short_container_id(id: &str) -> &str {
+    id.get(..12).unwrap_or(id)
 }
 
 pub fn resolve_log_group(labels: &std::collections::HashMap<String, String>, name: &str) -> String {
@@ -170,6 +169,7 @@ pub enum LogLevel {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogLine {
     pub ts: TimestampMs,
+    pub log_group: String,
     pub cid: String,
     pub stream: LogStream,
     pub level: Option<LogLevel>,

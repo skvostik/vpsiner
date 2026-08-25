@@ -247,6 +247,7 @@ impl LogStore for SqliteLogStore {
                     id,
                     line: LogLine {
                         ts,
+                        log_group: log_group.to_string(),
                         cid: row.get("cid"),
                         stream,
                         level,
@@ -574,6 +575,7 @@ mod tests {
     fn line(ts: i64, line: &str) -> LogLine {
         LogLine {
             ts,
+            log_group: "group".into(),
             cid: "abc123".into(),
             stream: LogStream::Stdout,
             level: None,

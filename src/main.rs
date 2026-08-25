@@ -10,12 +10,11 @@ mod state;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use axum::Router;
 use tower_http::services::{ServeDir, ServeFile};
 
-use crate::config::{Config, DockerControlsMode};
+use crate::config::Config;
 use crate::docker::BollardDocker;
 use crate::logs::store::SqliteLogStore;
 use crate::metrics::host::SysinfoHost;
@@ -50,6 +49,8 @@ async fn main() {
         Arc::new(BollardDocker::new(
             &config.docker_host,
             config.docker_timeout_secs,
+            config.collect_interval,
+            config.docker_controls_probe_interval,
         )),
         Arc::new(SqliteMetricsStore::new(config.data_path.join("metrics.db"))),
         Arc::new(SqliteLogStore::new(config.data_path.join("logs"))),
@@ -78,36 +79,12 @@ async fn main() {
         state.metrics.clone(),
         config.collect_interval,
     ));
-    tokio::spawn(metrics::collector::run_registry(
-        state.docker.clone(),
-        state.containers.clone(),
-    ));
     tokio::spawn(logs::run_ingestion(
         state.docker.clone(),
         state.logs.clone(),
         config.log_flush_interval,
         config.retention_weeks,
     ));
-
-    match config.docker_controls_mode {
-        DockerControlsMode::Enabled => {
-            state
-                .docker_controls_available
-                .store(true, Ordering::Relaxed);
-            tracing::info!("docker container controls forced enabled via VPSINER_DOCKER_CONTROLS");
-        }
-        DockerControlsMode::Disabled => {
-            tracing::info!("docker container controls forced disabled via VPSINER_DOCKER_CONTROLS");
-        }
-        DockerControlsMode::Auto => {
-            tracing::info!("probing docker socket for container control support");
-            tokio::spawn(docker::run_write_probe(
-                state.docker.clone(),
-                state.docker_controls_available.clone(),
-                config.docker_controls_probe_interval,
-            ));
-        }
-    }
 
     let app = build_router(state, &config);
 
@@ -174,19 +151,14 @@ mod tests {
             Arc::new(MockLogStore::new()),
             Arc::new(MockHostMetricsSource::new()),
         );
-        // Most tests exercise action logic assuming controls are available; detection itself is
-        // covered separately.
-        state
-            .docker_controls_available
-            .store(true, std::sync::atomic::Ordering::Relaxed);
         (state, config)
     }
 
     #[tokio::test]
     async fn lists_containers_from_the_injected_docker_service() {
         let mut docker = MockDockerService::new();
-        docker.expect_list_containers().times(1).returning(|| {
-            Ok(vec![ContainerSummary {
+        docker.expect_containers().times(1).returning(|| {
+            vec![ContainerSummary {
                 id: "abc123".into(),
                 name: "web".into(),
                 log_group: "shop-web".into(),
@@ -196,7 +168,7 @@ mod tests {
                 labels: Vec::new(),
                 state: ContainerState::Running,
                 started_at: Some(1_700_000_000_000),
-            }])
+            }]
         });
 
         let (state, config) = state_with_docker(docker);
@@ -221,10 +193,6 @@ mod tests {
     async fn maps_docker_failures_to_bad_gateway() {
         let mut docker = MockDockerService::new();
         docker
-            .expect_container_state()
-            .withf(|id| id == "abc123")
-            .returning(|_| Ok(ContainerState::Exited));
-        docker
             .expect_start_container()
             .withf(|id| id == "abc123")
             .returning(|_| Err(AppError::Docker("socket unreachable".into())));
@@ -246,12 +214,16 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_container_actions_when_controls_are_unavailable() {
-        // Mock has no expectations set: the request must be rejected before touching Docker.
-        let docker = MockDockerService::new();
+        let mut docker = MockDockerService::new();
+        docker
+            .expect_start_container()
+            .withf(|id| id == "abc123")
+            .returning(|_| {
+                Err(AppError::Forbidden(
+                    "container controls are disabled or unavailable on this backend".into(),
+                ))
+            });
         let (state, config) = state_with_docker(docker);
-        state
-            .docker_controls_available
-            .store(false, std::sync::atomic::Ordering::Relaxed);
 
         let response = build_router(state, &config)
             .oneshot(
@@ -269,7 +241,9 @@ mod tests {
 
     #[tokio::test]
     async fn health_reports_the_backend_version() {
-        let (state, config) = state_with_docker(MockDockerService::new());
+        let mut docker = MockDockerService::new();
+        docker.expect_controls_available().returning(|| false);
+        let (state, config) = state_with_docker(docker);
         let response = build_router(state, &config)
             .oneshot(
                 Request::builder()
