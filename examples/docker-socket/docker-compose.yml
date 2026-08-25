@@ -1,0 +1,25 @@
+services:
+  proxy:
+    image: lscr.io/linuxserver/socket-proxy:latest
+    restart: unless-stopped
+    network_mode: bridge
+    ports:
+      - "127.0.0.1:2375:2375"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      # --- HTTP Methods ---
+      - GET=1 # Required to read data (e.g., listing containers, fetching logs)
+      - POST=1 # Required to trigger actions and state changes (start, stop, restart)
+
+      # --- Allowed Features ---
+      - CONTAINERS=1 # Allows inspecting containers, reading logs, and sending start/stop/restart signals
+      - EVENTS=1 # Allows streaming real-time Docker system events
+      - ALLOW_LOGS=1 # Allows reading container logs (requires CONTAINERS=1)
+
+      # --- Blocked Features (Security Hardening) ---
+      - NETWORKS=0 # Blocks creating, deleting, or modifying Docker networks
+      - VOLUMES=0 # Blocks creating, deleting, or inspecting persistent storage volumes
+      - IMAGES=0 # Blocks pulling, building, or deleting Docker images
+      - SWARM=0 # Blocks any Docker Swarm cluster management actions
+      - EXEC=0 # Blocks spawning interactive shells (docker exec) inside running containers

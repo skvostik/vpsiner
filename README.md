@@ -83,6 +83,9 @@ Mounting the Docker socket is the simplest way to get started, but it gives the
 container powerful access to Docker. For a long-running setup, use a Docker
 socket proxy and set `VPSINER_DOCKER_HOST` to its HTTP endpoint.
 
+See the [Docker socket Compose example](examples/docker-socket/docker-compose.yml)
+for a sample setup.
+
 VPSiner has no authentication or authorization, and none is planned. Do not
 publish it directly to the internet. If it is reachable outside a trusted
 network, put it behind an authentication-enabled reverse proxy. A Docker socket
@@ -102,6 +105,12 @@ docker run -d \
 ```
 
 The container and its output will appear in VPSiner shortly afterward.
+
+Alternatively, from the repository root, start the test load example:
+
+```bash
+docker compose -f examples/test-load/docker-compose.yml up -d
+```
 
 ## Configuration
 

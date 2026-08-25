@@ -1,0 +1,8 @@
+services:
+  funny-logger:
+    image: ghcr.io/skvostik/funny-logger:latest
+    scale: 10
+
+  lunny-fogger:
+    image: ghcr.io/skvostik/funny-logger:latest
+    scale: 10
