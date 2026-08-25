@@ -10,6 +10,8 @@ under 50 MB. Actual usage depends on the number of containers and log volume.
 
 - [VPSiner](#vpsiner)
   - [Features](#features)
+    - [Planned features](#planned-features)
+    - [Not planned](#not-planned)
   - [Screenshots](#screenshots)
   - [Quick start](#quick-start)
     - [Add some test logs](#add-some-test-logs)
@@ -33,6 +35,28 @@ under 50 MB. Actual usage depends on the number of containers and log volume.
 - Optional start, stop, and restart controls
 - SQLite storage with configurable retention
 - Responsive web interface included in the image
+
+### Planned features
+
+The following improvements are planned:
+
+- Resource optimization, including compute power, memory, frontend and backend
+  network communication, and storage size
+- Log explorer UX enhancements, including parsing log fields, filtering by
+  container instance, and visualizing log volumes
+- Dead-simple alerting and alert history, starting with alerts when a container
+  crashes
+- UI customization, including custom links in the menu so VPSiner can serve as
+  a main server dashboard with convenient links to other running services
+
+### Not planned
+
+The following are intentionally out of scope:
+
+- Authorization; use an authentication proxy to choose and configure the auth
+  mechanism that fits your environment
+- Collecting data from multiple hosts
+- Metrics, traces, or other advanced observability features
 
 ## Screenshots
 
