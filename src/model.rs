@@ -18,6 +18,8 @@ pub enum ContainerState {
     Paused,
     Exited,
     Dead,
+    Stopping,
+    Empty,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,42 +31,35 @@ pub struct ContainerSummary {
     pub image_sha: String,
     pub ports: Vec<String>,
     pub labels: Vec<String>,
-    pub state: ContainerState,
+    pub state: Option<ContainerState>,
     pub started_at: Option<TimestampMs>,
+}
+
+pub fn container_short_id(container_id: &str) -> &str {
+    container_id.get(..12).unwrap_or(container_id)
+}
+
+pub fn container_log_id(log_group: &str, container_id: &str) -> String {
+    format!(
+        "{}@{}",
+        &container_id.get(..12).unwrap_or(container_id),
+        log_group
+    )
+}
+
+impl ContainerSummary {
+    pub fn short_id(&self) -> &str {
+        container_short_id(&self.id)
+    }
+    pub fn log_id(&self) -> String {
+        container_log_id(&self.log_group, &self.short_id())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContainerCommandResult {
     Submitted,
     Noop,
-}
-
-pub fn short_container_id(id: &str) -> &str {
-    id.get(..12).unwrap_or(id)
-}
-
-pub fn resolve_log_group(labels: &std::collections::HashMap<String, String>, name: &str) -> String {
-    if let Some(value) = labels
-        .get("vpsiner.log_group")
-        .filter(|value| !value.trim().is_empty())
-    {
-        return value.trim().to_string();
-    }
-
-    let compose_project = labels
-        .get("com.docker.compose.project")
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| value.trim().to_string());
-    let compose_service = labels
-        .get("com.docker.compose.service")
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| value.trim().to_string());
-
-    if let (Some(project), Some(service)) = (compose_project, compose_service) {
-        return format!("{project}-{service}");
-    }
-
-    name.trim_start_matches('/').to_string()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

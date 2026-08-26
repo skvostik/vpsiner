@@ -252,16 +252,11 @@ pub async fn run_ingestion(
     loop {
         tokio::select! {
             Some(line) = receiver.next() => {
-                match line {
-                    Ok(line) => {
-                        let group = line.log_group.clone();
-                        let group_buffer = buffer.entry(group).or_default();
-                        group_buffer.push(line);
-                        if group_buffer.len() >= 100 {
-                            flush_buffers(&logs, &mut buffer).await;
-                        }
-                    }
-                    Err(err) => tracing::warn!(error = %err, "Docker log stream error"),
+                let group = line.log_group.clone();
+                let group_buffer = buffer.entry(group).or_default();
+                group_buffer.push(line);
+                if group_buffer.len() >= 100 {
+                    flush_buffers(&logs, &mut buffer).await;
                 }
             }
             _ = flush_timer.tick() => flush_buffers(&logs, &mut buffer).await,

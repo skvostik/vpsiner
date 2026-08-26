@@ -27,7 +27,7 @@ async fn run_action(state: &AppState, id: &str, action: &'static str) -> AppResu
 }
 
 pub async fn list(State(state): State<AppState>) -> AppResult<Json<Vec<ContainerSummary>>> {
-    Ok(Json(state.docker.containers()))
+    Ok(Json(state.docker.containers_info()?))
 }
 
 pub async fn start(State(state): State<AppState>, Path(id): Path<String>) -> AppResult<StatusCode> {

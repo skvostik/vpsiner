@@ -32,15 +32,15 @@ async fn main() {
     let config = Config::from_env();
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
 
-    tracing::info!("Starting vpsiner on http://{}", addr);
+    tracing::info!("starting vpsiner on http://{}", addr);
     tracing::info!(
         retention_weeks = config.retention_weeks,
         "configured data retention"
     );
     if let Some(static_dir) = &config.static_dir {
-        tracing::info!("Static assets directory: {}", static_dir.display());
+        tracing::info!("static assets directory: {}", static_dir.display());
     } else {
-        tracing::info!("Static file serving disabled");
+        tracing::info!("static file serving disabled");
     }
 
     // Composition root: concrete implementations are chosen here and nowhere else.
@@ -157,8 +157,8 @@ mod tests {
     #[tokio::test]
     async fn lists_containers_from_the_injected_docker_service() {
         let mut docker = MockDockerService::new();
-        docker.expect_containers().times(1).returning(|| {
-            vec![ContainerSummary {
+        docker.expect_containers_info().times(1).returning(|| {
+            Ok(vec![ContainerSummary {
                 id: "abc123".into(),
                 name: "web".into(),
                 log_group: "shop-web".into(),
@@ -166,9 +166,9 @@ mod tests {
                 image_sha: String::new(),
                 ports: Vec::new(),
                 labels: Vec::new(),
-                state: ContainerState::Running,
+                state: Some(ContainerState::Running),
                 started_at: Some(1_700_000_000_000),
-            }]
+            }])
         });
 
         let (state, config) = state_with_docker(docker);

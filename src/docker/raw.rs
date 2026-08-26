@@ -1,56 +1,47 @@
 use bollard::{
     Docker,
-    query_parameters::{ListContainersOptions, StatsOptionsBuilder},
+    query_parameters::{ListContainersOptionsBuilder, StatsOptionsBuilder},
 };
 use futures_util::StreamExt;
-use std::collections::HashMap;
 
-use crate::error::{AppError, AppResult};
-use crate::model::{
-    ContainerState, ContainerStats, ContainerSummary, TimestampMs, resolve_log_group,
+use crate::model::{ContainerState, ContainerStats, ContainerSummary, TimestampMs};
+use crate::{
+    docker::{
+        container_registry::ObservedContainer,
+        mapping::{get_container_log_group, get_container_name},
+    },
+    error::{AppError, AppResult},
 };
 
 use super::CONTAINER_INSPECT_CONCURRENCY;
 use super::CONTAINER_INSPECT_TIMEOUT;
-use super::mapping::{map_container_state, map_container_stats};
+use super::mapping::{map_container_stats, map_container_summary};
 
-pub(super) async fn list_containers(
-    docker: &Docker,
-    previous: &[ContainerSummary],
-) -> AppResult<Vec<ContainerSummary>> {
-    let options = ListContainersOptions {
-        all: true,
-        filters: None,
-        ..Default::default()
-    };
+pub(super) async fn list_running_containers(docker: &Docker) -> AppResult<Vec<ObservedContainer>> {
+    let options = ListContainersOptionsBuilder::new().all(false).build();
+    let containers = docker
+        .list_containers(Some(options))
+        .await
+        .map_err(|err| AppError::Docker(err.to_string()))?;
 
-    list_containers_with_options(docker, options, previous).await
-}
-
-pub(super) async fn list_container(
-    docker: &Docker,
-    id: &str,
-    previous: &[ContainerSummary],
-) -> AppResult<Option<ContainerSummary>> {
-    let mut filters = HashMap::new();
-    filters.insert("id".to_string(), vec![id.to_string()]);
-    let options = ListContainersOptions {
-        all: true,
-        filters: Some(filters),
-        ..Default::default()
-    };
-
-    Ok(list_containers_with_options(docker, options, previous)
-        .await?
+    let observed_containers = containers
         .into_iter()
-        .find(|container| container.id == id))
+        .map(|response| ObservedContainer {
+            id: response.id.clone().unwrap_or_default(),
+            name: get_container_name(&response),
+            log_group: get_container_log_group(&response),
+        })
+        .collect::<Vec<_>>();
+
+    Ok(observed_containers)
 }
 
-async fn list_containers_with_options(
+/// Lists all container details by inspecting each container.
+/// Potentionally expensive operation as it inspects each container individually.
+pub(super) async fn list_all_containers_details(
     docker: &Docker,
-    options: ListContainersOptions,
-    previous: &[ContainerSummary],
 ) -> AppResult<Vec<ContainerSummary>> {
+    let options = ListContainersOptionsBuilder::new().all(true).build();
     let containers = docker
         .list_containers(Some(options))
         .await
@@ -58,63 +49,24 @@ async fn list_containers_with_options(
 
     let summaries = futures_util::stream::iter(containers)
         .map(|container| async move {
-            let names = container.names.unwrap_or_default();
-            let name = names
-                .first()
-                .map(|raw| raw.trim_start_matches('/').to_string())
-                .unwrap_or_else(|| "unknown".to_string());
-            let labels = container.labels.unwrap_or_default();
-            let log_group = resolve_log_group(&labels, &name);
-            let mut label_list = labels
-                .into_iter()
-                .map(|(key, value)| format!("{key}={value}"))
-                .collect::<Vec<_>>();
-            label_list.sort();
-            let state = map_container_state(container.state.as_ref().map(|state| state.as_ref()))?;
-            let mut ports = container
-                .ports
-                .unwrap_or_default()
-                .into_iter()
-                .map(|port| {
-                    let sort_port = port.public_port.unwrap_or(port.private_port);
-                    let private_port = port.private_port;
-                    let protocol = port
-                        .typ
-                        .map(|typ| format!("{typ:?}").to_ascii_lowercase())
-                        .unwrap_or_else(|| "tcp".to_string());
-                    let display = match (port.ip.as_deref(), port.public_port) {
-                        (Some(ip), Some(public_port)) => {
-                            format!("{ip}:{public_port}->{} / {protocol}", port.private_port)
-                        }
-                        (None, Some(public_port)) => {
-                            format!("{public_port}->{} / {protocol}", port.private_port)
-                        }
-                        _ => format!("{} / {protocol}", port.private_port),
-                    };
-                    (sort_port, private_port, display)
-                })
-                .collect::<Vec<_>>();
-            ports.sort_by(|left, right| left.cmp(right));
-            let ports = ports.into_iter().map(|(_, _, display)| display).collect();
-
-            let id = container.id.unwrap_or_default();
-            let started_at = if state == ContainerState::Running {
-                inspect_started_at(docker, &id)
+            let summary = map_container_summary(&container);
+            let started_at = if summary.state == Some(ContainerState::Running) {
+                inspect_started_at(docker, &summary.id)
                     .await
-                    .or_else(|| previous_started_at(previous, &id))
+                    .or_else(|| None)
             } else {
                 None
             };
 
             Some(ContainerSummary {
-                id,
-                name: name.clone(),
-                log_group,
-                image: container.image.unwrap_or_default(),
-                image_sha: container.image_id.unwrap_or_default(),
-                ports,
-                labels: label_list,
-                state,
+                id: summary.id,
+                name: summary.name,
+                log_group: summary.log_group,
+                image: summary.image,
+                image_sha: summary.image_sha,
+                ports: summary.ports,
+                labels: summary.labels,
+                state: summary.state,
                 started_at,
             })
         })
@@ -124,13 +76,6 @@ async fn list_containers_with_options(
         .await;
 
     Ok(summaries)
-}
-
-fn previous_started_at(previous: &[ContainerSummary], id: &str) -> Option<TimestampMs> {
-    previous
-        .iter()
-        .find(|container| container.id == id)
-        .and_then(|container| container.started_at)
 }
 
 async fn inspect_started_at(docker: &Docker, id: &str) -> Option<TimestampMs> {

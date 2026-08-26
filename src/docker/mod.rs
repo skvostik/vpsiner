@@ -1,34 +1,33 @@
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
-use std::{collections::HashMap, collections::HashSet};
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+mod container_registry;
 mod mapping;
 mod raw;
 
 use bollard::{
-    API_DEFAULT_VERSION, Docker,
-    container::LogOutput,
-    query_parameters::{EventsOptionsBuilder, LogsOptionsBuilder},
+    API_DEFAULT_VERSION, Docker, container::LogOutput, query_parameters::LogsOptionsBuilder,
 };
 use futures_util::{StreamExt, stream::BoxStream};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::{sync::mpsc, task::JoinHandle};
 
+use crate::docker::container_registry::ObservedContainer;
+use crate::docker::mapping::receiver_stream;
 use crate::error::{AppError, AppResult};
 use crate::model::{
     ContainerCommandResult, ContainerSample, ContainerState, ContainerSummary, LogLine, LogStream,
 };
 
-use self::mapping::{ContainerObserveAction, map_container_observe_event, map_log_output};
-use self::raw::{
-    list_container, list_containers, sample_container_stats, supports_write_operations,
-};
+use self::mapping::map_log_output;
+use self::raw::{sample_container_stats, supports_write_operations};
+
+use self::container_registry::{BollardContainerRegistry, ContainerRegistry};
 
 const CONTAINER_INSPECT_TIMEOUT: Duration = Duration::from_secs(1);
 const CONTAINER_STATS_TIMEOUT: Duration = Duration::from_secs(5);
-const CONTAINER_RECONCILE_RETRY_DELAY: Duration = Duration::from_secs(5);
-const CONTAINER_RECONCILE_INTERVAL: Duration = Duration::from_secs(60);
 const LOG_OBSERVER_INTERVAL: Duration = Duration::from_secs(5);
 const CONTAINER_SAMPLE_CONCURRENCY: usize = 8;
 const CONTAINER_INSPECT_CONCURRENCY: usize = 8;
@@ -42,15 +41,15 @@ fn container_stats_timeout(sample_interval: Duration) -> Duration {
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait DockerService: Send + Sync + 'static {
-    fn containers(&self) -> Vec<ContainerSummary>;
+    fn containers_info(&self) -> AppResult<Vec<ContainerSummary>>;
 
-    fn container(&self, id: &str) -> Option<ContainerSummary>;
+    fn container_info(&self, id: &str) -> AppResult<Option<ContainerSummary>>;
 
     fn controls_available(&self) -> bool;
 
-    fn logs(&self) -> BoxStream<'static, AppResult<LogLine>>;
+    fn logs(&self) -> BoxStream<'static, LogLine>;
 
-    fn container_samples(&self) -> BoxStream<'static, AppResult<Vec<ContainerSample>>>;
+    fn container_samples(&self) -> BoxStream<'static, Vec<ContainerSample>>;
 
     async fn start_container(&self, id: &str) -> AppResult<ContainerCommandResult>;
 
@@ -62,10 +61,10 @@ pub trait DockerService: Send + Sync + 'static {
 /// Bollard-backed implementation. Wired up in the composition root.
 pub struct BollardDocker {
     docker: Docker,
-    containers: Arc<RwLock<Vec<ContainerSummary>>>,
+    container_registry: Arc<dyn ContainerRegistry>,
     controls_available: Arc<AtomicBool>,
-    logs_rx: Mutex<Option<mpsc::Receiver<AppResult<LogLine>>>>,
-    samples_rx: Mutex<Option<mpsc::Receiver<AppResult<Vec<ContainerSample>>>>>,
+    logs_rx: Mutex<Option<mpsc::Receiver<LogLine>>>,
+    samples_rx: Mutex<Option<mpsc::Receiver<Vec<ContainerSample>>>>,
 }
 
 impl BollardDocker {
@@ -84,70 +83,56 @@ impl BollardDocker {
                 .expect("docker proxy/daemon must be reachable")
         };
 
-        let containers = Arc::new(RwLock::new(Vec::new()));
         let controls_available = Arc::new(AtomicBool::new(false));
-        let (logs_tx, logs_rx) = mpsc::channel(10_000);
-        let (samples_tx, samples_rx) = mpsc::channel(32);
+        let (logs_tx, logs_rx) = mpsc::channel::<LogLine>(10_000);
+        let (samples_tx, samples_rx) = mpsc::channel::<Vec<ContainerSample>>(32);
 
-        spawn_container_reconciler(docker.clone(), containers.clone());
+        let container_registry = Arc::new(BollardContainerRegistry::new(docker.clone()));
         spawn_write_probe(
             docker.clone(),
             controls_available.clone(),
             controls_probe_interval,
         );
-        spawn_log_observer(docker.clone(), containers.clone(), logs_tx);
+        spawn_log_observer(docker.clone(), container_registry.clone(), logs_tx);
         spawn_sample_observer(
             docker.clone(),
-            containers.clone(),
+            container_registry.clone(),
             samples_tx,
             sample_interval,
         );
 
         Self {
             docker,
-            containers,
+            container_registry,
             controls_available,
             logs_rx: Mutex::new(Some(logs_rx)),
             samples_rx: Mutex::new(Some(samples_rx)),
         }
     }
-
-    fn resolve_container(&self, id: &str) -> Option<ContainerSummary> {
-        let needle = id.trim();
-        self.containers
-            .read()
-            .ok()?
-            .iter()
-            .find(|container| container.id == needle)
-            .cloned()
-    }
 }
 
 #[async_trait]
 impl DockerService for BollardDocker {
-    fn containers(&self) -> Vec<ContainerSummary> {
-        self.containers
-            .read()
-            .map(|containers| containers.clone())
-            .unwrap_or_default()
+    fn containers_info(&self) -> AppResult<Vec<ContainerSummary>> {
+        self.container_registry.containers_info()
     }
 
-    fn container(&self, id: &str) -> Option<ContainerSummary> {
-        self.resolve_container(id)
+    fn container_info(&self, id: &str) -> AppResult<Option<ContainerSummary>> {
+        self.container_registry.container_info(id)
     }
 
     fn controls_available(&self) -> bool {
         self.controls_available.load(Ordering::Relaxed)
     }
 
-    fn logs(&self) -> BoxStream<'static, AppResult<LogLine>> {
+    fn logs(&self) -> BoxStream<'static, LogLine> {
         match self.logs_rx.lock().ok().and_then(|mut rx| rx.take()) {
             Some(rx) => receiver_stream(rx),
             None => Box::pin(futures_util::stream::pending()),
         }
     }
 
-    fn container_samples(&self) -> BoxStream<'static, AppResult<Vec<ContainerSample>>> {
+    fn container_samples(&self) -> BoxStream<'static, Vec<ContainerSample>> {
         match self.samples_rx.lock().ok().and_then(|mut rx| rx.take()) {
             Some(rx) => receiver_stream(rx),
             None => Box::pin(futures_util::stream::pending()),
@@ -161,9 +146,12 @@ impl DockerService for BollardDocker {
             ));
         }
         let container = self
-            .resolve_container(id)
+            .container_registry
+            .container_info(id)?
             .ok_or_else(|| AppError::NotFound(format!("container not found: {id}")))?;
-        match container.state {
+        match container.state.ok_or_else(|| {
+            AppError::Docker(format!("container state unknown: {}", container.log_id()))
+        })? {
             ContainerState::Running => return Ok(ContainerCommandResult::Noop),
             ContainerState::Removing | ContainerState::Dead | ContainerState::Restarting => {
                 return Err(AppError::Conflict(format!(
@@ -187,9 +175,12 @@ impl DockerService for BollardDocker {
             ));
         }
         let container = self
-            .resolve_container(id)
+            .container_registry
+            .container_info(id)?
             .ok_or_else(|| AppError::NotFound(format!("container not found: {id}")))?;
-        match container.state {
+        match container.state.ok_or_else(|| {
+            AppError::Docker(format!("container state unknown: {}", container.log_id()))
+        })? {
             ContainerState::Created | ContainerState::Exited => {
                 return Ok(ContainerCommandResult::Noop);
             }
@@ -215,9 +206,12 @@ impl DockerService for BollardDocker {
             ));
         }
         let container = self
-            .resolve_container(id)
+            .container_registry
+            .container_info(id)?
             .ok_or_else(|| AppError::NotFound(format!("container not found: {id}")))?;
-        match container.state {
+        match container.state.ok_or_else(|| {
+            AppError::Docker(format!("container state unknown: {}", container.log_id()))
+        })? {
             ContainerState::Created | ContainerState::Exited => {
                 self.docker
                     .start_container(&container.id, None)
@@ -236,190 +230,10 @@ impl DockerService for BollardDocker {
                     container.state
                 )));
             }
+            _ => {}
         }
         Ok(ContainerCommandResult::Submitted)
     }
-}
-
-fn receiver_stream<T: Send + 'static>(rx: mpsc::Receiver<T>) -> BoxStream<'static, T> {
-    Box::pin(futures_util::stream::unfold(rx, |mut rx| async {
-        rx.recv().await.map(|item| (item, rx))
-    }))
-}
-
-fn spawn_container_reconciler(docker: Docker, registry: Arc<RwLock<Vec<ContainerSummary>>>) {
-    tokio::spawn(async move {
-        loop {
-            if let Err(err) = reconcile_containers(&docker, &registry).await {
-                tracing::warn!(error = %err, "failed to reconcile Docker containers");
-                tokio::time::sleep(CONTAINER_RECONCILE_RETRY_DELAY).await;
-                continue;
-            }
-
-            let mut filters = HashMap::new();
-            filters.insert("type".to_string(), vec!["container".to_string()]);
-            let options = EventsOptionsBuilder::default().filters(&filters).build();
-            let mut events = docker.events(Some(options));
-            let mut reconcile_timer = tokio::time::interval(CONTAINER_RECONCILE_INTERVAL);
-
-            loop {
-                tokio::select! {
-                    _ = reconcile_timer.tick() => {
-                        if let Err(err) = reconcile_containers(&docker, &registry).await {
-                            tracing::warn!(error = %err, "failed periodic Docker container reconciliation");
-                            break;
-                        }
-                    }
-                    event = events.next() => {
-                        match event {
-                            Some(Ok(message)) => {
-                                let event = map_container_observe_event(message);
-                                let container_id = event.container_id.as_deref().unwrap_or("unknown");
-                                tracing::debug!(action = ?event.action, container_id = %crate::model::short_container_id(container_id), "Docker container observation event received");
-                                if event.action == ContainerObserveAction::StartObserving {
-                                    if let Some(container_id) = event.container_id.as_deref() {
-                                        if let Err(err) = start_container_observation(&docker, &registry, container_id).await {
-                                            tracing::warn!(error = %err, container_id = %crate::model::short_container_id(container_id), "failed to update observed Docker container after event");
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                            Some(Err(err)) => {
-                                tracing::warn!(error = %err, "Docker event stream error");
-                                break;
-                            }
-                            None => {
-                                tracing::warn!("Docker event stream ended");
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-
-            tokio::time::sleep(CONTAINER_RECONCILE_RETRY_DELAY).await;
-        }
-    });
-}
-
-async fn reconcile_containers(
-    docker: &Docker,
-    registry: &Arc<RwLock<Vec<ContainerSummary>>>,
-) -> AppResult<()> {
-    tracing::debug!("reconciling Docker containers");
-    let previous = registry
-        .read()
-        .map(|containers| containers.clone())
-        .unwrap_or_default();
-    let containers = list_containers(docker, &previous).await?;
-    log_container_reconcile_diff(&previous, &containers);
-    let mut current = registry
-        .write()
-        .map_err(|err| AppError::Docker(format!("container registry lock poisoned: {err}")))?;
-    *current = containers;
-    Ok(())
-}
-
-fn log_container_reconcile_diff(previous: &[ContainerSummary], current: &[ContainerSummary]) {
-    let previous_by_id = previous
-        .iter()
-        .map(|container| (container.id.as_str(), container))
-        .collect::<HashMap<_, _>>();
-    let current_by_id = current
-        .iter()
-        .map(|container| (container.id.as_str(), container))
-        .collect::<HashMap<_, _>>();
-
-    for container in current {
-        match previous_by_id.get(container.id.as_str()) {
-            Some(previous) if *previous != container => tracing::info!(
-                container_id = %crate::model::short_container_id(&container.id),
-                container_name = %container.name,
-                log_group = %container.log_group,
-                previous_state = ?previous.state,
-                state = ?container.state,
-                "container changed"
-            ),
-            Some(_) => {}
-            None => tracing::info!(
-                container_id = %crate::model::short_container_id(&container.id),
-                container_name = %container.name,
-                log_group = %container.log_group,
-                state = ?container.state,
-                "container added"
-            ),
-        }
-    }
-
-    for container in previous {
-        if !current_by_id.contains_key(container.id.as_str()) {
-            tracing::info!(
-                container_id = %crate::model::short_container_id(&container.id),
-                container_name = %container.name,
-                log_group = %container.log_group,
-                previous_state = ?container.state,
-                "container removed"
-            );
-        }
-    }
-}
-
-async fn start_container_observation(
-    docker: &Docker,
-    registry: &Arc<RwLock<Vec<ContainerSummary>>>,
-    container_id: &str,
-) -> AppResult<()> {
-    let previous = registry
-        .read()
-        .map(|containers| containers.clone())
-        .unwrap_or_default();
-    let observed = list_container(docker, container_id, &previous).await?;
-    let mut current = registry
-        .write()
-        .map_err(|err| AppError::Docker(format!("container registry lock poisoned: {err}")))?;
-    match observed {
-        Some(container) => {
-            if let Some(index) = current.iter().position(|item| item.id == container.id) {
-                let previous = current[index].clone();
-                if previous == container {
-                    tracing::info!(
-                        container_id = %crate::model::short_container_id(&container.id),
-                        container_name = %container.name,
-                        log_group = %container.log_group,
-                        state = ?container.state,
-                        "container unchanged"
-                    );
-                } else {
-                    tracing::info!(
-                        container_id = %crate::model::short_container_id(&container.id),
-                        container_name = %container.name,
-                        log_group = %container.log_group,
-                        previous_state = ?previous.state,
-                        state = ?container.state,
-                        "container updated"
-                    );
-                }
-                current[index] = container;
-            } else {
-                tracing::info!(
-                    container_id = %crate::model::short_container_id(&container.id),
-                    container_name = %container.name,
-                    log_group = %container.log_group,
-                    state = ?container.state,
-                    "container added"
-                );
-                current.push(container);
-            }
-        }
-        None => {
-            tracing::warn!(
-                container_id = %crate::model::short_container_id(container_id),
-                "container not added because it could not be found"
-            );
-        }
-    }
-    Ok(())
 }
 
 fn spawn_write_probe(docker: Docker, flag: Arc<AtomicBool>, interval: Duration) {
@@ -446,8 +260,8 @@ fn spawn_write_probe(docker: Docker, flag: Arc<AtomicBool>, interval: Duration) 
 
 fn spawn_log_observer(
     docker: Docker,
-    registry: Arc<RwLock<Vec<ContainerSummary>>>,
-    sender: mpsc::Sender<AppResult<LogLine>>,
+    registry: Arc<dyn ContainerRegistry>,
+    sender: mpsc::Sender<LogLine>,
 ) {
     tokio::spawn(async move {
         let mut tasks = HashMap::<String, LogTask>::new();
@@ -455,47 +269,29 @@ fn spawn_log_observer(
 
         loop {
             ticker.tick().await;
-            tasks.retain(|container_id, task| {
+            tasks.retain(|_container_id, task| {
                 if task.handle.is_finished() {
-                    tracing::info!(container_id = %crate::model::short_container_id(container_id), log_group = %task.log_group, "log task finished");
+                    tracing::info!(container = %&task.container.log_id(), "log task finished");
                     false
                 } else {
                     true
                 }
             });
 
-            let running = registry
-                .read()
-                .map(|containers| {
-                    containers
-                        .iter()
-                        .filter(|container| container.state == ContainerState::Running)
-                        .cloned()
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            let running_ids = running
-                .iter()
-                .map(|container| container.id.clone())
-                .collect::<HashSet<_>>();
-
-            tasks.retain(|container_id, task| {
-                if running_ids.contains(container_id) {
-                    true
-                } else {
-                    tracing::info!(container_id = %crate::model::short_container_id(container_id), log_group = %task.log_group, "stopping log task");
-                    task.handle.abort();
-                    false
-                }
-            });
+            let running = registry.observed_containers();
+            if let Err(e) = running {
+                tracing::warn!(error = %e, "failed to fetch observed containers");
+                continue;
+            }
+            let running = running.unwrap();
 
             for container in running {
                 if !tasks.contains_key(&container.id) {
-                    tracing::info!(container_id = %crate::model::short_container_id(&container.id), container_name = %container.name, log_group = %container.log_group, "spawning log task");
+                    tracing::info!(container= %container.log_id(), "spawning log task");
                     tasks.insert(
                         container.id.clone(),
                         LogTask {
-                            log_group: container.log_group.clone(),
+                            container: container.clone(),
                             handle: spawn_container_log_task(
                                 docker.clone(),
                                 container,
@@ -510,14 +306,14 @@ fn spawn_log_observer(
 }
 
 struct LogTask {
-    log_group: String,
+    container: ObservedContainer,
     handle: JoinHandle<()>,
 }
 
 fn spawn_container_log_task(
     docker: Docker,
-    container: ContainerSummary,
-    sender: mpsc::Sender<AppResult<LogLine>>,
+    container: ObservedContainer,
+    sender: mpsc::Sender<LogLine>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let since_secs = SystemTime::now()
@@ -549,7 +345,7 @@ fn spawn_container_log_task(
                 ),
                 Ok(_) => Vec::new(),
                 Err(err) => {
-                    tracing::warn!(container = %container.name, error = %err, "Docker log stream error");
+                    tracing::warn!(container = %container.name, error = %err, "log stream error");
                     break;
                 }
             };
@@ -564,8 +360,8 @@ fn spawn_container_log_task(
 
 fn spawn_sample_observer(
     docker: Docker,
-    registry: Arc<RwLock<Vec<ContainerSummary>>>,
-    sender: mpsc::Sender<AppResult<Vec<ContainerSample>>>,
+    registry: Arc<dyn ContainerRegistry>,
+    sender: mpsc::Sender<Vec<ContainerSample>>,
     interval: Duration,
 ) {
     tracing::info!(sample_interval = ?interval, "starting container sample observer");
@@ -574,20 +370,23 @@ fn spawn_sample_observer(
         let sample_timeout = container_stats_timeout(interval);
         loop {
             ticker.tick().await;
-            let running = registry
-                .read()
-                .map(|containers| {
-                    containers
-                        .iter()
-                        .filter(|container| container.state == ContainerState::Running)
-                        .cloned()
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
+
+            let running = registry.observed_containers();
+            if let Err(e) = running {
+                tracing::warn!(error = %e, "failed to get observed containers");
+                continue;
+            }
+            let running = running.unwrap();
+
             let collection_ts = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .map(|duration| duration.as_millis() as i64)
-                .unwrap_or_default();
+                .map(|duration| duration.as_millis() as i64);
+            if let Err(e) = collection_ts {
+                tracing::warn!(error = %e, "failed to get collection timestamp");
+                continue;
+            }
+            let collection_ts = collection_ts.unwrap();
+
             let samples = futures_util::stream::iter(running)
                 .map(|container| {
                     let docker = docker.clone();
@@ -611,11 +410,11 @@ fn spawn_sample_observer(
                                 blk_write: stats.blk_write,
                             }),
                             Ok(Err(err)) => {
-                                tracing::warn!(container = %container.name, error = %err, "failed to sample container stats");
+                                tracing::warn!(container = %container.log_id(), error = %err, "failed to sample container stats");
                                 None
                             }
                             Err(_) => {
-                                tracing::warn!(container = %container.name, "timed out sampling container stats");
+                                tracing::warn!(container = %container.log_id(), "timed out sampling container stats");
                                 None
                             }
                         }
@@ -625,7 +424,7 @@ fn spawn_sample_observer(
                 .filter_map(|sample| async move { sample })
                 .collect::<Vec<_>>()
                 .await;
-            if !samples.is_empty() && sender.send(Ok(samples)).await.is_err() {
+            if !samples.is_empty() && sender.send(samples).await.is_err() {
                 return;
             }
         }

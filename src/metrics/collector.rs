@@ -42,14 +42,9 @@ pub async fn run_containers(
     _interval: Duration,
 ) {
     let mut samples = docker.container_samples();
-    while let Some(result) = samples.next().await {
-        match result {
-            Ok(samples) => {
-                if let Err(err) = metrics.insert_containers(samples).await {
-                    tracing::error!(error = %err, "failed to persist container metrics");
-                }
-            }
-            Err(err) => tracing::warn!(error = %err, "container metrics stream error"),
+    while let Some(samples) = samples.next().await {
+        if let Err(err) = metrics.insert_containers(samples).await {
+            tracing::error!(error = %err, "failed to persist container metrics");
         }
     }
 
@@ -123,7 +118,7 @@ mod tests {
     async fn persists_container_sample_batches() {
         let mut docker = MockDockerService::new();
         docker.expect_container_samples().returning(|| {
-            Box::pin(stream::iter(vec![Ok(vec![ContainerSample {
+            Box::pin(stream::iter(vec![vec![ContainerSample {
                 ts: 123,
                 log_group: "shop-web".into(),
                 cid: "short-id".into(),
@@ -134,7 +129,7 @@ mod tests {
                 net_tx: 400,
                 blk_read: 500,
                 blk_write: 600,
-            }])])) as BoxStream<'static, _>
+            }]])) as BoxStream<'static, _>
         });
 
         let mut metrics = MockMetricsStore::new();

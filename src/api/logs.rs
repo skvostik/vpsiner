@@ -88,7 +88,7 @@ pub async fn list_groups(
     State(state): State<AppState>,
 ) -> AppResult<Json<BTreeMap<String, LogGroupStatus>>> {
     let stored = state.logs.list_groups().await?;
-    let containers = state.docker.containers();
+    let containers = state.docker.containers_info()?;
     Ok(Json(merge_log_groups(stored, containers)))
 }
 
@@ -115,7 +115,7 @@ fn merge_log_groups(
                 last_received: None,
                 live: false,
             });
-        group.live |= container.state == crate::model::ContainerState::Running;
+        group.live |= container.state == Some(crate::model::ContainerState::Running);
     }
     groups
 }
@@ -134,7 +134,7 @@ mod tests {
             image_sha: String::new(),
             ports: Vec::new(),
             labels: Vec::new(),
-            state,
+            state: Some(state),
             started_at: None,
         }
     }
