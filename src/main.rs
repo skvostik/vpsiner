@@ -46,12 +46,12 @@ async fn main() {
     // Composition root: concrete implementations are chosen here and nowhere else.
     let state = AppState::new(
         config.clone(),
-        Arc::new(BollardDocker::new(
+        BollardDocker::new(
             &config.docker_host,
             config.docker_timeout_secs,
             config.collect_interval,
             config.docker_controls_probe_interval,
-        )),
+        ),
         Arc::new(SqliteMetricsStore::new(config.data_path.join("metrics.db"))),
         Arc::new(SqliteLogStore::new(config.data_path.join("logs"))),
         Arc::new(SysinfoHost::default()),

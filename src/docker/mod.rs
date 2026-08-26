@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use async_trait::async_trait;
 mod container_registry;
@@ -63,6 +63,8 @@ pub struct BollardDocker {
     docker: Docker,
     container_registry: Arc<dyn ContainerRegistry>,
     controls_available: Arc<AtomicBool>,
+    logs_tx: mpsc::Sender<LogLine>,
+    samples_tx: mpsc::Sender<Vec<ContainerSample>>,
     logs_rx: Mutex<Option<mpsc::Receiver<LogLine>>>,
     samples_rx: Mutex<Option<mpsc::Receiver<Vec<ContainerSample>>>>,
 }
@@ -73,7 +75,7 @@ impl BollardDocker {
         timeout_secs: u64,
         sample_interval: Duration,
         controls_probe_interval: Duration,
-    ) -> Self {
+    ) -> Arc<Self> {
         let host = docker_host.into();
         let docker = if host.starts_with("unix://") {
             Docker::connect_with_unix(&host, timeout_secs, API_DEFAULT_VERSION)
@@ -88,26 +90,22 @@ impl BollardDocker {
         let (samples_tx, samples_rx) = mpsc::channel::<Vec<ContainerSample>>(32);
 
         let container_registry = BollardContainerRegistry::new(docker.clone());
-        spawn_write_probe(
-            docker.clone(),
-            controls_available.clone(),
-            controls_probe_interval,
-        );
-        spawn_log_observer(docker.clone(), container_registry.clone(), logs_tx);
-        spawn_sample_observer(
-            docker.clone(),
-            container_registry.clone(),
-            samples_tx,
-            sample_interval,
-        );
 
-        Self {
+        let registry = Arc::new(Self {
             docker,
             container_registry,
             controls_available,
+            logs_tx,
+            samples_tx,
             logs_rx: Mutex::new(Some(logs_rx)),
             samples_rx: Mutex::new(Some(samples_rx)),
-        }
+        });
+
+        spawn_write_probe(Arc::downgrade(&registry), controls_probe_interval);
+        spawn_log_observer(Arc::downgrade(&registry));
+        spawn_sample_observer(Arc::downgrade(&registry), sample_interval);
+
+        registry
     }
 }
 
@@ -149,6 +147,7 @@ impl DockerService for BollardDocker {
             .container_registry
             .container_info(id)?
             .ok_or_else(|| AppError::NotFound(format!("container not found: {id}")))?;
+        tracing::info!(container=%&container.log_id(), "attempting to start container");
         match container.state.ok_or_else(|| {
             AppError::Docker(format!("container state unknown: {}", container.log_id()))
         })? {
@@ -178,6 +177,7 @@ impl DockerService for BollardDocker {
             .container_registry
             .container_info(id)?
             .ok_or_else(|| AppError::NotFound(format!("container not found: {id}")))?;
+        tracing::info!(container=%&container.log_id(), "attempting to stop container");
         match container.state.ok_or_else(|| {
             AppError::Docker(format!("container state unknown: {}", container.log_id()))
         })? {
@@ -209,6 +209,7 @@ impl DockerService for BollardDocker {
             .container_registry
             .container_info(id)?
             .ok_or_else(|| AppError::NotFound(format!("container not found: {id}")))?;
+        tracing::info!(container=%&container.log_id(), "attempting to restart container");
         match container.state.ok_or_else(|| {
             AppError::Docker(format!("container state unknown: {}", container.log_id()))
         })? {
@@ -236,10 +237,19 @@ impl DockerService for BollardDocker {
     }
 }
 
-fn spawn_write_probe(docker: Docker, flag: Arc<AtomicBool>, interval: Duration) {
+fn spawn_write_probe(registry: Weak<BollardDocker>, interval: Duration) {
     tokio::spawn(async move {
         let mut last_logged: Option<bool> = None;
         loop {
+            let Some(registry_ref) = registry.upgrade() else {
+                tracing::debug!("stopping write probe worker because docker service was dropped");
+                return;
+            };
+
+            let docker = registry_ref.docker.clone();
+            let flag = registry_ref.controls_available.clone();
+            drop(registry_ref);
+
             match supports_write_operations(&docker).await {
                 Ok(available) => {
                     flag.store(available, Ordering::Relaxed);
@@ -258,17 +268,24 @@ fn spawn_write_probe(docker: Docker, flag: Arc<AtomicBool>, interval: Duration) 
     });
 }
 
-fn spawn_log_observer(
-    docker: Docker,
-    registry: Arc<dyn ContainerRegistry>,
-    sender: mpsc::Sender<LogLine>,
-) {
+fn spawn_log_observer(registry: Weak<BollardDocker>) {
     tokio::spawn(async move {
         let mut tasks = HashMap::<String, LogTask>::new();
         let mut ticker = tokio::time::interval(LOG_OBSERVER_INTERVAL);
 
         loop {
             ticker.tick().await;
+
+            let Some(registry_ref) = registry.upgrade() else {
+                tracing::debug!("stopping log observer because docker service was dropped");
+                return;
+            };
+
+            let docker = registry_ref.docker.clone();
+            let sender = registry_ref.logs_tx.clone();
+            let running = registry_ref.container_registry.observed_containers();
+            drop(registry_ref);
+
             tasks.retain(|_container_id, task| {
                 if task.handle.is_finished() {
                     tracing::info!(container = %&task.container.log_id(), "log task finished");
@@ -278,7 +295,6 @@ fn spawn_log_observer(
                 }
             });
 
-            let running = registry.observed_containers();
             if let Err(e) = running {
                 tracing::warn!(error = %e, "failed to fetch observed containers");
                 continue;
@@ -358,12 +374,7 @@ fn spawn_container_log_task(
     })
 }
 
-fn spawn_sample_observer(
-    docker: Docker,
-    registry: Arc<dyn ContainerRegistry>,
-    sender: mpsc::Sender<Vec<ContainerSample>>,
-    interval: Duration,
-) {
+fn spawn_sample_observer(registry: Weak<BollardDocker>, interval: Duration) {
     tracing::info!(sample_interval = ?interval, "starting container sample observer");
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(interval);
@@ -371,7 +382,17 @@ fn spawn_sample_observer(
         loop {
             ticker.tick().await;
 
-            let running = registry.observed_containers();
+            let Some(registry_ref) = registry.upgrade() else {
+                tracing::debug!("stopping sample observer because docker service was dropped");
+                return;
+            };
+
+            let docker = registry_ref.docker.clone();
+            let registry_client = registry_ref.container_registry.clone();
+            let sender = registry_ref.samples_tx.clone();
+            drop(registry_ref);
+
+            let running = registry_client.observed_containers();
             if let Err(e) = running {
                 tracing::warn!(error = %e, "failed to get observed containers");
                 continue;
