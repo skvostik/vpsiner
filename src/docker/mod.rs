@@ -87,7 +87,7 @@ impl BollardDocker {
         let (logs_tx, logs_rx) = mpsc::channel::<LogLine>(10_000);
         let (samples_tx, samples_rx) = mpsc::channel::<Vec<ContainerSample>>(32);
 
-        let container_registry = Arc::new(BollardContainerRegistry::new(docker.clone()));
+        let container_registry = BollardContainerRegistry::new(docker.clone());
         spawn_write_probe(
             docker.clone(),
             controls_available.clone(),

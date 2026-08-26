@@ -5,21 +5,9 @@ use futures_util::stream::{BoxStream, StreamExt};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
+use crate::docker::container_registry::ContainerObserveAction;
 use crate::logs::{detect_level, parse_docker_timestamp, strip_ansi_escape_codes};
 use crate::model::{ContainerState, ContainerStats, ContainerSummary, LogLine, LogStream};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ContainerObserveAction {
-    StartObserving,
-    StopObserving,
-    Ignore,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ContainerObserveEvent {
-    pub action: ContainerObserveAction,
-    pub container_id: Option<String>,
-}
 
 pub(super) fn receiver_stream<T: Send + 'static>(rx: mpsc::Receiver<T>) -> BoxStream<'static, T> {
     futures_util::stream::unfold(rx, |mut rx| async {
@@ -239,22 +227,6 @@ pub(super) fn map_container_stats(
     }
 }
 
-pub(super) fn map_container_observe_event(message: EventMessage) -> ContainerObserveEvent {
-    let action = match message.action.as_deref() {
-        Some("create" | "start" | "unpause" | "restart" | "rename" | "update") => {
-            ContainerObserveAction::StartObserving
-        }
-        Some("stop" | "die" | "destroy" | "pause" | "kill" | "oom") => {
-            ContainerObserveAction::StopObserving
-        }
-        _ => ContainerObserveAction::Ignore,
-    };
-    ContainerObserveEvent {
-        action,
-        container_id: message.actor.and_then(|actor| actor.id),
-    }
-}
-
 pub(super) fn map_log_output(
     container_id: String,
     log_group: String,
@@ -308,43 +280,5 @@ mod tests {
         assert_eq!(line.ts, expected_ts);
         assert_eq!(line.log_group, "group-1");
         assert_eq!(line.line, "INFO ready");
-    }
-
-    #[test]
-    fn maps_container_events_to_observe_actions() {
-        let pause = map_container_observe_event(EventMessage {
-            action: Some("pause".into()),
-            actor: Some(EventActor {
-                id: Some("container-id".into()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        });
-        assert_eq!(pause.action, ContainerObserveAction::StopObserving);
-        assert_eq!(pause.container_id.as_deref(), Some("container-id"));
-
-        let unpause = map_container_observe_event(EventMessage {
-            action: Some("unpause".into()),
-            actor: Some(EventActor {
-                id: Some("container-id".into()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        });
-        assert_eq!(unpause.action, ContainerObserveAction::StartObserving);
-    }
-
-    #[test]
-    fn ignores_non_observation_docker_actions() {
-        let event = map_container_observe_event(EventMessage {
-            action: Some("exec_start".into()),
-            actor: Some(EventActor {
-                id: Some("container-id".into()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        });
-
-        assert_eq!(event.action, ContainerObserveAction::Ignore);
     }
 }
