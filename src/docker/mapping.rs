@@ -4,7 +4,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::AppResult;
 use crate::logs::{detect_level, parse_docker_timestamp, strip_ansi_escape_codes};
-use crate::model::{ContainerState, ContainerStats, DockerEvent, LogLine, LogStream};
+use crate::model::{ContainerState, ContainerStats, LogLine, LogStream};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ContainerObserveAction {
+    StartObserving,
+    StopObserving,
+    Ignore,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ContainerObserveEvent {
+    pub action: ContainerObserveAction,
+    pub container_id: Option<String>,
+}
 
 pub(super) fn map_container_state(value: Option<&str>) -> Option<ContainerState> {
     match value {
@@ -107,21 +120,20 @@ pub(super) fn map_container_stats(
     }
 }
 
-pub(super) fn map_docker_event(message: EventMessage) -> Option<DockerEvent> {
-    let kind = match message.action.as_deref()? {
-        "create" => crate::model::DockerEventKind::Create,
-        "start" => crate::model::DockerEventKind::Start,
-        "die" => crate::model::DockerEventKind::Die,
-        "destroy" => crate::model::DockerEventKind::Destroy,
-        _ => return None,
+pub(super) fn map_container_observe_event(message: EventMessage) -> ContainerObserveEvent {
+    let action = match message.action.as_deref() {
+        Some("create" | "start" | "unpause" | "restart" | "rename" | "update") => {
+            ContainerObserveAction::StartObserving
+        }
+        Some("stop" | "die" | "destroy" | "pause" | "kill" | "oom") => {
+            ContainerObserveAction::StopObserving
+        }
+        _ => ContainerObserveAction::Ignore,
     };
-    let ts = message.time.unwrap_or_default().saturating_mul(1_000);
-    let container_id = message.actor?.id?;
-    Some(DockerEvent {
-        ts,
-        kind,
-        container_id,
-    })
+    ContainerObserveEvent {
+        action,
+        container_id: message.actor.and_then(|actor| actor.id),
+    }
 }
 
 pub(super) fn map_log_output(
@@ -180,27 +192,33 @@ mod tests {
     }
 
     #[test]
-    fn maps_container_event_action_and_timestamp() {
-        let event = map_docker_event(EventMessage {
-            action: Some("die".into()),
+    fn maps_container_events_to_observe_actions() {
+        let pause = map_container_observe_event(EventMessage {
+            action: Some("pause".into()),
             actor: Some(EventActor {
                 id: Some("container-id".into()),
                 ..Default::default()
             }),
-            time: Some(42),
             ..Default::default()
-        })
-        .unwrap();
+        });
+        assert_eq!(pause.action, ContainerObserveAction::StopObserving);
+        assert_eq!(pause.container_id.as_deref(), Some("container-id"));
 
-        assert_eq!(event.kind, crate::model::DockerEventKind::Die);
-        assert_eq!(event.container_id, "container-id");
-        assert_eq!(event.ts, 42_000);
+        let unpause = map_container_observe_event(EventMessage {
+            action: Some("unpause".into()),
+            actor: Some(EventActor {
+                id: Some("container-id".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        assert_eq!(unpause.action, ContainerObserveAction::StartObserving);
     }
 
     #[test]
-    fn ignores_untracked_docker_actions() {
-        let event = map_docker_event(EventMessage {
-            action: Some("rename".into()),
+    fn ignores_non_observation_docker_actions() {
+        let event = map_container_observe_event(EventMessage {
+            action: Some("exec_start".into()),
             actor: Some(EventActor {
                 id: Some("container-id".into()),
                 ..Default::default()
@@ -208,6 +226,6 @@ mod tests {
             ..Default::default()
         });
 
-        assert!(event.is_none());
+        assert_eq!(event.action, ContainerObserveAction::Ignore);
     }
 }

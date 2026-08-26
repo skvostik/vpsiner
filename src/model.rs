@@ -67,22 +67,6 @@ pub fn resolve_log_group(labels: &std::collections::HashMap<String, String>, nam
     name.trim_start_matches('/').to_string()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum DockerEventKind {
-    Create,
-    Start,
-    Die,
-    Destroy,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DockerEvent {
-    pub ts: TimestampMs,
-    pub kind: DockerEventKind,
-    pub container_id: String,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct HostSample {
     pub ts: TimestampMs,

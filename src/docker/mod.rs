@@ -13,15 +13,27 @@ use bollard::{
 };
 use futures_util::{StreamExt, stream::BoxStream};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::error::{AppError, AppResult};
 use crate::model::{
     ContainerCommandResult, ContainerSample, ContainerState, ContainerSummary, LogLine, LogStream,
 };
 
-use self::mapping::{map_docker_event, map_log_output};
+use self::mapping::{ContainerObserveAction, map_container_observe_event, map_log_output};
 use self::raw::{list_containers, sample_container_stats, supports_write_operations};
+
+const CONTAINER_INSPECT_TIMEOUT: Duration = Duration::from_secs(1);
+const CONTAINER_STATS_TIMEOUT: Duration = Duration::from_secs(5);
+const CONTAINER_RECONCILE_RETRY_DELAY: Duration = Duration::from_secs(5);
+const CONTAINER_RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
+const LOG_OBSERVER_INTERVAL: Duration = Duration::from_secs(5);
+const CONTAINER_SAMPLE_CONCURRENCY: usize = 8;
+const CONTAINER_INSPECT_CONCURRENCY: usize = 8;
+
+fn container_stats_timeout(sample_interval: Duration) -> Duration {
+    CONTAINER_STATS_TIMEOUT.min(sample_interval / 2)
+}
 
 /// Everything that talks to the Docker socket / proxy goes through this trait.
 #[allow(dead_code)] // remaining methods are consumed by the collectors added in later steps
@@ -238,7 +250,7 @@ fn spawn_container_reconciler(docker: Docker, registry: Arc<RwLock<Vec<Container
         loop {
             if let Err(err) = reconcile_containers(&docker, &registry).await {
                 tracing::warn!(error = %err, "failed to reconcile Docker containers");
-                tokio::time::sleep(Duration::from_secs(5)).await;
+                tokio::time::sleep(CONTAINER_RECONCILE_RETRY_DELAY).await;
                 continue;
             }
 
@@ -246,7 +258,7 @@ fn spawn_container_reconciler(docker: Docker, registry: Arc<RwLock<Vec<Container
             filters.insert("type".to_string(), vec!["container".to_string()]);
             let options = EventsOptionsBuilder::default().filters(&filters).build();
             let mut events = docker.events(Some(options));
-            let mut reconcile_timer = tokio::time::interval(Duration::from_secs(30));
+            let mut reconcile_timer = tokio::time::interval(CONTAINER_RECONCILE_INTERVAL);
 
             loop {
                 tokio::select! {
@@ -259,8 +271,10 @@ fn spawn_container_reconciler(docker: Docker, registry: Arc<RwLock<Vec<Container
                     event = events.next() => {
                         match event {
                             Some(Ok(message)) => {
-                                if let Some(event) = map_docker_event(message) {
-                                    tracing::debug!(kind = ?event.kind, container_id = %crate::model::short_container_id(&event.container_id), "Docker container event received");
+                                let event = map_container_observe_event(message);
+                                if event.action != ContainerObserveAction::Ignore {
+                                    let container_id = event.container_id.as_deref().unwrap_or("unknown");
+                                    tracing::info!(action = ?event.action, container_id = %crate::model::short_container_id(container_id), "Docker container observation event received");
                                     if let Err(err) = reconcile_containers(&docker, &registry).await {
                                         tracing::warn!(error = %err, "failed to reconcile Docker containers after event");
                                         break;
@@ -280,7 +294,7 @@ fn spawn_container_reconciler(docker: Docker, registry: Arc<RwLock<Vec<Container
                 }
             }
 
-            tokio::time::sleep(Duration::from_secs(5)).await;
+            tokio::time::sleep(CONTAINER_RECONCILE_RETRY_DELAY).await;
         }
     });
 }
@@ -289,6 +303,7 @@ async fn reconcile_containers(
     docker: &Docker,
     registry: &Arc<RwLock<Vec<ContainerSummary>>>,
 ) -> AppResult<()> {
+    tracing::info!("reconciling Docker containers");
     let previous = registry
         .read()
         .map(|containers| containers.clone())
@@ -329,39 +344,75 @@ fn spawn_log_observer(
     sender: mpsc::Sender<AppResult<LogLine>>,
 ) {
     tokio::spawn(async move {
-        let (ended_tx, mut ended_rx) = mpsc::channel::<String>(256);
-        let mut active = HashSet::<String>::new();
-        let mut ticker = tokio::time::interval(Duration::from_secs(5));
+        let mut tasks = HashMap::<String, LogTask>::new();
+        let mut ticker = tokio::time::interval(LOG_OBSERVER_INTERVAL);
 
         loop {
-            tokio::select! {
-                _ = ticker.tick() => {
-                    let running = registry
-                        .read()
-                        .map(|containers| containers.iter().filter(|container| container.state == ContainerState::Running).cloned().collect::<Vec<_>>())
-                        .unwrap_or_default();
-                    let running_ids = running.iter().map(|container| container.id.clone()).collect::<HashSet<_>>();
-                    active.retain(|id| running_ids.contains(id));
-                    for container in running {
-                        if active.insert(container.id.clone()) {
-                            spawn_container_log_task(docker.clone(), container, sender.clone(), ended_tx.clone());
-                        }
-                    }
+            ticker.tick().await;
+            tasks.retain(|container_id, task| {
+                if task.handle.is_finished() {
+                    tracing::debug!(container_id = %crate::model::short_container_id(container_id), log_group = %task.log_group, "container log task finished");
+                    false
+                } else {
+                    true
                 }
-                Some(container_id) = ended_rx.recv() => {
-                    active.remove(&container_id);
+            });
+
+            let running = registry
+                .read()
+                .map(|containers| {
+                    containers
+                        .iter()
+                        .filter(|container| container.state == ContainerState::Running)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let running_ids = running
+                .iter()
+                .map(|container| container.id.clone())
+                .collect::<HashSet<_>>();
+
+            tasks.retain(|container_id, task| {
+                if running_ids.contains(container_id) {
+                    true
+                } else {
+                    tracing::info!(container_id = %crate::model::short_container_id(container_id), log_group = %task.log_group, "stopping log task for container");
+                    task.handle.abort();
+                    false
+                }
+            });
+
+            for container in running {
+                if !tasks.contains_key(&container.id) {
+                    tracing::info!(container_id = %crate::model::short_container_id(&container.id), container_name = %container.name, log_group = %container.log_group, "spawning log task for container");
+                    tasks.insert(
+                        container.id.clone(),
+                        LogTask {
+                            log_group: container.log_group.clone(),
+                            handle: spawn_container_log_task(
+                                docker.clone(),
+                                container,
+                                sender.clone(),
+                            ),
+                        },
+                    );
                 }
             }
         }
     });
 }
 
+struct LogTask {
+    log_group: String,
+    handle: JoinHandle<()>,
+}
+
 fn spawn_container_log_task(
     docker: Docker,
     container: ContainerSummary,
     sender: mpsc::Sender<AppResult<LogLine>>,
-    ended: mpsc::Sender<String>,
-) {
+) -> JoinHandle<()> {
     tokio::spawn(async move {
         let since_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -398,13 +449,11 @@ fn spawn_container_log_task(
             };
             for line in lines {
                 if sender.send(line).await.is_err() {
-                    let _ = ended.send(container.id).await;
                     return;
                 }
             }
         }
-        let _ = ended.send(container.id).await;
-    });
+    })
 }
 
 fn spawn_sample_observer(
@@ -413,8 +462,10 @@ fn spawn_sample_observer(
     sender: mpsc::Sender<AppResult<Vec<ContainerSample>>>,
     interval: Duration,
 ) {
+    tracing::info!(sample_interval = ?interval, "starting container sample observer");
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(interval);
+        let sample_timeout = container_stats_timeout(interval);
         loop {
             ticker.tick().await;
             let running = registry
@@ -427,38 +478,47 @@ fn spawn_sample_observer(
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
-            let mut samples = Vec::new();
             let collection_ts = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|duration| duration.as_millis() as i64)
                 .unwrap_or_default();
-            for container in running {
-                match tokio::time::timeout(
-                    Duration::from_secs(5),
-                    sample_container_stats(&docker, &container.id),
-                )
-                .await
-                {
-                    Ok(Ok(stats)) => samples.push(ContainerSample {
-                        ts: collection_ts,
-                        log_group: container.log_group,
-                        cid: stats.cid,
-                        cpu_pct: stats.cpu_pct,
-                        mem_used: stats.mem_used,
-                        mem_limit: stats.mem_limit,
-                        net_rx: stats.net_rx,
-                        net_tx: stats.net_tx,
-                        blk_read: stats.blk_read,
-                        blk_write: stats.blk_write,
-                    }),
-                    Ok(Err(err)) => {
-                        tracing::warn!(container = %container.name, error = %err, "failed to sample container stats")
+            let samples = futures_util::stream::iter(running)
+                .map(|container| {
+                    let docker = docker.clone();
+                    async move {
+                        match tokio::time::timeout(
+                            sample_timeout,
+                            sample_container_stats(&docker, &container.id),
+                        )
+                        .await
+                        {
+                            Ok(Ok(stats)) => Some(ContainerSample {
+                                ts: collection_ts,
+                                log_group: container.log_group,
+                                cid: stats.cid,
+                                cpu_pct: stats.cpu_pct,
+                                mem_used: stats.mem_used,
+                                mem_limit: stats.mem_limit,
+                                net_rx: stats.net_rx,
+                                net_tx: stats.net_tx,
+                                blk_read: stats.blk_read,
+                                blk_write: stats.blk_write,
+                            }),
+                            Ok(Err(err)) => {
+                                tracing::warn!(container = %container.name, error = %err, "failed to sample container stats");
+                                None
+                            }
+                            Err(_) => {
+                                tracing::warn!(container = %container.name, "timed out sampling container stats");
+                                None
+                            }
+                        }
                     }
-                    Err(_) => {
-                        tracing::warn!(container = %container.name, "timed out sampling container stats")
-                    }
-                }
-            }
+                })
+                .buffer_unordered(CONTAINER_SAMPLE_CONCURRENCY)
+                .filter_map(|sample| async move { sample })
+                .collect::<Vec<_>>()
+                .await;
             if !samples.is_empty() && sender.send(Ok(samples)).await.is_err() {
                 return;
             }
