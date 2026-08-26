@@ -21,12 +21,14 @@ use crate::model::{
 };
 
 use self::mapping::{ContainerObserveAction, map_container_observe_event, map_log_output};
-use self::raw::{list_containers, sample_container_stats, supports_write_operations};
+use self::raw::{
+    list_container, list_containers, sample_container_stats, supports_write_operations,
+};
 
 const CONTAINER_INSPECT_TIMEOUT: Duration = Duration::from_secs(1);
 const CONTAINER_STATS_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTAINER_RECONCILE_RETRY_DELAY: Duration = Duration::from_secs(5);
-const CONTAINER_RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
+const CONTAINER_RECONCILE_INTERVAL: Duration = Duration::from_secs(60);
 const LOG_OBSERVER_INTERVAL: Duration = Duration::from_secs(5);
 const CONTAINER_SAMPLE_CONCURRENCY: usize = 8;
 const CONTAINER_INSPECT_CONCURRENCY: usize = 8;
@@ -272,12 +274,14 @@ fn spawn_container_reconciler(docker: Docker, registry: Arc<RwLock<Vec<Container
                         match event {
                             Some(Ok(message)) => {
                                 let event = map_container_observe_event(message);
-                                if event.action != ContainerObserveAction::Ignore {
-                                    let container_id = event.container_id.as_deref().unwrap_or("unknown");
-                                    tracing::info!(action = ?event.action, container_id = %crate::model::short_container_id(container_id), "Docker container observation event received");
-                                    if let Err(err) = reconcile_containers(&docker, &registry).await {
-                                        tracing::warn!(error = %err, "failed to reconcile Docker containers after event");
-                                        break;
+                                let container_id = event.container_id.as_deref().unwrap_or("unknown");
+                                tracing::debug!(action = ?event.action, container_id = %crate::model::short_container_id(container_id), "Docker container observation event received");
+                                if event.action == ContainerObserveAction::StartObserving {
+                                    if let Some(container_id) = event.container_id.as_deref() {
+                                        if let Err(err) = start_container_observation(&docker, &registry, container_id).await {
+                                            tracing::warn!(error = %err, container_id = %crate::model::short_container_id(container_id), "failed to update observed Docker container after event");
+                                            break;
+                                        }
                                     }
                                 }
                             }
@@ -303,16 +307,118 @@ async fn reconcile_containers(
     docker: &Docker,
     registry: &Arc<RwLock<Vec<ContainerSummary>>>,
 ) -> AppResult<()> {
-    tracing::info!("reconciling Docker containers");
+    tracing::debug!("reconciling Docker containers");
     let previous = registry
         .read()
         .map(|containers| containers.clone())
         .unwrap_or_default();
     let containers = list_containers(docker, &previous).await?;
+    log_container_reconcile_diff(&previous, &containers);
     let mut current = registry
         .write()
         .map_err(|err| AppError::Docker(format!("container registry lock poisoned: {err}")))?;
     *current = containers;
+    Ok(())
+}
+
+fn log_container_reconcile_diff(previous: &[ContainerSummary], current: &[ContainerSummary]) {
+    let previous_by_id = previous
+        .iter()
+        .map(|container| (container.id.as_str(), container))
+        .collect::<HashMap<_, _>>();
+    let current_by_id = current
+        .iter()
+        .map(|container| (container.id.as_str(), container))
+        .collect::<HashMap<_, _>>();
+
+    for container in current {
+        match previous_by_id.get(container.id.as_str()) {
+            Some(previous) if *previous != container => tracing::info!(
+                container_id = %crate::model::short_container_id(&container.id),
+                container_name = %container.name,
+                log_group = %container.log_group,
+                previous_state = ?previous.state,
+                state = ?container.state,
+                "container changed"
+            ),
+            Some(_) => {}
+            None => tracing::info!(
+                container_id = %crate::model::short_container_id(&container.id),
+                container_name = %container.name,
+                log_group = %container.log_group,
+                state = ?container.state,
+                "container added"
+            ),
+        }
+    }
+
+    for container in previous {
+        if !current_by_id.contains_key(container.id.as_str()) {
+            tracing::info!(
+                container_id = %crate::model::short_container_id(&container.id),
+                container_name = %container.name,
+                log_group = %container.log_group,
+                previous_state = ?container.state,
+                "container removed"
+            );
+        }
+    }
+}
+
+async fn start_container_observation(
+    docker: &Docker,
+    registry: &Arc<RwLock<Vec<ContainerSummary>>>,
+    container_id: &str,
+) -> AppResult<()> {
+    let previous = registry
+        .read()
+        .map(|containers| containers.clone())
+        .unwrap_or_default();
+    let observed = list_container(docker, container_id, &previous).await?;
+    let mut current = registry
+        .write()
+        .map_err(|err| AppError::Docker(format!("container registry lock poisoned: {err}")))?;
+    match observed {
+        Some(container) => {
+            if let Some(index) = current.iter().position(|item| item.id == container.id) {
+                let previous = current[index].clone();
+                if previous == container {
+                    tracing::info!(
+                        container_id = %crate::model::short_container_id(&container.id),
+                        container_name = %container.name,
+                        log_group = %container.log_group,
+                        state = ?container.state,
+                        "container unchanged"
+                    );
+                } else {
+                    tracing::info!(
+                        container_id = %crate::model::short_container_id(&container.id),
+                        container_name = %container.name,
+                        log_group = %container.log_group,
+                        previous_state = ?previous.state,
+                        state = ?container.state,
+                        "container updated"
+                    );
+                }
+                current[index] = container;
+            } else {
+                tracing::info!(
+                    container_id = %crate::model::short_container_id(&container.id),
+                    container_name = %container.name,
+                    log_group = %container.log_group,
+                    state = ?container.state,
+                    "container added"
+                );
+                current.push(container);
+            }
+        }
+        None => {
+            tracing::warn!(
+                container_id = %crate::model::short_container_id(container_id),
+                "container not added because it could not be found"
+            );
+        }
+    }
     Ok(())
 }
 
@@ -351,7 +457,7 @@ fn spawn_log_observer(
             ticker.tick().await;
             tasks.retain(|container_id, task| {
                 if task.handle.is_finished() {
-                    tracing::debug!(container_id = %crate::model::short_container_id(container_id), log_group = %task.log_group, "container log task finished");
+                    tracing::info!(container_id = %crate::model::short_container_id(container_id), log_group = %task.log_group, "log task finished");
                     false
                 } else {
                     true
@@ -377,7 +483,7 @@ fn spawn_log_observer(
                 if running_ids.contains(container_id) {
                     true
                 } else {
-                    tracing::info!(container_id = %crate::model::short_container_id(container_id), log_group = %task.log_group, "stopping log task for container");
+                    tracing::info!(container_id = %crate::model::short_container_id(container_id), log_group = %task.log_group, "stopping log task");
                     task.handle.abort();
                     false
                 }
@@ -385,7 +491,7 @@ fn spawn_log_observer(
 
             for container in running {
                 if !tasks.contains_key(&container.id) {
-                    tracing::info!(container_id = %crate::model::short_container_id(&container.id), container_name = %container.name, log_group = %container.log_group, "spawning log task for container");
+                    tracing::info!(container_id = %crate::model::short_container_id(&container.id), container_name = %container.name, log_group = %container.log_group, "spawning log task");
                     tasks.insert(
                         container.id.clone(),
                         LogTask {

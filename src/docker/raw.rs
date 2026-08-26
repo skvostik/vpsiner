@@ -3,6 +3,7 @@ use bollard::{
     query_parameters::{ListContainersOptions, StatsOptionsBuilder},
 };
 use futures_util::StreamExt;
+use std::collections::HashMap;
 
 use crate::error::{AppError, AppResult};
 use crate::model::{
@@ -23,6 +24,33 @@ pub(super) async fn list_containers(
         ..Default::default()
     };
 
+    list_containers_with_options(docker, options, previous).await
+}
+
+pub(super) async fn list_container(
+    docker: &Docker,
+    id: &str,
+    previous: &[ContainerSummary],
+) -> AppResult<Option<ContainerSummary>> {
+    let mut filters = HashMap::new();
+    filters.insert("id".to_string(), vec![id.to_string()]);
+    let options = ListContainersOptions {
+        all: true,
+        filters: Some(filters),
+        ..Default::default()
+    };
+
+    Ok(list_containers_with_options(docker, options, previous)
+        .await?
+        .into_iter()
+        .find(|container| container.id == id))
+}
+
+async fn list_containers_with_options(
+    docker: &Docker,
+    options: ListContainersOptions,
+    previous: &[ContainerSummary],
+) -> AppResult<Vec<ContainerSummary>> {
     let containers = docker
         .list_containers(Some(options))
         .await
