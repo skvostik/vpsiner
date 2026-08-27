@@ -63,6 +63,7 @@ async fn main() {
             config.docker_events_channel_capacity,
             config.docker_debounce,
             metadata.clone(),
+            config.retention_weeks,
         )),
         Arc::new(SqliteMetricsStore::new(config.data_path.join("metrics.db"))),
         Arc::new(SqliteLogStore::new(config.data_path.join("logs"))),

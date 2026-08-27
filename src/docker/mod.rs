@@ -63,6 +63,7 @@ struct Inner {
     logs_rx: Mutex<Option<mpsc::Receiver<LogLine>>>,
     samples_rx: Mutex<Option<mpsc::Receiver<Vec<ContainerSample>>>>,
     metadata: Arc<dyn LogMetadataStore>,
+    retention_weeks: u32,
 }
 
 impl BollardDocker {
@@ -80,6 +81,7 @@ impl BollardDocker {
         docker_events_channel_capacity: usize,
         docker_debounce: Duration,
         metadata: Arc<dyn LogMetadataStore>,
+        retention_weeks: u32,
     ) -> Self {
         let host = docker_host.into();
         let docker = if host.starts_with("unix://") {
@@ -116,6 +118,7 @@ impl BollardDocker {
             logs_rx: Mutex::new(Some(logs_rx)),
             samples_rx: Mutex::new(Some(samples_rx)),
             metadata,
+            retention_weeks,
         });
 
         spawn_write_probe(
@@ -368,6 +371,7 @@ fn spawn_log_observer(registry: Weak<Inner>, interval: Duration) {
             let docker = registry_ref.docker.clone();
             let sender = registry_ref.logs_tx.clone();
             let metadata = registry_ref.metadata.clone();
+            let retention_weeks = registry_ref.retention_weeks;
             let running = registry_ref.container_registry.observed_containers();
             drop(registry_ref);
 
@@ -389,7 +393,6 @@ fn spawn_log_observer(registry: Weak<Inner>, interval: Duration) {
 
             for container in running {
                 if !tasks.contains_key(&container.id) {
-                    tracing::info!(container= %container.log_id(), "spawning log task");
                     tasks.insert(
                         container.id.clone(),
                         LogTask {
@@ -399,6 +402,7 @@ fn spawn_log_observer(registry: Weak<Inner>, interval: Duration) {
                                 container,
                                 sender.clone(),
                                 metadata.clone(),
+                                retention_weeks,
                             ),
                         },
                     );
@@ -413,18 +417,12 @@ struct LogTask {
     handle: JoinHandle<()>,
 }
 
-fn now_secs() -> i32 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs() as i32)
-        .unwrap_or_default()
-}
-
 fn spawn_container_log_task(
     docker: Docker,
     container: ObservedContainer,
     sender: mpsc::Sender<LogLine>,
     metadata: Arc<dyn LogMetadataStore>,
+    retention_weeks: u32,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let since_secs = match metadata
@@ -432,12 +430,19 @@ fn spawn_container_log_task(
             .await
         {
             Ok(Some(checkpoint)) => checkpoint.ts.div_euclid(1_000) as i32,
-            Ok(None) => now_secs(),
+            // No checkpoint yet: backfill from the start of the current retention window,
+            // since that's the oldest data we'd keep anyway.
+            Ok(None) => crate::retention::retention_cutoff_ms(
+                time::OffsetDateTime::now_utc(),
+                retention_weeks,
+            )
+            .div_euclid(1_000) as i32,
             Err(err) => {
-                tracing::warn!(container = %container.name, error = %err, "failed to read log checkpoint; falling back to now");
-                now_secs()
+                tracing::error!(container = %container.log_id(), error = %err, "failed to read log checkpoint; log task will respawn");
+                return;
             }
         };
+        tracing::info!(container = %container.log_id(), since = %crate::logs::format_timestamp_ms(i64::from(since_secs) * 1_000), "spawning log task");
         let options = LogsOptionsBuilder::default()
             .follow(true)
             .stdout(true)
