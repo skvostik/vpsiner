@@ -12,18 +12,19 @@ async fn run_action(state: &AppState, id: &str, action: &'static str) -> AppResu
     match action {
         "start" => {
             state.docker.start_container(id).await?;
-            Ok(StatusCode::NO_CONTENT)
         }
         "stop" => {
             state.docker.stop_container(id).await?;
-            Ok(StatusCode::NO_CONTENT)
         }
         "restart" => {
             state.docker.restart_container(id).await?;
-            Ok(StatusCode::NO_CONTENT)
         }
         _ => unreachable!("container action routes pass known action names"),
     }
+
+    // TODO: This is a temporary workaround to allow the container state to propagate.
+    tokio::time::sleep(state.config.collect_interval * 2).await;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn list(State(state): State<AppState>) -> AppResult<Json<Vec<ContainerSummary>>> {
