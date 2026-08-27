@@ -51,6 +51,10 @@ pub trait DockerService: Send + Sync + 'static {
 
 /// Bollard-backed implementation. Wired up in the composition root.
 pub struct BollardDocker {
+    inner: Arc<Inner>,
+}
+
+struct Inner {
     docker: Docker,
     container_registry: Arc<dyn ContainerRegistry>,
     controls_available: Arc<AtomicBool>,
@@ -76,7 +80,7 @@ impl BollardDocker {
         docker_events_channel_capacity: usize,
         docker_debounce: Duration,
         metadata: Arc<dyn LogMetadataStore>,
-    ) -> Arc<Self> {
+    ) -> Self {
         let host = docker_host.into();
         let docker = if host.starts_with("unix://") {
             Docker::connect_with_unix(&host, timeout_secs, API_DEFAULT_VERSION)
@@ -92,17 +96,18 @@ impl BollardDocker {
         let (samples_tx, samples_rx) =
             mpsc::channel::<Vec<ContainerSample>>(samples_channel_capacity);
 
-        let container_registry = BollardContainerRegistry::new(
-            docker.clone(),
-            request_concurrency,
-            request_timeout,
-            docker_probe_interval,
-            docker_retry_delay,
-            docker_events_channel_capacity,
-            docker_debounce,
-        );
+        let container_registry: Arc<dyn ContainerRegistry> =
+            Arc::new(BollardContainerRegistry::new(
+                docker.clone(),
+                request_concurrency,
+                request_timeout,
+                docker_probe_interval,
+                docker_retry_delay,
+                docker_events_channel_capacity,
+                docker_debounce,
+            ));
 
-        let registry = Arc::new(Self {
+        let inner = Arc::new(Inner {
             docker,
             container_registry,
             controls_available,
@@ -114,45 +119,51 @@ impl BollardDocker {
         });
 
         spawn_write_probe(
-            Arc::downgrade(&registry),
+            Arc::downgrade(&inner),
             docker_probe_interval,
             request_timeout,
         );
-        spawn_log_observer(Arc::downgrade(&registry), docker_probe_interval);
+        spawn_log_observer(Arc::downgrade(&inner), docker_probe_interval);
         spawn_sample_observer(
-            Arc::downgrade(&registry),
+            Arc::downgrade(&inner),
             sample_interval,
             request_concurrency,
             request_timeout,
         );
 
-        registry
+        Self { inner }
     }
 }
 
 #[async_trait]
 impl DockerService for BollardDocker {
     fn containers_info(&self) -> AppResult<Vec<ContainerSummary>> {
-        self.container_registry.containers_info()
+        self.inner.container_registry.containers_info()
     }
 
     fn container_info(&self, id: &str) -> AppResult<Option<ContainerSummary>> {
-        self.container_registry.container_info(id)
+        self.inner.container_registry.container_info(id)
     }
 
     fn controls_available(&self) -> bool {
-        self.controls_available.load(Ordering::Relaxed)
+        self.inner.controls_available.load(Ordering::Relaxed)
     }
 
     fn logs(&self) -> BoxStream<'static, LogLine> {
-        match self.logs_rx.lock().ok().and_then(|mut rx| rx.take()) {
+        match self.inner.logs_rx.lock().ok().and_then(|mut rx| rx.take()) {
             Some(rx) => receiver_stream(rx),
             None => Box::pin(futures_util::stream::pending()),
         }
     }
 
     fn container_samples(&self) -> BoxStream<'static, Vec<ContainerSample>> {
-        match self.samples_rx.lock().ok().and_then(|mut rx| rx.take()) {
+        match self
+            .inner
+            .samples_rx
+            .lock()
+            .ok()
+            .and_then(|mut rx| rx.take())
+        {
             Some(rx) => receiver_stream(rx),
             None => Box::pin(futures_util::stream::pending()),
         }
@@ -165,6 +176,7 @@ impl DockerService for BollardDocker {
             ));
         }
         let container = self
+            .inner
             .container_registry
             .container_info(id)?
             .ok_or_else(|| AppError::NotFound(format!("container not found: {id}")))?;
@@ -181,7 +193,7 @@ impl DockerService for BollardDocker {
             }
             _ => {}
         }
-        let docker = self.docker.clone();
+        let docker = self.inner.docker.clone();
         let container_id = container.id.clone();
         let log_id = container.log_id();
         tokio::spawn(async move {
@@ -199,6 +211,7 @@ impl DockerService for BollardDocker {
             ));
         }
         let container = self
+            .inner
             .container_registry
             .container_info(id)?
             .ok_or_else(|| AppError::NotFound(format!("container not found: {id}")))?;
@@ -217,7 +230,7 @@ impl DockerService for BollardDocker {
             }
             _ => {}
         }
-        let docker = self.docker.clone();
+        let docker = self.inner.docker.clone();
         let container_id = container.id.clone();
         let log_id = container.log_id();
         tokio::spawn(async move {
@@ -235,6 +248,7 @@ impl DockerService for BollardDocker {
             ));
         }
         let container = self
+            .inner
             .container_registry
             .container_info(id)?
             .ok_or_else(|| AppError::NotFound(format!("container not found: {id}")))?;
@@ -243,7 +257,7 @@ impl DockerService for BollardDocker {
             AppError::Docker(format!("container state unknown: {}", container.log_id()))
         })? {
             ContainerState::Created | ContainerState::Exited => {
-                let docker = self.docker.clone();
+                let docker = self.inner.docker.clone();
                 let container_id = container.id.clone();
                 let log_id = container.log_id();
                 tokio::spawn(async move {
@@ -253,7 +267,7 @@ impl DockerService for BollardDocker {
                 });
             }
             ContainerState::Running | ContainerState::Paused => {
-                let docker = self.docker.clone();
+                let docker = self.inner.docker.clone();
                 let container_id = container.id.clone();
                 let log_id = container.log_id();
                 tokio::spawn(async move {
@@ -274,7 +288,7 @@ impl DockerService for BollardDocker {
     }
 }
 
-fn spawn_write_probe(registry: Weak<BollardDocker>, interval: Duration, request_timeout: Duration) {
+fn spawn_write_probe(registry: Weak<Inner>, interval: Duration, request_timeout: Duration) {
     tokio::spawn(async move {
         let mut last_logged: Option<bool> = None;
         loop {
@@ -305,7 +319,7 @@ fn spawn_write_probe(registry: Weak<BollardDocker>, interval: Duration, request_
     });
 }
 
-fn spawn_log_observer(registry: Weak<BollardDocker>, interval: Duration) {
+fn spawn_log_observer(registry: Weak<Inner>, interval: Duration) {
     tokio::spawn(async move {
         let mut tasks = HashMap::<String, LogTask>::new();
         let mut observe_events = registry.upgrade().and_then(|registry_ref| {
@@ -463,7 +477,7 @@ fn spawn_container_log_task(
 }
 
 fn spawn_sample_observer(
-    registry: Weak<BollardDocker>,
+    registry: Weak<Inner>,
     interval: Duration,
     request_concurrency: usize,
     request_timeout: Duration,

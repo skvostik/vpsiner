@@ -56,6 +56,10 @@ pub(super) trait ContainerRegistry: Send + Sync + 'static {
 }
 
 pub(super) struct BollardContainerRegistry {
+    inner: Arc<Inner>,
+}
+
+struct Inner {
     docker: Docker,
     request_concurrency: usize,
     request_timeout: Duration,
@@ -68,6 +72,24 @@ pub(super) struct BollardContainerRegistry {
 }
 
 impl ContainerRegistry for BollardContainerRegistry {
+    fn containers_info(&self) -> AppResult<Vec<ContainerSummary>> {
+        self.inner.containers_info()
+    }
+
+    fn container_info(&self, id: &str) -> AppResult<Option<ContainerSummary>> {
+        self.inner.container_info(id)
+    }
+
+    fn observed_containers(&self) -> AppResult<Vec<ObservedContainer>> {
+        self.inner.observed_containers()
+    }
+
+    fn take_observe_events_stream(&self) -> AppResult<BoxStream<'static, ContainerObserveEvent>> {
+        self.inner.take_observe_events_stream()
+    }
+}
+
+impl Inner {
     fn containers_info(&self) -> AppResult<Vec<ContainerSummary>> {
         Ok(self
             .containers_info
@@ -113,7 +135,7 @@ impl BollardContainerRegistry {
         retry_delay: Duration,
         events_channel_capacity: usize,
         debounce: Duration,
-    ) -> Arc<Self> {
+    ) -> Self {
         let (observe_events_tx, observe_events_rx) =
             mpsc::channel::<ContainerObserveEvent>(events_channel_capacity);
         let (observed_update_tx, observed_update_rx) = mpsc::channel::<()>(1);
@@ -122,30 +144,32 @@ impl BollardContainerRegistry {
         let containers_info = Arc::new(RwLock::new(Vec::new()));
         let observed_containers = Arc::new(RwLock::new(HashMap::new()));
 
-        let registry = Arc::new(Self {
+        let inner = Arc::new(Inner {
             docker,
             request_concurrency,
             request_timeout,
-            containers_info: containers_info,
-            observed_containers: observed_containers,
+            containers_info,
+            observed_containers,
             observe_events_rx: Mutex::new(Some(observe_events_rx)),
             observe_events_tx,
             observed_update_tx,
             containers_info_update_tx,
         });
 
-        spawn_containers_observer(Arc::downgrade(&registry), probe_interval, retry_delay);
-        spawn_update_containers_info_worker(Arc::downgrade(&registry), probe_interval);
-        spawn_observed_update_worker(Arc::downgrade(&registry), observed_update_rx, debounce);
+        spawn_containers_observer(Arc::downgrade(&inner), probe_interval, retry_delay);
+        spawn_update_containers_info_worker(Arc::downgrade(&inner), probe_interval);
+        spawn_observed_update_worker(Arc::downgrade(&inner), observed_update_rx, debounce);
         spawn_containers_info_update_worker(
-            Arc::downgrade(&registry),
+            Arc::downgrade(&inner),
             containers_info_update_rx,
             debounce,
         );
 
-        return registry;
+        Self { inner }
     }
+}
 
+impl Inner {
     fn request_observed_update(&self) -> AppResult<()> {
         if let Err(error) = self.observed_update_tx.try_send(()) {
             if !matches!(error, mpsc::error::TrySendError::Full(_)) {
@@ -251,10 +275,7 @@ impl BollardContainerRegistry {
     }
 }
 
-fn spawn_update_containers_info_worker(
-    registry: Weak<BollardContainerRegistry>,
-    interval: Duration,
-) {
+fn spawn_update_containers_info_worker(registry: Weak<Inner>, interval: Duration) {
     tracing::info!(sample_interval = ?interval, "starting update_containers_info worker");
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(interval);
@@ -276,7 +297,7 @@ fn spawn_update_containers_info_worker(
 }
 
 fn spawn_containers_info_update_worker(
-    registry: Weak<BollardContainerRegistry>,
+    registry: Weak<Inner>,
     mut requests: mpsc::Receiver<()>,
     debounce: Duration,
 ) {
@@ -303,7 +324,7 @@ fn spawn_containers_info_update_worker(
 }
 
 fn spawn_observed_update_worker(
-    registry: Weak<BollardContainerRegistry>,
+    registry: Weak<Inner>,
     mut requests: mpsc::Receiver<()>,
     debounce: Duration,
 ) {
@@ -336,11 +357,7 @@ fn spawn_observed_update_worker(
     });
 }
 
-fn spawn_containers_observer(
-    registry: Weak<BollardContainerRegistry>,
-    interval: Duration,
-    retry_delay: Duration,
-) {
+fn spawn_containers_observer(registry: Weak<Inner>, interval: Duration, retry_delay: Duration) {
     tracing::info!(sample_interval = ?interval, "starting containers observer");
     tokio::spawn(async move {
         loop {
@@ -358,10 +375,7 @@ fn spawn_containers_observer(
     });
 }
 
-async fn run_containers_observer_cycle(
-    registry: Weak<BollardContainerRegistry>,
-    interval: Duration,
-) -> AppResult<()> {
+async fn run_containers_observer_cycle(registry: Weak<Inner>, interval: Duration) -> AppResult<()> {
     let Some(registry_ref) = registry.upgrade() else {
         return Ok(());
     };

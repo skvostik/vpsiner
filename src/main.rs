@@ -50,7 +50,7 @@ async fn main() {
     ));
     let state = AppState::new(
         config.clone(),
-        BollardDocker::new(
+        Arc::new(BollardDocker::new(
             &config.docker_host,
             config.docker_timeout_secs,
             config.docker_request_timeout_secs,
@@ -63,7 +63,7 @@ async fn main() {
             config.docker_events_channel_capacity,
             config.docker_debounce,
             metadata.clone(),
-        ),
+        )),
         Arc::new(SqliteMetricsStore::new(config.data_path.join("metrics.db"))),
         Arc::new(SqliteLogStore::new(config.data_path.join("logs"))),
         metadata,
