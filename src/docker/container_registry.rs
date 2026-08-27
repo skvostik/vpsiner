@@ -50,7 +50,6 @@ pub(super) trait ContainerRegistry: Send + Sync + 'static {
     /// Returns a list of all observed containers in the registry. This
     /// list must contain up-to-date information for critical operations.
     fn observed_containers(&self) -> AppResult<Vec<ObservedContainer>>;
-    fn observed(&self, id: &str) -> AppResult<Option<ObservedContainer>>;
 
     /// Sends stream of containers as they are added or removed to the list of observed containers.
     fn take_observe_events_stream(&self) -> AppResult<BoxStream<'static, ContainerObserveEvent>>;
@@ -91,15 +90,6 @@ impl ContainerRegistry for BollardContainerRegistry {
             .values()
             .cloned()
             .collect())
-    }
-
-    fn observed(&self, id: &str) -> AppResult<Option<ObservedContainer>> {
-        Ok(self
-            .observed_containers
-            .read()
-            .map_err(|_| AppError::Docker("failed to acquire containers read lock".into()))?
-            .get(id)
-            .cloned())
     }
 
     fn take_observe_events_stream(&self) -> AppResult<BoxStream<'static, ContainerObserveEvent>> {
@@ -232,28 +222,6 @@ impl BollardContainerRegistry {
         self.request_containers_info_update()?;
 
         Ok(())
-    }
-
-    async fn start_observing(&self, container_id: &str) -> AppResult<()> {
-        match self.observed(container_id)? {
-            Some(container) => {
-                tracing::debug!(container = %&container.log_id(), "already observing");
-                return Ok(());
-            }
-            None => {}
-        }
-        self.request_observed_update()
-    }
-
-    async fn stop_observing(&self, container_id: &str) -> AppResult<()> {
-        match self.observed(container_id)? {
-            Some(_container) => {}
-            None => {
-                tracing::debug!(container = %container_short_id(container_id), "not observing");
-                return Ok(());
-            }
-        }
-        self.request_observed_update()
     }
 
     fn request_containers_info_update(&self) -> AppResult<()> {
@@ -435,35 +403,14 @@ async fn run_containers_observer_cycle(
                             "docker container event received"
                         );
 
-                        match event_action {
-                            // Container became runnable again.
-                            "start" | "unpause" | "restart" => {
-                                let Some(registry_ref) = registry.upgrade() else {
+                        let Some(registry_ref) = registry.upgrade() else {
                                     return Ok(());
                                 };
 
-                                if let Err(e) = registry_ref.start_observing(container_id).await {
-                                    tracing::warn!(error = %e, container_id=%container_short_id(container_id), "failed to start observing");
-                                }
-                            }
-                            // Container stopped producing runtime logs/stats.
-                            "stop" | "die" | "destroy" | "kill" | "pause" | "oom" => {
-                                let Some(registry_ref) = registry.upgrade() else {
-                                    return Ok(());
-                                };
-
-                                if let Err(e) = registry_ref.stop_observing(container_id).await {
-                                    tracing::warn!(error = %e, container_id=%container_short_id(container_id), "failed to stop observing");
-                                }
-                            }
-                            _ => {
-                                tracing::debug!(
-                                    action = %event_action,
-                                    container_id = %container_short_id(container_id),
-                                    "ignoring unrelated Docker container event"
-                                );
-                            }
+                        if let Err(e) = registry_ref.request_observed_update() {
+                            tracing::warn!(error = %e, "failed to refresh observed containers on event");
                         }
+
                     }
                     Some(Err(err)) => {
                         return Err(AppError::Docker(format!("docker container events stream error: {err}")));
