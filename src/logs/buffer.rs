@@ -44,6 +44,8 @@ impl LogBuffer {
         metadata: Arc<dyn LogMetadataStore>,
         debounce: Duration,
     ) -> AppResult<Self> {
+        tracing::info!(debounce = ?debounce, "initializing log buffer");
+        tracing::info!("preloading log buffer checkpoints from metadata store");
         let mut seeded: HashMap<String, GroupState> = HashMap::new();
         for (log_group, container_id, checkpoint) in metadata.list_checkpoints().await? {
             seeded
@@ -76,6 +78,7 @@ impl LogBuffer {
                 flush_tx,
             },
         );
+        tracing::info!(log_group=%log_group, "spawning flush worker for log group");
         spawn_flush_worker(
             Arc::downgrade(&self.inner),
             log_group,
