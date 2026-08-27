@@ -14,7 +14,7 @@ use futures_util::{StreamExt, stream::BoxStream};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::{sync::mpsc, task::JoinHandle};
 
-use crate::docker::container_registry::ObservedContainer;
+use crate::docker::container_registry::{ContainerObserveAction, ObservedContainer};
 use crate::docker::mapping::receiver_stream;
 use crate::error::{AppError, AppResult};
 use crate::model::{
@@ -25,16 +25,6 @@ use self::mapping::map_log_output;
 use self::raw::{sample_container_stats, supports_write_operations};
 
 use self::container_registry::{BollardContainerRegistry, ContainerRegistry};
-
-const CONTAINER_INSPECT_TIMEOUT: Duration = Duration::from_secs(1);
-const CONTAINER_STATS_TIMEOUT: Duration = Duration::from_secs(5);
-const LOG_OBSERVER_INTERVAL: Duration = Duration::from_secs(5);
-const CONTAINER_SAMPLE_CONCURRENCY: usize = 8;
-const CONTAINER_INSPECT_CONCURRENCY: usize = 8;
-
-fn container_stats_timeout(sample_interval: Duration) -> Duration {
-    CONTAINER_STATS_TIMEOUT.min(sample_interval / 2)
-}
 
 /// Everything that talks to the Docker socket / proxy goes through this trait.
 #[allow(dead_code)] // remaining methods are consumed by the collectors added in later steps
@@ -74,7 +64,12 @@ impl BollardDocker {
         docker_host: impl Into<String>,
         timeout_secs: u64,
         sample_interval: Duration,
-        controls_probe_interval: Duration,
+        docker_probe_interval: Duration,
+        request_concurrency: usize,
+        docker_retry_delay: Duration,
+        log_channel_capacity: usize,
+        samples_channel_capacity: usize,
+        docker_events_channel_capacity: usize,
     ) -> Arc<Self> {
         let host = docker_host.into();
         let docker = if host.starts_with("unix://") {
@@ -86,10 +81,19 @@ impl BollardDocker {
         };
 
         let controls_available = Arc::new(AtomicBool::new(false));
-        let (logs_tx, logs_rx) = mpsc::channel::<LogLine>(10_000);
-        let (samples_tx, samples_rx) = mpsc::channel::<Vec<ContainerSample>>(32);
+        let request_timeout = Duration::from_secs(timeout_secs);
+        let (logs_tx, logs_rx) = mpsc::channel::<LogLine>(log_channel_capacity);
+        let (samples_tx, samples_rx) =
+            mpsc::channel::<Vec<ContainerSample>>(samples_channel_capacity);
 
-        let container_registry = BollardContainerRegistry::new(docker.clone());
+        let container_registry = BollardContainerRegistry::new(
+            docker.clone(),
+            request_concurrency,
+            request_timeout,
+            docker_probe_interval,
+            docker_retry_delay,
+            docker_events_channel_capacity,
+        );
 
         let registry = Arc::new(Self {
             docker,
@@ -101,9 +105,14 @@ impl BollardDocker {
             samples_rx: Mutex::new(Some(samples_rx)),
         });
 
-        spawn_write_probe(Arc::downgrade(&registry), controls_probe_interval);
-        spawn_log_observer(Arc::downgrade(&registry));
-        spawn_sample_observer(Arc::downgrade(&registry), sample_interval);
+        spawn_write_probe(Arc::downgrade(&registry), docker_probe_interval);
+        spawn_log_observer(Arc::downgrade(&registry), docker_probe_interval);
+        spawn_sample_observer(
+            Arc::downgrade(&registry),
+            sample_interval,
+            request_concurrency,
+            request_timeout,
+        );
 
         registry
     }
@@ -268,13 +277,46 @@ fn spawn_write_probe(registry: Weak<BollardDocker>, interval: Duration) {
     });
 }
 
-fn spawn_log_observer(registry: Weak<BollardDocker>) {
+fn spawn_log_observer(registry: Weak<BollardDocker>, interval: Duration) {
     tokio::spawn(async move {
         let mut tasks = HashMap::<String, LogTask>::new();
-        let mut ticker = tokio::time::interval(LOG_OBSERVER_INTERVAL);
+        let mut observe_events = registry.upgrade().and_then(|registry_ref| {
+            registry_ref
+                .container_registry
+                .take_observe_events_stream()
+                .ok()
+        });
 
         loop {
-            ticker.tick().await;
+            // Check for container start events with a timeout
+            if let Some(events) = observe_events.as_mut() {
+                match tokio::time::timeout(interval, async {
+                    while let Some(event) = events.next().await {
+                        if event.action == ContainerObserveAction::Start {
+                            return true;
+                        }
+                    }
+                    false
+                })
+                .await
+                {
+                    // Event triggered
+                    Ok(true) => true,
+                    // Stream ended
+                    Ok(false) => {
+                        tracing::warn!(
+                            "container observe events stream ended; using timer fallback"
+                        );
+                        observe_events = None;
+                        false
+                    }
+                    // Timeout occurred, no new events
+                    Err(_) => false,
+                }
+            } else {
+                tokio::time::sleep(interval).await;
+                false
+            };
 
             let Some(registry_ref) = registry.upgrade() else {
                 tracing::debug!("stopping log observer because docker service was dropped");
@@ -286,6 +328,7 @@ fn spawn_log_observer(registry: Weak<BollardDocker>) {
             let running = registry_ref.container_registry.observed_containers();
             drop(registry_ref);
 
+            // Retain only the log tasks that are still running
             tasks.retain(|_container_id, task| {
                 if task.handle.is_finished() {
                     tracing::info!(container = %&task.container.log_id(), "log task finished");
@@ -374,11 +417,15 @@ fn spawn_container_log_task(
     })
 }
 
-fn spawn_sample_observer(registry: Weak<BollardDocker>, interval: Duration) {
+fn spawn_sample_observer(
+    registry: Weak<BollardDocker>,
+    interval: Duration,
+    request_concurrency: usize,
+    request_timeout: Duration,
+) {
     tracing::info!(sample_interval = ?interval, "starting container sample observer");
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(interval);
-        let sample_timeout = container_stats_timeout(interval);
         loop {
             ticker.tick().await;
 
@@ -413,7 +460,7 @@ fn spawn_sample_observer(registry: Weak<BollardDocker>, interval: Duration) {
                     let docker = docker.clone();
                     async move {
                         match tokio::time::timeout(
-                            sample_timeout,
+                            request_timeout,
                             sample_container_stats(&docker, &container.id),
                         )
                         .await
@@ -441,7 +488,7 @@ fn spawn_sample_observer(registry: Weak<BollardDocker>, interval: Duration) {
                         }
                     }
                 })
-                .buffer_unordered(CONTAINER_SAMPLE_CONCURRENCY)
+                .buffer_unordered(request_concurrency)
                 .filter_map(|sample| async move { sample })
                 .collect::<Vec<_>>()
                 .await;

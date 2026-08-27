@@ -39,14 +39,20 @@ pub struct Config {
     pub collect_interval: Duration,
     pub log_flush_interval: Duration,
     pub docker_controls_mode: DockerControlsMode,
-    pub docker_controls_probe_interval: Duration,
+    pub docker_probe_interval: Duration,
+    pub docker_retry_delay: Duration,
+    pub docker_request_concurrency: usize,
+    pub log_channel_capacity: usize,
+    pub samples_channel_capacity: usize,
+    pub log_flush_lines: usize,
+    pub docker_events_channel_capacity: usize,
 }
 
 impl Config {
     pub fn from_env() -> Self {
         Self {
             docker_host: env_or("VPSINER_DOCKER_HOST", "unix:///var/run/docker.sock"),
-            docker_timeout_secs: parse_or("VPSINER_DOCKER_TIMEOUT_SECS", 30),
+            docker_timeout_secs: parse_or("VPSINER_DOCKER_TIMEOUT_SECS", 5),
             data_path: PathBuf::from(env_or("VPSINER_DATA_PATH", "data")),
             static_dir: env::var_os("VPSINER_STATIC_DIR").map(PathBuf::from),
             port: parse_or("VPSINER_PORT", 3000),
@@ -60,10 +66,16 @@ impl Config {
                 .ok()
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(DockerControlsMode::Auto),
-            docker_controls_probe_interval: Duration::from_secs(parse_or(
-                "VPSINER_DOCKER_CONTROLS_PROBE_INTERVAL_SECS",
+            docker_probe_interval: Duration::from_secs(parse_or(
+                "VPSINER_DOCKER_PROBE_INTERVAL_SECS",
                 60,
             )),
+            docker_retry_delay: Duration::from_secs(parse_or("VPSINER_DOCKER_RETRY_SECS", 5)),
+            docker_request_concurrency: parse_or("VPSINER_DOCKER_REQUEST_CONCURRENCY", 8),
+            log_channel_capacity: parse_or("VPSINER_LOG_CHANNEL_CAPACITY", 10_000),
+            samples_channel_capacity: parse_or("VPSINER_SAMPLES_CHANNEL_CAPACITY", 32),
+            log_flush_lines: parse_or("VPSINER_LOG_FLUSH_LINES", 100),
+            docker_events_channel_capacity: parse_or("VPSINER_DOCKER_EVENTS_CHANNEL_CAPACITY", 256),
         }
     }
 }

@@ -50,7 +50,12 @@ async fn main() {
             &config.docker_host,
             config.docker_timeout_secs,
             config.collect_interval,
-            config.docker_controls_probe_interval,
+            config.docker_probe_interval,
+            config.docker_request_concurrency,
+            config.docker_retry_delay,
+            config.log_channel_capacity,
+            config.samples_channel_capacity,
+            config.docker_events_channel_capacity,
         ),
         Arc::new(SqliteMetricsStore::new(config.data_path.join("metrics.db"))),
         Arc::new(SqliteLogStore::new(config.data_path.join("logs"))),
@@ -83,6 +88,7 @@ async fn main() {
         state.docker.clone(),
         state.logs.clone(),
         config.log_flush_interval,
+        config.log_flush_lines,
         config.retention_weeks,
     ));
 
@@ -130,7 +136,7 @@ mod tests {
     fn test_config() -> Config {
         Config {
             docker_host: "tcp://127.0.0.1:2375".into(),
-            docker_timeout_secs: 30,
+            docker_timeout_secs: 5,
             data_path: "/tmp/vpsiner-test".into(),
             static_dir: None,
             port: 3000,
@@ -138,7 +144,13 @@ mod tests {
             collect_interval: std::time::Duration::from_secs(10),
             log_flush_interval: std::time::Duration::from_millis(500),
             docker_controls_mode: crate::config::DockerControlsMode::Disabled,
-            docker_controls_probe_interval: std::time::Duration::from_secs(60),
+            docker_probe_interval: std::time::Duration::from_secs(60),
+            docker_retry_delay: std::time::Duration::from_secs(5),
+            docker_request_concurrency: 8,
+            log_channel_capacity: 10_000,
+            samples_channel_capacity: 32,
+            log_flush_lines: 100,
+            docker_events_channel_capacity: 256,
         }
     }
 

@@ -1,4 +1,4 @@
-use crate::docker::mapping::unbounded_receiver_stream;
+use crate::docker::mapping::receiver_stream;
 use crate::docker::raw::{list_all_containers_details, list_running_containers};
 use crate::error::{AppError, AppResult};
 use crate::model::{ContainerSummary, container_log_id, container_short_id};
@@ -58,13 +58,13 @@ pub(super) trait ContainerRegistry: Send + Sync + 'static {
 
 pub(super) struct BollardContainerRegistry {
     docker: Docker,
+    request_concurrency: usize,
+    request_timeout: Duration,
     containers_info: Arc<RwLock<Vec<ContainerSummary>>>,
     observed_containers: Arc<RwLock<HashMap<String, ObservedContainer>>>,
-    observe_events_rx: Mutex<Option<mpsc::UnboundedReceiver<ContainerObserveEvent>>>,
-    observe_events_tx: mpsc::UnboundedSender<ContainerObserveEvent>,
+    observe_events_rx: Mutex<Option<mpsc::Receiver<ContainerObserveEvent>>>,
+    observe_events_tx: mpsc::Sender<ContainerObserveEvent>,
 }
-
-const CONTAINERS_OBSERVER_RETRY_DELAY: Duration = Duration::from_secs(5);
 
 impl ContainerRegistry for BollardContainerRegistry {
     fn containers_info(&self) -> AppResult<Vec<ContainerSummary>> {
@@ -106,30 +106,39 @@ impl ContainerRegistry for BollardContainerRegistry {
             .lock()
             .map_err(|_| AppError::Docker("failed to acquire observing receiver lock".into()))?;
         match guard.take() {
-            Some(rx) => Ok(unbounded_receiver_stream(rx)),
+            Some(rx) => Ok(receiver_stream(rx)),
             None => Err(AppError::Docker("observing receiver already taken".into())),
         }
     }
 }
 
 impl BollardContainerRegistry {
-    pub fn new(docker: Docker) -> Arc<Self> {
+    pub fn new(
+        docker: Docker,
+        request_concurrency: usize,
+        request_timeout: Duration,
+        probe_interval: Duration,
+        retry_delay: Duration,
+        events_channel_capacity: usize,
+    ) -> Arc<Self> {
         let (observe_events_tx, observe_events_rx) =
-            mpsc::unbounded_channel::<ContainerObserveEvent>();
+            mpsc::channel::<ContainerObserveEvent>(events_channel_capacity);
 
         let containers_info = Arc::new(RwLock::new(Vec::new()));
         let observed_containers = Arc::new(RwLock::new(HashMap::new()));
 
         let registry = Arc::new(Self {
             docker,
+            request_concurrency,
+            request_timeout,
             containers_info: containers_info,
             observed_containers: observed_containers,
             observe_events_rx: Mutex::new(Some(observe_events_rx)),
             observe_events_tx,
         });
 
-        spawn_containers_observer(Arc::downgrade(&registry), Duration::from_secs(30));
-        spawn_update_containers_info_worker(Arc::downgrade(&registry), Duration::from_secs(60));
+        spawn_containers_observer(Arc::downgrade(&registry), probe_interval, retry_delay);
+        spawn_update_containers_info_worker(Arc::downgrade(&registry), probe_interval);
 
         return registry;
     }
@@ -177,21 +186,21 @@ impl BollardContainerRegistry {
 
         for container in started_observing {
             let container_log_id = container.log_id();
-            if let Err(_) = self.observe_events_tx.send(ContainerObserveEvent {
+            if let Err(err) = self.observe_events_tx.try_send(ContainerObserveEvent {
                 container,
                 action: ContainerObserveAction::Start,
             }) {
-                tracing::error!(container= %container_log_id, "failed to send start observing event");
+                tracing::warn!(container = %container_log_id, error = %err, "failed to send start observing event");
             };
         }
 
         for container in stopped_observing {
             let container_log_id = container.log_id();
-            if let Err(_) = self.observe_events_tx.send(ContainerObserveEvent {
+            if let Err(err) = self.observe_events_tx.try_send(ContainerObserveEvent {
                 container,
                 action: ContainerObserveAction::Stop,
             }) {
-                tracing::error!(container= %container_log_id, "failed to send stop observing event");
+                tracing::warn!(container = %container_log_id, error = %err, "failed to send stop observing event");
             };
         }
 
@@ -224,7 +233,12 @@ impl BollardContainerRegistry {
 
     async fn update_containers_info(&self) -> AppResult<()> {
         tracing::debug!("updating containers info");
-        let containers = list_all_containers_details(&self.docker).await?;
+        let containers = list_all_containers_details(
+            &self.docker,
+            self.request_concurrency,
+            self.request_timeout,
+        )
+        .await?;
         let mut current = self.containers_info.write().map_err(|err| {
             AppError::Docker(format!("container_info registry lock poisoned: {err}"))
         })?;
@@ -257,7 +271,11 @@ fn spawn_update_containers_info_worker(
     });
 }
 
-fn spawn_containers_observer(registry: Weak<BollardContainerRegistry>, interval: Duration) {
+fn spawn_containers_observer(
+    registry: Weak<BollardContainerRegistry>,
+    interval: Duration,
+    retry_delay: Duration,
+) {
     tracing::info!(sample_interval = ?interval, "starting containers observer");
     tokio::spawn(async move {
         loop {
@@ -270,7 +288,7 @@ fn spawn_containers_observer(registry: Weak<BollardContainerRegistry>, interval:
                 tracing::warn!(error = %e, "containers observer cycle ended unexpectedly");
             }
 
-            tokio::time::sleep(CONTAINERS_OBSERVER_RETRY_DELAY).await;
+            tokio::time::sleep(retry_delay).await;
         }
     });
 }

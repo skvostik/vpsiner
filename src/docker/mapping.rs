@@ -1,24 +1,14 @@
-use bollard::models::{ContainerStatsResponse, EventMessage};
+use bollard::models::ContainerStatsResponse;
 use bollard::plugin::ContainerSummaryStateEnum;
 use bytes::Bytes;
 use futures_util::stream::{BoxStream, StreamExt};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
-use crate::docker::container_registry::ContainerObserveAction;
 use crate::logs::{detect_level, parse_docker_timestamp, strip_ansi_escape_codes};
 use crate::model::{ContainerState, ContainerStats, ContainerSummary, LogLine, LogStream};
 
 pub(super) fn receiver_stream<T: Send + 'static>(rx: mpsc::Receiver<T>) -> BoxStream<'static, T> {
-    futures_util::stream::unfold(rx, |mut rx| async {
-        rx.recv().await.map(|item| (item, rx))
-    })
-    .boxed()
-}
-
-pub(super) fn unbounded_receiver_stream<T: Send + 'static>(
-    rx: mpsc::UnboundedReceiver<T>,
-) -> BoxStream<'static, T> {
     futures_util::stream::unfold(rx, |mut rx| async {
         rx.recv().await.map(|item| (item, rx))
     })
@@ -253,7 +243,6 @@ pub(super) fn map_log_output(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bollard::models::EventActor;
 
     #[test]
     fn strips_ansi_codes_from_log_text() {

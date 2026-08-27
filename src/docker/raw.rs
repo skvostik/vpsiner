@@ -13,8 +13,6 @@ use crate::{
     error::{AppError, AppResult},
 };
 
-use super::CONTAINER_INSPECT_CONCURRENCY;
-use super::CONTAINER_INSPECT_TIMEOUT;
 use super::mapping::{map_container_stats, map_container_summary};
 
 pub(super) async fn list_running_containers(docker: &Docker) -> AppResult<Vec<ObservedContainer>> {
@@ -40,6 +38,8 @@ pub(super) async fn list_running_containers(docker: &Docker) -> AppResult<Vec<Ob
 /// Potentionally expensive operation as it inspects each container individually.
 pub(super) async fn list_all_containers_details(
     docker: &Docker,
+    request_concurrency: usize,
+    request_timeout: std::time::Duration,
 ) -> AppResult<Vec<ContainerSummary>> {
     let options = ListContainersOptionsBuilder::new().all(true).build();
     let containers = docker
@@ -51,7 +51,7 @@ pub(super) async fn list_all_containers_details(
         .map(|container| async move {
             let summary = map_container_summary(&container);
             let started_at = if summary.state == Some(ContainerState::Running) {
-                inspect_started_at(docker, &summary.id)
+                inspect_started_at(docker, &summary.id, request_timeout)
                     .await
                     .or_else(|| None)
             } else {
@@ -70,7 +70,7 @@ pub(super) async fn list_all_containers_details(
                 started_at,
             })
         })
-        .buffer_unordered(CONTAINER_INSPECT_CONCURRENCY)
+        .buffer_unordered(request_concurrency)
         .filter_map(|summary| async move { summary })
         .collect::<Vec<_>>()
         .await;
@@ -78,20 +78,21 @@ pub(super) async fn list_all_containers_details(
     Ok(summaries)
 }
 
-async fn inspect_started_at(docker: &Docker, id: &str) -> Option<TimestampMs> {
-    tokio::time::timeout(
-        CONTAINER_INSPECT_TIMEOUT,
-        docker.inspect_container(id, None),
-    )
-    .await
-    .ok()?
-    .ok()?
-    .state?
-    .started_at
-    .and_then(|value| {
-        time::OffsetDateTime::parse(&value, &time::format_description::well_known::Rfc3339).ok()
-    })
-    .map(|value| value.unix_timestamp_nanos().div_euclid(1_000_000) as i64)
+async fn inspect_started_at(
+    docker: &Docker,
+    id: &str,
+    request_timeout: std::time::Duration,
+) -> Option<TimestampMs> {
+    tokio::time::timeout(request_timeout, docker.inspect_container(id, None))
+        .await
+        .ok()?
+        .ok()?
+        .state?
+        .started_at
+        .and_then(|value| {
+            time::OffsetDateTime::parse(&value, &time::format_description::well_known::Rfc3339).ok()
+        })
+        .map(|value| value.unix_timestamp_nanos().div_euclid(1_000_000) as i64)
 }
 
 pub(super) async fn supports_write_operations(docker: &Docker) -> AppResult<bool> {

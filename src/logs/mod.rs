@@ -242,6 +242,7 @@ pub async fn run_ingestion(
     docker: Arc<dyn DockerService>,
     logs: Arc<dyn LogStore>,
     flush_interval: Duration,
+    flush_lines: usize,
     _retention_weeks: u32,
 ) {
     tracing::info!("log ingestion initialized");
@@ -255,7 +256,7 @@ pub async fn run_ingestion(
                 let group = line.log_group.clone();
                 let group_buffer = buffer.entry(group).or_default();
                 group_buffer.push(line);
-                if group_buffer.len() >= 100 {
+                if group_buffer.len() >= flush_lines {
                     flush_buffers(&logs, &mut buffer).await;
                 }
             }
