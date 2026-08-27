@@ -64,6 +64,8 @@ pub(super) struct BollardContainerRegistry {
     observed_containers: Arc<RwLock<HashMap<String, ObservedContainer>>>,
     observe_events_rx: Mutex<Option<mpsc::Receiver<ContainerObserveEvent>>>,
     observe_events_tx: mpsc::Sender<ContainerObserveEvent>,
+    observed_update_tx: mpsc::Sender<()>,
+    containers_info_update_tx: mpsc::Sender<()>,
 }
 
 impl ContainerRegistry for BollardContainerRegistry {
@@ -120,9 +122,12 @@ impl BollardContainerRegistry {
         probe_interval: Duration,
         retry_delay: Duration,
         events_channel_capacity: usize,
+        debounce: Duration,
     ) -> Arc<Self> {
         let (observe_events_tx, observe_events_rx) =
             mpsc::channel::<ContainerObserveEvent>(events_channel_capacity);
+        let (observed_update_tx, observed_update_rx) = mpsc::channel::<()>(1);
+        let (containers_info_update_tx, containers_info_update_rx) = mpsc::channel::<()>(1);
 
         let containers_info = Arc::new(RwLock::new(Vec::new()));
         let observed_containers = Arc::new(RwLock::new(HashMap::new()));
@@ -135,21 +140,40 @@ impl BollardContainerRegistry {
             observed_containers: observed_containers,
             observe_events_rx: Mutex::new(Some(observe_events_rx)),
             observe_events_tx,
+            observed_update_tx,
+            containers_info_update_tx,
         });
 
         spawn_containers_observer(Arc::downgrade(&registry), probe_interval, retry_delay);
         spawn_update_containers_info_worker(Arc::downgrade(&registry), probe_interval);
+        spawn_observed_update_worker(Arc::downgrade(&registry), observed_update_rx, debounce);
+        spawn_containers_info_update_worker(
+            Arc::downgrade(&registry),
+            containers_info_update_rx,
+            debounce,
+        );
 
         return registry;
     }
 
-    async fn update_observed_containers(&self) -> AppResult<()> {
+    fn request_observed_update(&self) -> AppResult<()> {
+        if let Err(error) = self.observed_update_tx.try_send(()) {
+            if !matches!(error, mpsc::error::TrySendError::Full(_)) {
+                return Err(AppError::Docker(format!(
+                    "failed to schedule observed containers update: {error}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    async fn update_observed_containers_now(&self) -> AppResult<()> {
         tracing::debug!("updating observed containers");
 
         let mut started_observing = Vec::<ObservedContainer>::new();
         let mut stopped_observing = Vec::<ObservedContainer>::new();
 
-        let running_containers = list_running_containers(&self.docker)
+        let running_containers = list_running_containers(&self.docker, self.request_timeout)
             .await?
             .into_iter()
             .map(|c| (c.id.clone(), c))
@@ -204,6 +228,9 @@ impl BollardContainerRegistry {
             };
         }
 
+        // Request an update to the containers info after processing observed containers
+        self.request_containers_info_update()?;
+
         Ok(())
     }
 
@@ -215,8 +242,7 @@ impl BollardContainerRegistry {
             }
             None => {}
         }
-        self.update_observed_containers().await?;
-        Ok(())
+        self.request_observed_update()
     }
 
     async fn stop_observing(&self, container_id: &str) -> AppResult<()> {
@@ -227,11 +253,21 @@ impl BollardContainerRegistry {
                 return Ok(());
             }
         }
-        self.update_observed_containers().await?;
+        self.request_observed_update()
+    }
+
+    fn request_containers_info_update(&self) -> AppResult<()> {
+        if let Err(error) = self.containers_info_update_tx.try_send(()) {
+            if !matches!(error, mpsc::error::TrySendError::Full(_)) {
+                return Err(AppError::Docker(format!(
+                    "failed to schedule containers info update: {error}"
+                )));
+            }
+        }
         Ok(())
     }
 
-    async fn update_containers_info(&self) -> AppResult<()> {
+    async fn update_containers_info_now(&self) -> AppResult<()> {
         tracing::debug!("updating containers info");
         let containers = list_all_containers_details(
             &self.docker,
@@ -264,10 +300,71 @@ fn spawn_update_containers_info_worker(
 
             ticker.tick().await;
 
-            if let Err(e) = registry.update_containers_info().await {
-                tracing::error!(error = %e, "failed to update containers info");
+            if let Err(e) = registry.request_containers_info_update() {
+                tracing::error!(error = %e, "failed to schedule containers info update");
             }
         }
+    });
+}
+
+fn spawn_containers_info_update_worker(
+    registry: Weak<BollardContainerRegistry>,
+    mut requests: mpsc::Receiver<()>,
+    debounce: Duration,
+) {
+    tokio::spawn(async move {
+        while requests.recv().await.is_some() {
+            tokio::time::sleep(debounce).await;
+
+            while requests.try_recv().is_ok() {}
+
+            let Some(registry_ref) = registry.upgrade() else {
+                tracing::debug!(
+                    "stopping containers info update worker because registry was dropped"
+                );
+                return;
+            };
+
+            if let Err(error) = registry_ref.update_containers_info_now().await {
+                tracing::warn!(error = %error, "failed to update containers info");
+            }
+        }
+
+        tracing::debug!("stopping containers info update worker because request channel closed");
+    });
+}
+
+fn spawn_observed_update_worker(
+    registry: Weak<BollardContainerRegistry>,
+    mut requests: mpsc::Receiver<()>,
+    debounce: Duration,
+) {
+    tokio::spawn(async move {
+        while requests.recv().await.is_some() {
+            tokio::time::sleep(debounce).await;
+
+            // Drain any additional requests that arrived while we were sleeping.
+            //They will be coalesced into the next update.
+            while requests.try_recv().is_ok() {}
+
+            let Some(registry_ref) = registry.upgrade() else {
+                tracing::debug!(
+                    "stopping observed containers update worker because registry was dropped"
+                );
+                return;
+            };
+
+            if let Err(error) = registry_ref.update_observed_containers_now().await {
+                tracing::warn!(error = %error, "failed to update observed containers");
+            }
+
+            // Keep a request that arrived while the Docker update was running. It will trigger
+            // another coalesced refresh after the current one completes.
+        }
+
+        tracing::debug!(
+            "stopping observed containers update worker because request channel closed"
+        );
     });
 }
 
@@ -301,7 +398,7 @@ async fn run_containers_observer_cycle(
         return Ok(());
     };
 
-    registry_ref.update_observed_containers().await?;
+    registry_ref.request_observed_update()?;
     let docker = registry_ref.docker.clone();
     drop(registry_ref);
 
@@ -318,7 +415,7 @@ async fn run_containers_observer_cycle(
                     return Ok(());
                 };
 
-                if let Err(e) = registry_ref.update_observed_containers().await {
+                if let Err(e) = registry_ref.request_observed_update() {
                     tracing::warn!(error = %e, "failed to refresh observed containers on interval");
                 }
             }

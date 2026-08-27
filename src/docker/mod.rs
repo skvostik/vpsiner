@@ -63,6 +63,7 @@ impl BollardDocker {
     pub fn new(
         docker_host: impl Into<String>,
         timeout_secs: u64,
+        request_timeout_secs: u64,
         sample_interval: Duration,
         docker_probe_interval: Duration,
         request_concurrency: usize,
@@ -70,6 +71,7 @@ impl BollardDocker {
         log_channel_capacity: usize,
         samples_channel_capacity: usize,
         docker_events_channel_capacity: usize,
+        docker_debounce: Duration,
     ) -> Arc<Self> {
         let host = docker_host.into();
         let docker = if host.starts_with("unix://") {
@@ -81,7 +83,7 @@ impl BollardDocker {
         };
 
         let controls_available = Arc::new(AtomicBool::new(false));
-        let request_timeout = Duration::from_secs(timeout_secs);
+        let request_timeout = Duration::from_secs(request_timeout_secs);
         let (logs_tx, logs_rx) = mpsc::channel::<LogLine>(log_channel_capacity);
         let (samples_tx, samples_rx) =
             mpsc::channel::<Vec<ContainerSample>>(samples_channel_capacity);
@@ -93,6 +95,7 @@ impl BollardDocker {
             docker_probe_interval,
             docker_retry_delay,
             docker_events_channel_capacity,
+            docker_debounce,
         );
 
         let registry = Arc::new(Self {
@@ -105,7 +108,11 @@ impl BollardDocker {
             samples_rx: Mutex::new(Some(samples_rx)),
         });
 
-        spawn_write_probe(Arc::downgrade(&registry), docker_probe_interval);
+        spawn_write_probe(
+            Arc::downgrade(&registry),
+            docker_probe_interval,
+            request_timeout,
+        );
         spawn_log_observer(Arc::downgrade(&registry), docker_probe_interval);
         spawn_sample_observer(
             Arc::downgrade(&registry),
@@ -169,10 +176,14 @@ impl DockerService for BollardDocker {
             }
             _ => {}
         }
-        self.docker
-            .start_container(&container.id, None)
-            .await
-            .map_err(|err| AppError::Docker(err.to_string()))?;
+        let docker = self.docker.clone();
+        let container_id = container.id.clone();
+        let log_id = container.log_id();
+        tokio::spawn(async move {
+            if let Err(error) = docker.start_container(&container_id, None).await {
+                tracing::warn!(container = %log_id, error = %error, "failed to start container");
+            }
+        });
         Ok(ContainerCommandResult::Submitted)
     }
 
@@ -201,10 +212,14 @@ impl DockerService for BollardDocker {
             }
             _ => {}
         }
-        self.docker
-            .stop_container(&container.id, None)
-            .await
-            .map_err(|err| AppError::Docker(err.to_string()))?;
+        let docker = self.docker.clone();
+        let container_id = container.id.clone();
+        let log_id = container.log_id();
+        tokio::spawn(async move {
+            if let Err(error) = docker.stop_container(&container_id, None).await {
+                tracing::warn!(container = %log_id, error = %error, "failed to stop container");
+            }
+        });
         Ok(ContainerCommandResult::Submitted)
     }
 
@@ -223,16 +238,24 @@ impl DockerService for BollardDocker {
             AppError::Docker(format!("container state unknown: {}", container.log_id()))
         })? {
             ContainerState::Created | ContainerState::Exited => {
-                self.docker
-                    .start_container(&container.id, None)
-                    .await
-                    .map_err(|err| AppError::Docker(err.to_string()))?;
+                let docker = self.docker.clone();
+                let container_id = container.id.clone();
+                let log_id = container.log_id();
+                tokio::spawn(async move {
+                    if let Err(error) = docker.start_container(&container_id, None).await {
+                        tracing::warn!(container = %log_id, error = %error, "failed to start container");
+                    }
+                });
             }
             ContainerState::Running | ContainerState::Paused => {
-                self.docker
-                    .restart_container(&container.id, None)
-                    .await
-                    .map_err(|err| AppError::Docker(err.to_string()))?;
+                let docker = self.docker.clone();
+                let container_id = container.id.clone();
+                let log_id = container.log_id();
+                tokio::spawn(async move {
+                    if let Err(error) = docker.restart_container(&container_id, None).await {
+                        tracing::warn!(container = %log_id, error = %error, "failed to restart container");
+                    }
+                });
             }
             ContainerState::Removing | ContainerState::Dead | ContainerState::Restarting => {
                 return Err(AppError::Conflict(format!(
@@ -246,7 +269,7 @@ impl DockerService for BollardDocker {
     }
 }
 
-fn spawn_write_probe(registry: Weak<BollardDocker>, interval: Duration) {
+fn spawn_write_probe(registry: Weak<BollardDocker>, interval: Duration, request_timeout: Duration) {
     tokio::spawn(async move {
         let mut last_logged: Option<bool> = None;
         loop {
@@ -259,7 +282,7 @@ fn spawn_write_probe(registry: Weak<BollardDocker>, interval: Duration) {
             let flag = registry_ref.controls_available.clone();
             drop(registry_ref);
 
-            match supports_write_operations(&docker).await {
+            match supports_write_operations(&docker, request_timeout).await {
                 Ok(available) => {
                     flag.store(available, Ordering::Relaxed);
                     if last_logged != Some(available) {
@@ -459,13 +482,8 @@ fn spawn_sample_observer(
                 .map(|container| {
                     let docker = docker.clone();
                     async move {
-                        match tokio::time::timeout(
-                            request_timeout,
-                            sample_container_stats(&docker, &container.id),
-                        )
-                        .await
-                        {
-                            Ok(Ok(stats)) => Some(ContainerSample {
+                        match sample_container_stats(&docker, &container.id, request_timeout).await {
+                            Ok(stats) => Some(ContainerSample {
                                 ts: collection_ts,
                                 log_group: container.log_group,
                                 cid: stats.cid,
@@ -477,12 +495,8 @@ fn spawn_sample_observer(
                                 blk_read: stats.blk_read,
                                 blk_write: stats.blk_write,
                             }),
-                            Ok(Err(err)) => {
+                            Err(err) => {
                                 tracing::warn!(container = %container.log_id(), error = %err, "failed to sample container stats");
-                                None
-                            }
-                            Err(_) => {
-                                tracing::warn!(container = %container.log_id(), "timed out sampling container stats");
                                 None
                             }
                         }

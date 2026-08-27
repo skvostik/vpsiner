@@ -142,7 +142,9 @@ These normally do not need to be changed.
 | `VPSINER_DOCKER_RETRY_SECS`          | `5`             | Delay before retrying the Docker container event observer after its stream ends or fails                         |
 | `VPSINER_DOCKER_REQUEST_CONCURRENCY` | `8`             | Maximum number of concurrent Docker inspect and stats requests                                                   |
 | `VPSINER_DOCKER_EVENTS_CHANNEL_CAPACITY` | `256`       | Maximum number of container observe events buffered before new events are dropped                              |
-| `VPSINER_DOCKER_TIMEOUT_SECS`        | `5`             | Timeout in seconds for Docker API, inspect, and stats requests                                                   |
+| `VPSINER_DOCKER_DEBOUNCE_MS`          | `1000`         | Delay used to coalesce container observation and container info refresh requests                             |
+| `VPSINER_DOCKER_TIMEOUT_SECS`        | `60`            | Internal timeout for Docker API requests                                                                          |
+| `VPSINER_DOCKER_REQUEST_TIMEOUT_SECS` | `5`           | Timeout for fetch requests                                                                                       |
 | `VPSINER_STATIC_DIR`                 | Bundled UI path | Directory from which the backend serves the frontend                                                             |
 | `RUST_LOG`                           | `info`          | Backend log filter, such as `debug` or `vpsiner=debug`                                                           |
 

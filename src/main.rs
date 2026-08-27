@@ -49,6 +49,7 @@ async fn main() {
         BollardDocker::new(
             &config.docker_host,
             config.docker_timeout_secs,
+            config.docker_request_timeout_secs,
             config.collect_interval,
             config.docker_probe_interval,
             config.docker_request_concurrency,
@@ -56,6 +57,7 @@ async fn main() {
             config.log_channel_capacity,
             config.samples_channel_capacity,
             config.docker_events_channel_capacity,
+            config.docker_debounce,
         ),
         Arc::new(SqliteMetricsStore::new(config.data_path.join("metrics.db"))),
         Arc::new(SqliteLogStore::new(config.data_path.join("logs"))),
@@ -136,7 +138,8 @@ mod tests {
     fn test_config() -> Config {
         Config {
             docker_host: "tcp://127.0.0.1:2375".into(),
-            docker_timeout_secs: 5,
+            docker_timeout_secs: 60,
+            docker_request_timeout_secs: 5,
             data_path: "/tmp/vpsiner-test".into(),
             static_dir: None,
             port: 3000,
@@ -147,6 +150,7 @@ mod tests {
             docker_probe_interval: std::time::Duration::from_secs(60),
             docker_retry_delay: std::time::Duration::from_secs(5),
             docker_request_concurrency: 8,
+            docker_debounce: std::time::Duration::from_millis(1_000),
             log_channel_capacity: 10_000,
             samples_channel_capacity: 32,
             log_flush_lines: 100,

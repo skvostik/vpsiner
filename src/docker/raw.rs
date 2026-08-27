@@ -15,11 +15,14 @@ use crate::{
 
 use super::mapping::{map_container_stats, map_container_summary};
 
-pub(super) async fn list_running_containers(docker: &Docker) -> AppResult<Vec<ObservedContainer>> {
+pub(super) async fn list_running_containers(
+    docker: &Docker,
+    request_timeout: std::time::Duration,
+) -> AppResult<Vec<ObservedContainer>> {
     let options = ListContainersOptionsBuilder::new().all(false).build();
-    let containers = docker
-        .list_containers(Some(options))
+    let containers = tokio::time::timeout(request_timeout, docker.list_containers(Some(options)))
         .await
+        .map_err(|err| AppError::Docker(err.to_string()))?
         .map_err(|err| AppError::Docker(err.to_string()))?;
 
     let observed_containers = containers
@@ -42,9 +45,9 @@ pub(super) async fn list_all_containers_details(
     request_timeout: std::time::Duration,
 ) -> AppResult<Vec<ContainerSummary>> {
     let options = ListContainersOptionsBuilder::new().all(true).build();
-    let containers = docker
-        .list_containers(Some(options))
+    let containers = tokio::time::timeout(request_timeout, docker.list_containers(Some(options)))
         .await
+        .map_err(|err| AppError::Docker(err.to_string()))?
         .map_err(|err| AppError::Docker(err.to_string()))?;
 
     let summaries = futures_util::stream::iter(containers)
@@ -95,17 +98,21 @@ async fn inspect_started_at(
         .map(|value| value.unix_timestamp_nanos().div_euclid(1_000_000) as i64)
 }
 
-pub(super) async fn supports_write_operations(docker: &Docker) -> AppResult<bool> {
+pub(super) async fn supports_write_operations(
+    docker: &Docker,
+    request_timeout: std::time::Duration,
+) -> AppResult<bool> {
     const PROBE_ID: &str = "vpsiner-write-probe-0000000000000000000000000000000000000000";
-    match docker.start_container(PROBE_ID, None).await {
-        Ok(_) => Ok(true),
-        Err(bollard::errors::Error::DockerResponseServerError {
+    match tokio::time::timeout(request_timeout, docker.start_container(PROBE_ID, None)).await {
+        Err(error) => Err(AppError::Docker(error.to_string())),
+        Ok(Ok(_)) => Ok(true),
+        Ok(Err(bollard::errors::Error::DockerResponseServerError {
             status_code: 404, ..
-        }) => Ok(true),
-        Err(bollard::errors::Error::DockerResponseServerError {
+        })) => Ok(true),
+        Ok(Err(bollard::errors::Error::DockerResponseServerError {
             status_code,
             message: server_message,
-        }) => {
+        })) => {
             tracing::info!(
                 status_code,
                 server_message,
@@ -113,21 +120,26 @@ pub(super) async fn supports_write_operations(docker: &Docker) -> AppResult<bool
             );
             Ok(false)
         }
-        Err(err) => Err(AppError::Docker(err.to_string())),
+        Ok(Err(err)) => Err(AppError::Docker(err.to_string())),
     }
 }
 
-pub(super) async fn sample_container_stats(docker: &Docker, id: &str) -> AppResult<ContainerStats> {
+pub(super) async fn sample_container_stats(
+    docker: &Docker,
+    id: &str,
+    request_timeout: std::time::Duration,
+) -> AppResult<ContainerStats> {
     let options = StatsOptionsBuilder::default()
         .stream(false)
         .one_shot(false)
         .build();
     let mut stream = docker.stats(id, Some(options));
-    match stream.next().await {
-        Some(Ok(response)) => Ok(map_container_stats(response, id)),
-        Some(Err(err)) => Err(AppError::Docker(err.to_string())),
-        None => Err(AppError::Docker(
+    match tokio::time::timeout(request_timeout, stream.next()).await {
+        Err(error) => Err(AppError::Docker(error.to_string())),
+        Ok(None) => Err(AppError::Docker(
             "container stats stream ended without a sample".into(),
         )),
+        Ok(Some(Ok(response))) => Ok(map_container_stats(response, id)),
+        Ok(Some(Err(err))) => Err(AppError::Docker(err.to_string())),
     }
 }
