@@ -134,8 +134,7 @@ These normally do not need to be changed.
 | `VPSINER_DATA_PATH`                  | `/data`         | Directory containing metrics and log databases                                                                   |
 | `VPSINER_PORT`                       | `3000`          | HTTP listen port inside the container                                                                            |
 | `VPSINER_COLLECT_INTERVAL_SECS`      | `10`            | Host and container metrics collection interval                                                                   |
-| `VPSINER_LOG_FLUSH_INTERVAL_MS`      | `500`           | Maximum delay before buffered logs are written                                                                   |
-| `VPSINER_LOG_FLUSH_LINES`            | `100`           | Flush buffered logs after this many lines                                                                        |
+| `VPSINER_LOG_FLUSH_DEBOUNCE_MS`      | `500`           | Delay used to coalesce buffered log lines per log group before writing them to storage           |
 | `VPSINER_LOG_CHANNEL_CAPACITY`      | `10000`         | Maximum number of log lines buffered before backpressure                                                         |
 | `VPSINER_SAMPLES_CHANNEL_CAPACITY`  | `32`            | Maximum number of container sample batches buffered before backpressure                                          |
 | `VPSINER_DOCKER_PROBE_INTERVAL_SECS` | `60`            | Interval for Docker write-capability probing, log observer fallback reconciliation, and registry refresh workers |

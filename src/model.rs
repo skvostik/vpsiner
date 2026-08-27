@@ -156,6 +156,13 @@ pub struct LogLine {
     pub line: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LogCursor {
+    pub ts: i64,
+    pub week: String,
+    pub id: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogPage {
     pub items: Vec<LogLine>,
@@ -163,12 +170,6 @@ pub struct LogPage {
     pub newer_cursor: Option<String>,
     pub has_older: bool,
     pub has_newer: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LogGroupSummary {
-    pub log_group: String,
-    pub last_received: Option<TimestampMs>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

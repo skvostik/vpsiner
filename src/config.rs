@@ -38,7 +38,7 @@ pub struct Config {
     pub port: u16,
     pub retention_weeks: u32,
     pub collect_interval: Duration,
-    pub log_flush_interval: Duration,
+    pub log_flush_debounce: Duration,
     pub docker_controls_mode: DockerControlsMode,
     pub docker_probe_interval: Duration,
     pub docker_retry_delay: Duration,
@@ -46,7 +46,6 @@ pub struct Config {
     pub docker_debounce: Duration,
     pub log_channel_capacity: usize,
     pub samples_channel_capacity: usize,
-    pub log_flush_lines: usize,
     pub docker_events_channel_capacity: usize,
 }
 
@@ -61,8 +60,8 @@ impl Config {
             port: parse_or("VPSINER_PORT", 3000),
             retention_weeks: parse_or("VPSINER_RETENTION_WEEKS", 4),
             collect_interval: Duration::from_secs(parse_or("VPSINER_COLLECT_INTERVAL_SECS", 10)),
-            log_flush_interval: Duration::from_millis(parse_or(
-                "VPSINER_LOG_FLUSH_INTERVAL_MS",
+            log_flush_debounce: Duration::from_millis(parse_or(
+                "VPSINER_LOG_FLUSH_DEBOUNCE_MS",
                 500,
             )),
             docker_controls_mode: env::var("VPSINER_DOCKER_CONTROLS")
@@ -78,7 +77,6 @@ impl Config {
             docker_debounce: Duration::from_millis(parse_or("VPSINER_DOCKER_DEBOUNCE_MS", 1_000)),
             log_channel_capacity: parse_or("VPSINER_LOG_CHANNEL_CAPACITY", 10_000),
             samples_channel_capacity: parse_or("VPSINER_SAMPLES_CHANNEL_CAPACITY", 32),
-            log_flush_lines: parse_or("VPSINER_LOG_FLUSH_LINES", 100),
             docker_events_channel_capacity: parse_or("VPSINER_DOCKER_EVENTS_CHANNEL_CAPACITY", 256),
         }
     }

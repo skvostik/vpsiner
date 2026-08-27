@@ -17,6 +17,7 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use crate::docker::container_registry::{ContainerObserveAction, ObservedContainer};
 use crate::docker::mapping::receiver_stream;
 use crate::error::{AppError, AppResult};
+use crate::logs::metadata::LogMetadataStore;
 use crate::model::{
     ContainerCommandResult, ContainerSample, ContainerState, ContainerSummary, LogLine, LogStream,
 };
@@ -57,9 +58,11 @@ pub struct BollardDocker {
     samples_tx: mpsc::Sender<Vec<ContainerSample>>,
     logs_rx: Mutex<Option<mpsc::Receiver<LogLine>>>,
     samples_rx: Mutex<Option<mpsc::Receiver<Vec<ContainerSample>>>>,
+    metadata: Arc<dyn LogMetadataStore>,
 }
 
 impl BollardDocker {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         docker_host: impl Into<String>,
         timeout_secs: u64,
@@ -72,6 +75,7 @@ impl BollardDocker {
         samples_channel_capacity: usize,
         docker_events_channel_capacity: usize,
         docker_debounce: Duration,
+        metadata: Arc<dyn LogMetadataStore>,
     ) -> Arc<Self> {
         let host = docker_host.into();
         let docker = if host.starts_with("unix://") {
@@ -106,6 +110,7 @@ impl BollardDocker {
             samples_tx,
             logs_rx: Mutex::new(Some(logs_rx)),
             samples_rx: Mutex::new(Some(samples_rx)),
+            metadata,
         });
 
         spawn_write_probe(
@@ -348,6 +353,7 @@ fn spawn_log_observer(registry: Weak<BollardDocker>, interval: Duration) {
 
             let docker = registry_ref.docker.clone();
             let sender = registry_ref.logs_tx.clone();
+            let metadata = registry_ref.metadata.clone();
             let running = registry_ref.container_registry.observed_containers();
             drop(registry_ref);
 
@@ -378,6 +384,7 @@ fn spawn_log_observer(registry: Weak<BollardDocker>, interval: Duration) {
                                 docker.clone(),
                                 container,
                                 sender.clone(),
+                                metadata.clone(),
                             ),
                         },
                     );
@@ -392,16 +399,31 @@ struct LogTask {
     handle: JoinHandle<()>,
 }
 
+fn now_secs() -> i32 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i32)
+        .unwrap_or_default()
+}
+
 fn spawn_container_log_task(
     docker: Docker,
     container: ObservedContainer,
     sender: mpsc::Sender<LogLine>,
+    metadata: Arc<dyn LogMetadataStore>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let since_secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_secs() as i32)
-            .unwrap_or_default();
+        let since_secs = match metadata
+            .checkpoint(&container.log_group, &container.id)
+            .await
+        {
+            Ok(Some(checkpoint)) => checkpoint.ts.div_euclid(1_000) as i32,
+            Ok(None) => now_secs(),
+            Err(err) => {
+                tracing::warn!(container = %container.name, error = %err, "failed to read log checkpoint; falling back to now");
+                now_secs()
+            }
+        };
         let options = LogsOptionsBuilder::default()
             .follow(true)
             .stdout(true)

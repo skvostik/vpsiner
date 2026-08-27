@@ -16,6 +16,7 @@ use tower_http::services::{ServeDir, ServeFile};
 
 use crate::config::Config;
 use crate::docker::BollardDocker;
+use crate::logs::metadata::SqliteLogMetadataStore;
 use crate::logs::store::SqliteLogStore;
 use crate::metrics::host::SysinfoHost;
 use crate::metrics::store::SqliteMetricsStore;
@@ -44,6 +45,9 @@ async fn main() {
     }
 
     // Composition root: concrete implementations are chosen here and nowhere else.
+    let metadata = Arc::new(SqliteLogMetadataStore::new(
+        config.data_path.join("metadata.db"),
+    ));
     let state = AppState::new(
         config.clone(),
         BollardDocker::new(
@@ -58,9 +62,11 @@ async fn main() {
             config.samples_channel_capacity,
             config.docker_events_channel_capacity,
             config.docker_debounce,
+            metadata.clone(),
         ),
         Arc::new(SqliteMetricsStore::new(config.data_path.join("metrics.db"))),
         Arc::new(SqliteLogStore::new(config.data_path.join("logs"))),
+        metadata,
         Arc::new(SysinfoHost::default()),
     );
 
@@ -89,9 +95,8 @@ async fn main() {
     tokio::spawn(logs::run_ingestion(
         state.docker.clone(),
         state.logs.clone(),
-        config.log_flush_interval,
-        config.log_flush_lines,
-        config.retention_weeks,
+        state.metadata.clone(),
+        config.log_flush_debounce,
     ));
 
     let app = build_router(state, &config);
@@ -130,6 +135,7 @@ mod tests {
 
     use crate::docker::MockDockerService;
     use crate::error::AppError;
+    use crate::logs::metadata::MockLogMetadataStore;
     use crate::logs::store::MockLogStore;
     use crate::metrics::host::MockHostMetricsSource;
     use crate::metrics::store::MockMetricsStore;
@@ -145,7 +151,7 @@ mod tests {
             port: 3000,
             retention_weeks: 12,
             collect_interval: std::time::Duration::from_secs(10),
-            log_flush_interval: std::time::Duration::from_millis(500),
+            log_flush_debounce: std::time::Duration::from_millis(500),
             docker_controls_mode: crate::config::DockerControlsMode::Disabled,
             docker_probe_interval: std::time::Duration::from_secs(60),
             docker_retry_delay: std::time::Duration::from_secs(5),
@@ -153,7 +159,6 @@ mod tests {
             docker_debounce: std::time::Duration::from_millis(1_000),
             log_channel_capacity: 10_000,
             samples_channel_capacity: 32,
-            log_flush_lines: 100,
             docker_events_channel_capacity: 256,
         }
     }
@@ -165,6 +170,7 @@ mod tests {
             Arc::new(docker),
             Arc::new(MockMetricsStore::new()),
             Arc::new(MockLogStore::new()),
+            Arc::new(MockLogMetadataStore::new()),
             Arc::new(MockHostMetricsSource::new()),
         );
         (state, config)
