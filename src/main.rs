@@ -30,6 +30,11 @@ async fn main() {
         .with_target(false)
         .init();
 
+    tracing::info!(
+        num_workers = tokio::runtime::Handle::current().metrics().num_workers(),
+        "tokio runtime worker-thread allocation"
+    );
+
     let config = Config::from_env();
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
 
