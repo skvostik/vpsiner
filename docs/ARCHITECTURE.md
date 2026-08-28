@@ -8,6 +8,8 @@
 
 ## Components
 
+This diagram shows the high-level backend wiring. It focuses on which components communicate with each other and where data is read, buffered, persisted, and exposed through API endpoints.
+
 ```mermaid
 flowchart TB
     subgraph Left[Workers]
@@ -82,6 +84,8 @@ This is the clean backend wiring: the API reads from Docker and the stores, the 
 
 ## DockerService
 
+This section describes the internal orchestration inside DockerService. Its main responsibility is to bridge Docker runtime signals to internal streams and background workers used by metrics and log pipelines.
+
 ```mermaid
 flowchart TB
     Docker[DockerService]
@@ -124,6 +128,8 @@ flowchart TB
 
 ## ContainerRegistry
 
+This section describes how ContainerRegistry keeps container state current. It combines periodic refresh and Docker event triggers, then exposes both cached views and observe events for DockerService workers.
+
 ```mermaid
 flowchart TB
     subgraph Inputs[Docker signals]
@@ -162,6 +168,8 @@ flowchart TB
 
 ## LogBuffer
 
+This section explains LogBuffer's two primary responsibilities. First, it debounces and batches log writes per group so write load stays stable. Second, it uses checkpoint metadata to drive deduplication and safe backfilling behavior across restarts.
+
 ```mermaid
 flowchart TB
     In[log lines from ingestion]
@@ -192,8 +200,9 @@ flowchart TB
 ```
 
 - One flush worker exists per log group, so bursts in one group do not block other groups.
-- Startup preloads checkpoints from metadata so dedup survives restarts.
+- Startup preloads checkpoints from metadata so dedup and backfill resume logic survive restarts.
 - Dedup drops strictly older lines and exact boundary duplicates per container.
+- Checkpoint writes are the mechanism that enables safe backfilling without duplicating already persisted lines.
 - Flush is debounced and coalesces repeated flush requests before writing.
 
 
