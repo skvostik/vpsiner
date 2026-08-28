@@ -28,7 +28,6 @@ use self::raw::{sample_container_stats, supports_write_operations};
 use self::container_registry::{BollardContainerRegistry, ContainerRegistry};
 
 /// Everything that talks to the Docker socket / proxy goes through this trait.
-#[allow(dead_code)] // remaining methods are consumed by the collectors added in later steps
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait DockerService: Send + Sync + 'static {

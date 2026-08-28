@@ -27,7 +27,7 @@ impl FromStr for DockerControlsMode {
     }
 }
 
-#[allow(dead_code)] // interval settings are read by the collectors added in later steps
+// interval settings are read by the collectors added in later steps
 #[derive(Debug, Clone)]
 pub struct Config {
     pub docker_host: String,

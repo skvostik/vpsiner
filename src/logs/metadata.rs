@@ -14,7 +14,6 @@ pub struct LogCheckpoint {
 }
 
 /// Persistence for `metadata.db` — a per-container checkpoint of the last log line received.
-#[allow(dead_code)] // consumed by ingestion and the docker log task added in later steps
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait LogMetadataStore: Send + Sync + 'static {

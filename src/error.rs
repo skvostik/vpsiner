@@ -5,7 +5,6 @@ use axum::{
 };
 use serde::Serialize;
 
-#[allow(dead_code)] // not every variant has a producer yet
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     #[error("docker error: {0}")]

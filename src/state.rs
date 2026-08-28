@@ -8,7 +8,6 @@ use crate::metrics::host::HostMetricsSource;
 use crate::metrics::store::MetricsStore;
 
 /// Injection point for every external dependency. Cloning is cheap — only `Arc`s are copied.
-#[allow(dead_code)] // not every dependency has a consumer yet
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<Config>,

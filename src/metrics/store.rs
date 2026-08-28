@@ -11,7 +11,6 @@ use crate::model::{
 };
 
 /// Persistence for `metrics.db`.
-#[allow(dead_code)] // consumed by the metrics collector and API added in later steps
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait MetricsStore: Send + Sync + 'static {

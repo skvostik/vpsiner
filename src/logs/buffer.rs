@@ -153,7 +153,6 @@ impl LogBuffer {
     }
 
     /// Number of lines currently buffered for `log_group` — mainly for observability.
-    #[allow(dead_code)] // no consumer yet
     pub fn len(&self, log_group: &str) -> usize {
         self.inner
             .groups
@@ -202,8 +201,24 @@ impl Inner {
             (lines, checkpoints)
         };
 
+        let retry_lines = lines.clone();
         if let Err(err) = self.logs.append(log_group, lines).await {
-            tracing::warn!(log_group = %log_group, error = %err, "failed to persist container logs");
+            tracing::warn!(log_group = %log_group, error = %err, "failed to persist container logs; scheduling retry");
+
+            // Preserve failed lines and keep their relative order ahead of any newer lines.
+            {
+                let mut guard = state.lock().unwrap();
+                if !guard.lines.is_empty() {
+                    let mut buffered = std::mem::take(&mut guard.lines);
+                    let mut retry = retry_lines;
+                    retry.append(&mut buffered);
+                    guard.lines = retry;
+                } else {
+                    guard.lines = retry_lines;
+                }
+            }
+
+            self.request_group_flush(log_group);
             return; // don't advance checkpoints for data that didn't land
         }
         for (cid, ts, line_hash) in checkpoints {
@@ -214,6 +229,18 @@ impl Inner {
             {
                 tracing::error!(log_group = %log_group, cid = %cid, error = %err, "failed to persist last-received checkpoint");
             }
+        }
+    }
+
+    fn request_group_flush(&self, log_group: &str) {
+        let sender = self
+            .groups
+            .lock()
+            .unwrap()
+            .get(log_group)
+            .and_then(|handle| handle.flush_tx.clone());
+        if let Some(flush_tx) = sender {
+            let _ = flush_tx.try_send(());
         }
     }
 }

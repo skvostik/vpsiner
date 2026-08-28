@@ -13,7 +13,6 @@ use super::{
 use crate::error::{AppError, AppResult};
 use crate::model::{LogCursor, LogFilter, LogLine, LogPage};
 
-#[allow(dead_code)]
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait LogStore: Send + Sync + 'static {

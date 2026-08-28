@@ -7,7 +7,6 @@ use crate::error::{AppError, AppResult};
 use crate::model::HostSample;
 
 /// Host-level metrics source (sysinfo in production).
-#[allow(dead_code)] // consumed by the metrics collector added in a later step
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait HostMetricsSource: Send + Sync + 'static {

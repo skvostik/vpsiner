@@ -92,7 +92,6 @@ pub struct ContainerSample {
     pub blk_write: u64,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContainerGroupSample {
     pub ts: TimestampMs,
@@ -106,14 +105,12 @@ pub struct ContainerGroupSample {
     pub blk_write: u64,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContainerGroupMetrics {
     pub sum: Vec<ContainerGroupSample>,
     pub containers: HashMap<String, Vec<ContainerSample>>,
 }
 
-#[allow(dead_code)]
 pub type ContainerMetricsByLogGroup = HashMap<String, Vec<ContainerGroupSample>>;
 
 #[derive(Debug, Clone, PartialEq)]
