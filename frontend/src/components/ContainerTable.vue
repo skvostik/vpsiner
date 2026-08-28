@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { NButton, NCard, NEmpty, NSpin, NTag } from 'naive-ui'
-import { Logs } from '@lucide/vue'
+import { computed, ref } from 'vue'
+import { NButton, NCard, NEmpty, NSpin, NTag, NTooltip, useMessage } from 'naive-ui'
+import { Play, RotateCcw, Square } from '@lucide/vue'
 
+import { api } from '../api'
+import { dockerControlsAvailable } from '../composables/useBackendHealth'
 import { formatBytes, formatUptime } from '../format'
 import type { ContainerRow, ContainerState } from '../types'
 
@@ -9,6 +12,37 @@ defineProps<{
   rows: ContainerRow[]
   loading: boolean
 }>()
+
+const emit = defineEmits<{ actionComplete: [] }>()
+const message = useMessage()
+const actionKey = ref('')
+
+const canControl = computed(() => dockerControlsAvailable.value)
+
+function supportsStart(state: ContainerState) {
+  return !['running', 'restarting'].includes(state)
+}
+
+function supportsStop(state: ContainerState) {
+  return ['running', 'paused', 'restarting'].includes(state)
+}
+
+function supportsRestart(state: ContainerState) {
+  return ['running', 'paused'].includes(state)
+}
+
+async function runAction(row: ContainerRow, action: 'start' | 'stop' | 'restart') {
+  actionKey.value = `${row.id}:${action}`
+  try {
+    await api.containers.action(row.id, action)
+    emit('actionComplete')
+  } catch (actionError) {
+    const text = actionError instanceof Error ? actionError.message : 'Container action failed'
+    message.error(text)
+  } finally {
+    actionKey.value = ''
+  }
+}
 
 function stateType(state: ContainerState) {
   if (state === 'running') return 'success'
@@ -24,24 +58,15 @@ function stateType(state: ContainerState) {
       v-for="row in rows"
       :key="row.id"
       :bordered="false"
-      class="w-full min-w-0 cursor-pointer overflow-hidden border border-neutral-200 bg-white transition-colors hover:border-cyan-400 dark:border-neutral-800 dark:bg-neutral-900 dark:hover:border-cyan-700"
-      role="link"
-      tabindex="0"
-      @click="
-        $router.push({
-          name: 'container-detail',
-          params: { id: row.id },
-        })
-      "
-      @keydown.enter="
-        $router.push({
-          name: 'container-detail',
-          params: { id: row.id },
-        })
-      "
+      class="relative w-full min-w-0 overflow-hidden border border-neutral-200 bg-white transition-colors hover:border-cyan-400 dark:border-neutral-800 dark:bg-neutral-900 dark:hover:border-cyan-700"
     >
+      <router-link
+        :to="{ name: 'container-detail', params: { id: row.id } }"
+        :aria-label="`Open details for ${row.name}`"
+        class="absolute inset-0 z-10"
+      />
       <article
-        class="w-full min-w-0 overflow-hidden lg:grid lg:grid-cols-[minmax(12rem,1fr)_minmax(12rem,16rem)_minmax(16rem,1fr)_auto] lg:items-center lg:gap-4"
+        class="relative pointer-events-none w-full min-w-0 overflow-hidden lg:grid lg:grid-cols-[minmax(12rem,1fr)_minmax(12rem,16rem)_minmax(16rem,1fr)_auto] lg:items-center lg:gap-4"
       >
         <div class="min-w-0 overflow-hidden">
           <div class="flex min-w-0 items-center justify-between gap-3">
@@ -109,22 +134,54 @@ function stateType(state: ContainerState) {
           </div>
         </dl>
 
-        <div class="mt-4 flex justify-end lg:mt-0 lg:justify-self-end">
-          <router-link
-            :to="{ name: 'log-viewer', params: { logGroup: row.log_group } }"
-            custom
-            v-slot="{ navigate }"
-          >
-            <n-button
-              secondary
-              size="small"
-              aria-label="Open container logs"
-              @click.stop="navigate"
-            >
-              <template #icon><Logs :size="15" /></template>
-              Logs
-            </n-button>
-          </router-link>
+        <div
+          v-if="canControl"
+          class="relative z-20 mt-4 flex justify-end gap-1 pointer-events-auto lg:mt-0 lg:justify-self-end"
+        >
+          <n-tooltip v-if="supportsStart(row.state)">
+            <template #trigger>
+              <n-button
+                circle
+                tertiary
+                type="primary"
+                :loading="actionKey === `${row.id}:start`"
+                aria-label="Start container"
+                @click="runAction(row, 'start')"
+              >
+                <template #icon><Play :size="15" /></template>
+              </n-button>
+            </template>
+            Start container
+          </n-tooltip>
+          <n-tooltip v-if="supportsStop(row.state)">
+            <template #trigger>
+              <n-button
+                circle
+                tertiary
+                type="error"
+                :loading="actionKey === `${row.id}:stop`"
+                aria-label="Stop container"
+                @click="runAction(row, 'stop')"
+              >
+                <template #icon><Square :size="14" /></template>
+              </n-button>
+            </template>
+            Stop container
+          </n-tooltip>
+          <n-tooltip v-if="supportsRestart(row.state)">
+            <template #trigger>
+              <n-button
+                circle
+                tertiary
+                :loading="actionKey === `${row.id}:restart`"
+                aria-label="Restart container"
+                @click="runAction(row, 'restart')"
+              >
+                <template #icon><RotateCcw :size="15" /></template>
+              </n-button>
+            </template>
+            Restart container
+          </n-tooltip>
         </div>
       </article>
     </n-card>

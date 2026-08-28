@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, h } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { NBadge, NMenu, type MenuOption } from 'naive-ui'
+import { computed } from 'vue'
+import { useRoute } from 'vue-router'
+import { NBadge } from 'naive-ui'
 import { Boxes, Gauge, Logs } from '@lucide/vue'
 
 import { useContainers } from '../composables/useContainers'
@@ -11,32 +11,18 @@ const docsUrl = 'https://github.com/skvostik/vpsiner'
 
 const emit = defineEmits<{ navigate: [] }>()
 const route = useRoute()
-const router = useRouter()
 const { runningCount } = useContainers()
 
-const menuOptions = computed<MenuOption[]>(() => [
-  { key: 'host', label: 'Host Metrics', icon: () => h(Gauge, { size: 18 }) },
-  {
-    key: 'containers',
-    label: () =>
-      h('span', { class: 'flex w-full items-center justify-between gap-2' }, [
-        'Containers',
-        h(NBadge, { value: runningCount.value, type: 'success', showZero: false }),
-      ]),
-    icon: () => h(Boxes, { size: 18 }),
-  },
-  { key: 'logs', label: 'Explore Logs', icon: () => h(Logs, { size: 18 }) },
+const navItems = computed(() => [
+  { key: 'host', label: 'Host Metrics', icon: Gauge },
+  { key: 'containers', label: 'Containers', icon: Boxes },
+  { key: 'logs', label: 'Explore Logs', icon: Logs },
 ])
 
 const activeKey = () => {
   if (route.name === 'containers' || route.name === 'container-detail') return 'containers'
   if (route.name === 'logs' || route.name === 'log-viewer') return 'logs'
   return 'host'
-}
-
-function handleSelect(key: string) {
-  router.push({ name: key })
-  emit('navigate')
 }
 </script>
 
@@ -53,12 +39,31 @@ function handleSelect(key: string) {
         >VPSiner</span
       >
     </div>
-    <n-menu
-      class="flex-1"
-      :value="activeKey()"
-      :options="menuOptions"
-      @update:value="handleSelect"
-    />
+    <nav class="flex-1 px-2">
+      <router-link
+        v-for="item in navItems"
+        :key="item.key"
+        :to="{ name: item.key }"
+        class="mb-1 flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors"
+        :class="
+          activeKey() === item.key
+            ? 'bg-cyan-100 text-cyan-900 dark:bg-cyan-900/30 dark:text-cyan-200'
+            : 'text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-800'
+        "
+        @click="emit('navigate')"
+      >
+        <component :is="item.icon" :size="18" />
+        <span class="flex min-w-0 flex-1 items-center justify-between gap-2">
+          <span class="truncate">{{ item.label }}</span>
+          <n-badge
+            v-if="item.key === 'containers'"
+            :value="runningCount"
+            type="success"
+            :show-zero="false"
+          />
+        </span>
+      </router-link>
+    </nav>
     <div
       class="px-4 pb-3 pt-10 text-xs text-neutral-500 dark:border-neutral-700 dark:text-neutral-400"
     >

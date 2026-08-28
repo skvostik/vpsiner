@@ -19,7 +19,7 @@ import type { ContainerMetricsByLogGroup, ContainerOverviewMetrics, ContainerRow
 
 usePageTitle('Containers')
 
-const { containers, loading } = useContainers()
+const { containers, loading, reload } = useContainers()
 const metricsHistory = ref<ContainerMetricsByLogGroup>({})
 const metricsPollIntervalMs = computed(() => computePollIntervalMs(metricsSampleIntervalMs.value))
 const staleAfterMs = computed(() =>
@@ -110,6 +110,10 @@ onBeforeUnmount(() => {
 watch(showOnlyRunning, (value) =>
   window.localStorage.setItem(showOnlyRunningStorageKey, String(value))
 )
+
+async function handleActionComplete() {
+  await Promise.all([reload(), loadMetricsHistory()])
+}
 </script>
 
 <template>
@@ -125,7 +129,11 @@ watch(showOnlyRunning, (value) =>
     <n-input v-model:value="containerSearch" clearable placeholder="Search by name or image">
       <template #prefix><Search :size="16" /></template>
     </n-input>
-    <ContainerTable :rows="visibleContainers" :loading="loading" />
+    <ContainerTable
+      :rows="visibleContainers"
+      :loading="loading"
+      @action-complete="handleActionComplete"
+    />
     <LivePollIndicator label="Live container status" />
   </div>
 </template>

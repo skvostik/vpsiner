@@ -75,5 +75,6 @@ export function useContainers() {
     runningCount,
     loading,
     error,
+    reload: load,
   }
 }
