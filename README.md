@@ -124,7 +124,7 @@ defaults work for the quick-start command above.
 | `VPSINER_DOCKER_HOST`     | `unix:///var/run/docker.sock` | Docker socket or socket-proxy endpoint, for example `http://docker-proxy:2375` |
 | `VPSINER_RETENTION_WEEKS` | `4`                           | Number of weeks of metrics and logs to retain                                  |
 | `VPSINER_DOCKER_CONTROLS` | `auto`                        | Container controls mode: `auto`, `enabled`, or `disabled`                      |
-| `TOKIO_WORKER_THREADS`    | unset                         | Overrides Tokio runtime worker-thread count; by default Tokio uses available CPU parallelism |
+| `VPSINER_WORKER_THREADS`  | unset                         | Overrides Tokio runtime worker-thread count; by default Tokio uses available CPU parallelism |
 
 ### Advanced settings
 

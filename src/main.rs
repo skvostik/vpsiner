@@ -22,8 +22,35 @@ use crate::metrics::host::SysinfoHost;
 use crate::metrics::store::SqliteMetricsStore;
 use crate::state::AppState;
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    let mut runtime = tokio::runtime::Builder::new_multi_thread();
+    runtime.enable_all();
+
+    if let Some(worker_threads) = configured_worker_threads() {
+        runtime.worker_threads(worker_threads);
+    }
+
+    runtime
+        .build()
+        .expect("failed to build Tokio runtime")
+        .block_on(async_main());
+}
+
+fn configured_worker_threads() -> Option<usize> {
+    let value = std::env::var("VPSINER_WORKER_THREADS").ok()?;
+    let parsed = value.parse::<usize>().unwrap_or_else(|_| {
+        panic!("VPSINER_WORKER_THREADS must be a positive integer, got: {value}")
+    });
+
+    assert!(
+        parsed > 0,
+        "VPSINER_WORKER_THREADS must be a positive integer, got: {value}"
+    );
+
+    Some(parsed)
+}
+
+async fn async_main() {
     let log_filter = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
     tracing_subscriber::fmt()
         .with_env_filter(log_filter)
