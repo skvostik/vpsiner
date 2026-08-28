@@ -54,18 +54,24 @@ impl Config {
     pub fn from_env() -> Self {
         Self {
             docker_host: env_or("VPSINER_DOCKER_HOST", "unix:///var/run/docker.sock"),
-            docker_timeout_secs: parse_or("VPSINER_DOCKER_TIMEOUT_SECS", 60),
-            docker_request_timeout_secs: parse_or("VPSINER_DOCKER_REQUEST_TIMEOUT_SECS", 5),
+            docker_timeout_secs: parse_positive_u64_or("VPSINER_DOCKER_TIMEOUT_SECS", 60),
+            docker_request_timeout_secs: parse_positive_u64_or(
+                "VPSINER_DOCKER_REQUEST_TIMEOUT_SECS",
+                5,
+            ),
             data_path: PathBuf::from(env_or("VPSINER_DATA_PATH", "data")),
             static_dir: env::var_os("VPSINER_STATIC_DIR").map(PathBuf::from),
-            port: parse_or("VPSINER_PORT", 3000),
+            port: parse_positive_u16_or("VPSINER_PORT", 3000),
             retention_weeks: parse_or("VPSINER_RETENTION_WEEKS", 4),
-            collect_interval: Duration::from_secs(parse_or("VPSINER_COLLECT_INTERVAL_SECS", 10)),
+            collect_interval: Duration::from_secs(parse_positive_u64_or(
+                "VPSINER_COLLECT_INTERVAL_SECS",
+                10,
+            )),
             log_flush_debounce: Duration::from_millis(parse_or(
                 "VPSINER_LOG_FLUSH_DEBOUNCE_MS",
                 500,
             )),
-            log_flush_keep_alive: Duration::from_secs(parse_or(
+            log_flush_keep_alive: Duration::from_secs(parse_positive_u64_or(
                 "VPSINER_LOG_FLUSH_KEEP_ALIVE_SECS",
                 60,
             )),
@@ -73,16 +79,28 @@ impl Config {
                 .ok()
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(DockerControlsMode::Auto),
-            docker_probe_interval: Duration::from_secs(parse_or(
+            docker_probe_interval: Duration::from_secs(parse_positive_u64_or(
                 "VPSINER_DOCKER_PROBE_INTERVAL_SECS",
                 60,
             )),
-            docker_retry_delay: Duration::from_secs(parse_or("VPSINER_DOCKER_RETRY_SECS", 5)),
-            docker_request_concurrency: parse_or("VPSINER_DOCKER_REQUEST_CONCURRENCY", 8),
+            docker_retry_delay: Duration::from_secs(parse_positive_u64_or(
+                "VPSINER_DOCKER_RETRY_SECS",
+                5,
+            )),
+            docker_request_concurrency: parse_positive_usize_or(
+                "VPSINER_DOCKER_REQUEST_CONCURRENCY",
+                8,
+            ),
             docker_debounce: Duration::from_millis(parse_or("VPSINER_DOCKER_DEBOUNCE_MS", 1_000)),
-            log_channel_capacity: parse_or("VPSINER_LOG_CHANNEL_CAPACITY", 10_000),
-            samples_channel_capacity: parse_or("VPSINER_SAMPLES_CHANNEL_CAPACITY", 32),
-            docker_events_channel_capacity: parse_or("VPSINER_DOCKER_EVENTS_CHANNEL_CAPACITY", 256),
+            log_channel_capacity: parse_positive_usize_or("VPSINER_LOG_CHANNEL_CAPACITY", 10_000),
+            samples_channel_capacity: parse_positive_usize_or(
+                "VPSINER_SAMPLES_CHANNEL_CAPACITY",
+                32,
+            ),
+            docker_events_channel_capacity: parse_positive_usize_or(
+                "VPSINER_DOCKER_EVENTS_CHANNEL_CAPACITY",
+                256,
+            ),
         }
     }
 }
@@ -91,9 +109,42 @@ fn env_or(key: &str, default: &str) -> String {
     env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
-fn parse_or<T: std::str::FromStr>(key: &str, default: T) -> T {
-    env::var(key)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(default)
+fn parse_or<T>(key: &str, default: T) -> T
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    match env::var(key) {
+        Ok(value) => value
+            .parse()
+            .unwrap_or_else(|err| panic!("{key} must be a valid value, got '{value}': {err}")),
+        Err(_) => default,
+    }
+}
+
+fn parse_positive_u64_or(key: &str, default: u64) -> u64 {
+    let parsed = parse_or(key, default);
+    assert!(
+        parsed > 0,
+        "{key} must be a positive integer, got: {parsed}"
+    );
+    parsed
+}
+
+fn parse_positive_usize_or(key: &str, default: usize) -> usize {
+    let parsed = parse_or(key, default);
+    assert!(
+        parsed > 0,
+        "{key} must be a positive integer, got: {parsed}"
+    );
+    parsed
+}
+
+fn parse_positive_u16_or(key: &str, default: u16) -> u16 {
+    let parsed = parse_or(key, default);
+    assert!(
+        parsed > 0,
+        "{key} must be a positive integer, got: {parsed}"
+    );
+    parsed
 }
