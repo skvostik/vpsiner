@@ -3,6 +3,7 @@
 - [Architecture overview](#architecture-overview)
   - [Components](#components)
   - [DockerService](#dockerservice)
+  - [ContainerRegistry](#containerregistry)
 
 ## Components
 
@@ -121,5 +122,43 @@ flowchart LR
 
 - One log worker task is created per currently running container.
 - When the set of running containers changes, DockerService reconciles workers: starts new ones for newly running containers and drops finished ones.
+
+## ContainerRegistry
+
+```mermaid
+flowchart LR
+    subgraph Inputs[Docker signals]
+        direction TB
+        Events[docker events stream]
+        Tick[periodic tick]
+    end
+
+    subgraph Core[ContainerRegistry]
+        direction TB
+        Observer[containers observer]
+        ObservedUpd[observed update worker]
+        InfoTick[containers-info tick worker]
+        InfoUpd[containers-info update worker]
+        ObservedSet[observed containers set]
+        InfoCache[containers info cache]
+    end
+
+    ObserveEvents[observe events stream]
+
+    Events -->|trigger| Observer
+    Tick -->|trigger| Observer
+    Observer -->|schedule| ObservedUpd
+    ObservedUpd -->|refresh running set| ObservedSet
+    ObservedUpd -->|emit start/stop| ObserveEvents
+
+    Tick -->|schedule| InfoTick
+    InfoTick -->|schedule| InfoUpd
+    ObservedUpd -->|schedule| InfoUpd
+    InfoUpd -->|refresh all containers| InfoCache
+```
+
+- Maintains two views: a fast observed-running set and a broader containers-info cache.
+- Coalesces refresh requests with debounce workers to avoid redundant Docker calls.
+- Emits start/stop observe events consumed by DockerService log worker orchestration.
 
 
