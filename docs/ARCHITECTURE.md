@@ -1,5 +1,11 @@
 # Architecture overview
 
+- [Architecture overview](#architecture-overview)
+  - [Components](#components)
+  - [DockerService](#dockerservice)
+
+## Components
+
 ```mermaid
 flowchart LR
     subgraph Left[Workers]
@@ -59,7 +65,6 @@ flowchart LR
 ```
 
 
-## Component responsibilities
 
 - API module: exposes the HTTP endpoints and composes responses from Docker state and persisted data.
 - DockerService: the Docker-facing abstraction that provides container lists/details, log streams, samples, and control actions.
@@ -73,3 +78,48 @@ flowchart LR
 - Cleanup worker: periodically removes data older than the configured retention window.
 
 This is the clean backend wiring: the API reads from Docker and the stores, the metrics collector reads from Sysinfo and Docker and writes metrics, and the log ingestion pipeline reads from Docker and writes logs/metadata.
+
+
+## DockerService
+
+```mermaid
+flowchart LR
+    Docker[DockerService]
+    Registry[ContainerRegistry]
+    Metadata[metadata store]
+    LogsOut[logs stream]
+    SamplesOut[container samples stream]
+
+    subgraph Bg[Workers]
+        direction TB
+        Probe[write probe worker]
+        Observe[log observer worker]
+        SampleObs[sample observer worker]
+    end
+
+    subgraph PerContainer[Per running container]
+        direction TB
+        LogTask[log task]
+    end
+
+    Docker -->|use| Registry
+    Docker -->|read checkpoint| Metadata
+
+    Docker -->|spawn| Probe
+    Docker -->|spawn| Observe
+    Docker -->|spawn| SampleObs
+
+    Observe -->|watch running containers| Registry
+    Observe -->|spawn per running container| LogTask
+
+    LogTask -->|read checkpoint| Metadata
+    LogTask -->|tail docker logs| LogsOut
+
+    SampleObs -->|read container stats| Registry
+    SampleObs -->|emit batches| SamplesOut
+```
+
+- One log worker task is created per currently running container.
+- When the set of running containers changes, DockerService reconciles workers: starts new ones for newly running containers and drops finished ones.
+
+
