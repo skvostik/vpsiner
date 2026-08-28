@@ -4,15 +4,16 @@
   - [Components](#components)
   - [DockerService](#dockerservice)
   - [ContainerRegistry](#containerregistry)
+  - [LogBuffer](#logbuffer)
 
 ## Components
 
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph Left[Workers]
         direction TB
-        MetricsCollector[metrics collector]
         LogIngest[log ingestion]
+        MetricsCollector[metrics collector]
         Retention[cleanup worker]
     end
 
@@ -21,7 +22,7 @@ flowchart LR
         Docker[DockerService]
         Registry[ContainerRegistry]
         Metadata[metadata store]
-        LogBuffer[log buffer]
+        LogBuffer[LogBuffer]
         LogStore[log store]
         MetricsStore[metrics store]
     end
@@ -59,24 +60,22 @@ flowchart LR
     classDef store fill:#ecfdf5,stroke:#10b981,stroke-width:1px,color:#111827;
     classDef api fill:#f3e8ff,stroke:#8b5cf6,stroke-width:1px,color:#111827;
 
-    class MetricsCollector,LogIngest,LogBuffer,Retention worker;
-    class Docker,Registry service;
+    class MetricsCollector,LogIngest,Retention worker;
+    class Docker,Registry,LogBuffer service;
     class MetricsStore,LogStore,Metadata store;
     class Health,Containers,Metrics,Logs api;
 ```
 
-
-
-- API module: exposes the HTTP endpoints and composes responses from Docker state and persisted data.
-- DockerService: the Docker-facing abstraction that provides container lists/details, log streams, samples, and control actions.
-- ContainerRegistry: maintains discovered containers and their observed runtime state for DockerService.
 - Metrics collector: periodically reads host and container metrics and writes time-series samples to the metrics store.
 - Log ingestion: consumes the live Docker log stream and forwards lines into the buffering pipeline.
-- Log buffer: batches/debounces log lines before persistence, then writes log rows and metadata updates.
+- Cleanup worker: periodically removes data older than the configured retention window.
+- DockerService: the Docker-facing abstraction that provides container lists/details, log streams, samples, and control actions.
+- ContainerRegistry: maintains discovered containers and their observed runtime state for DockerService.
+- LogBuffer: batches/debounces log lines before persistence, then writes log rows and metadata updates.
 - Metrics store: persists host and container metrics for dashboards and historical queries.
 - Log store: persists log entries and supports grouped log retrieval.
 - Metadata store: stores log checkpoints/positions and related indexing metadata used by ingestion and Docker resume logic.
-- Cleanup worker: periodically removes data older than the configured retention window.
+- API module: exposes the HTTP endpoints and composes responses from Docker state and persisted data.
 
 This is the clean backend wiring: the API reads from Docker and the stores, the metrics collector reads from Sysinfo and Docker and writes metrics, and the log ingestion pipeline reads from Docker and writes logs/metadata.
 
@@ -84,7 +83,7 @@ This is the clean backend wiring: the API reads from Docker and the stores, the 
 ## DockerService
 
 ```mermaid
-flowchart LR
+flowchart TB
     Docker[DockerService]
     Registry[ContainerRegistry]
     Metadata[metadata store]
@@ -94,8 +93,8 @@ flowchart LR
     subgraph Bg[Workers]
         direction TB
         Probe[write probe worker]
-        Observe[log observer worker]
         SampleObs[sample observer worker]
+        Observe[log observer worker]
     end
 
     subgraph PerContainer[Per running container]
@@ -126,11 +125,11 @@ flowchart LR
 ## ContainerRegistry
 
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph Inputs[Docker signals]
         direction TB
-        Events[docker events stream]
         Tick[periodic tick]
+        Events[docker events stream]
     end
 
     subgraph Core[ContainerRegistry]
@@ -145,8 +144,8 @@ flowchart LR
 
     ObserveEvents[observe events stream]
 
-    Events -->|trigger| Observer
     Tick -->|trigger| Observer
+    Events -->|trigger| Observer
     Observer -->|schedule| ObservedUpd
     ObservedUpd -->|refresh running set| ObservedSet
     ObservedUpd -->|emit start/stop| ObserveEvents
@@ -160,5 +159,41 @@ flowchart LR
 - Maintains two views: a fast observed-running set and a broader containers-info cache.
 - Coalesces refresh requests with debounce workers to avoid redundant Docker calls.
 - Emits start/stop observe events consumed by DockerService log worker orchestration.
+
+## LogBuffer
+
+```mermaid
+flowchart TB
+    In[log lines from ingestion]
+    Metadata[metadata store]
+    LogStore[log store]
+
+    subgraph BufferCore[LogBuffer]
+        direction TB
+        Seed[startup checkpoint preload]
+        Groups[group map by log_group]
+        Dedup[per-container checkpoint dedup]
+    end
+
+    subgraph PerGroup[Per log_group]
+        direction TB
+        Queue[buffered lines]
+        Flush[debounced flush worker]
+    end
+
+    In -->|push| Groups
+    Seed ---|list checkpoints| Metadata
+    Seed -->|seed state| Groups
+    Groups -->|route by group| Dedup
+    Dedup -->|accept| Queue
+    Queue -->|schedule| Flush
+    Flush -->|record received checkpoint| Metadata
+    Flush -->|append| LogStore
+```
+
+- One flush worker exists per log group, so bursts in one group do not block other groups.
+- Startup preloads checkpoints from metadata so dedup survives restarts.
+- Dedup drops strictly older lines and exact boundary duplicates per container.
+- Flush is debounced and coalesces repeated flush requests before writing.
 
 
