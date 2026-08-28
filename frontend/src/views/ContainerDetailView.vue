@@ -226,13 +226,8 @@ onBeforeUnmount(() => {
 <template>
   <div>
     <div class="flex items-center gap-3">
-      <router-link
-        v-if="logGroup"
-        :to="{ name: 'log-viewer', params: { logGroup } }"
-        custom
-        v-slot="{ navigate }"
-      >
-        <n-button tertiary aria-label="Open container logs" @click="navigate">
+      <router-link v-if="logGroup" :to="{ name: 'log-viewer', params: { logGroup } }">
+        <n-button tertiary aria-label="Open container logs" tag="span">
           <template #icon><Logs :size="16" /></template>
           Logs
         </n-button>
