@@ -152,16 +152,6 @@ impl LogBuffer {
         self.schedule_flush(&log_group);
     }
 
-    /// Number of lines currently buffered for `log_group` — mainly for observability.
-    pub fn len(&self, log_group: &str) -> usize {
-        self.inner
-            .groups
-            .lock()
-            .unwrap()
-            .get(log_group)
-            .map_or(0, |handle| handle.state.lock().unwrap().lines.len())
-    }
-
     /// Flushes every group immediately, bypassing the debounce. Used on shutdown.
     pub async fn flush_all(&self) {
         let handles: Vec<(String, Arc<Mutex<GroupState>>)> = self

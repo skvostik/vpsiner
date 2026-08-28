@@ -94,6 +94,7 @@ async fn async_main() {
             config.samples_channel_capacity,
             config.docker_events_channel_capacity,
             config.docker_debounce,
+            config.docker_controls_mode,
             metadata.clone(),
             config.retention_weeks,
         )),

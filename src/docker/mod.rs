@@ -14,6 +14,7 @@ use futures_util::{StreamExt, stream::BoxStream};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::{sync::mpsc, task::JoinHandle};
 
+use crate::config::DockerControlsMode;
 use crate::docker::container_registry::{ContainerObserveAction, ObservedContainer};
 use crate::docker::mapping::receiver_stream;
 use crate::error::{AppError, AppResult};
@@ -32,8 +33,6 @@ use self::container_registry::{BollardContainerRegistry, ContainerRegistry};
 #[async_trait]
 pub trait DockerService: Send + Sync + 'static {
     fn containers_info(&self) -> AppResult<Vec<ContainerSummary>>;
-
-    fn container_info(&self, id: &str) -> AppResult<Option<ContainerSummary>>;
 
     fn controls_available(&self) -> bool;
 
@@ -79,6 +78,7 @@ impl BollardDocker {
         samples_channel_capacity: usize,
         docker_events_channel_capacity: usize,
         docker_debounce: Duration,
+        controls_mode: DockerControlsMode,
         metadata: Arc<dyn LogMetadataStore>,
         retention_weeks: u32,
     ) -> Self {
@@ -91,7 +91,10 @@ impl BollardDocker {
                 .expect("docker proxy/daemon must be reachable")
         };
 
-        let controls_available = Arc::new(AtomicBool::new(false));
+        let controls_available = Arc::new(AtomicBool::new(matches!(
+            controls_mode,
+            DockerControlsMode::Enabled
+        )));
         let request_timeout = Duration::from_secs(request_timeout_secs);
         let (logs_tx, logs_rx) = mpsc::channel::<LogLine>(log_channel_capacity);
         let (samples_tx, samples_rx) =
@@ -120,11 +123,27 @@ impl BollardDocker {
             retention_weeks,
         });
 
-        spawn_write_probe(
-            Arc::downgrade(&inner),
-            docker_probe_interval,
-            request_timeout,
-        );
+        match controls_mode {
+            DockerControlsMode::Auto => {
+                spawn_write_probe(
+                    Arc::downgrade(&inner),
+                    docker_probe_interval,
+                    request_timeout,
+                );
+            }
+            DockerControlsMode::Enabled => {
+                tracing::info!(
+                    docker_controls_available = true,
+                    "docker controls forced enabled by configuration"
+                );
+            }
+            DockerControlsMode::Disabled => {
+                tracing::info!(
+                    docker_controls_available = false,
+                    "docker controls forced disabled by configuration"
+                );
+            }
+        }
         spawn_log_observer(Arc::downgrade(&inner), docker_probe_interval);
         spawn_sample_observer(
             Arc::downgrade(&inner),
@@ -141,10 +160,6 @@ impl BollardDocker {
 impl DockerService for BollardDocker {
     fn containers_info(&self) -> AppResult<Vec<ContainerSummary>> {
         self.inner.container_registry.containers_info()
-    }
-
-    fn container_info(&self, id: &str) -> AppResult<Option<ContainerSummary>> {
-        self.inner.container_registry.container_info(id)
     }
 
     fn controls_available(&self) -> bool {

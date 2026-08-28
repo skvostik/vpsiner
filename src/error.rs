@@ -28,6 +28,7 @@ pub enum AppError {
     #[error("forbidden: {0}")]
     Forbidden(String),
 
+    #[allow(dead_code)]
     #[error("not implemented: {0}")]
     Unimplemented(&'static str),
 }

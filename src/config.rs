@@ -75,10 +75,7 @@ impl Config {
                 "VPSINER_LOG_FLUSH_KEEP_ALIVE_SECS",
                 60,
             )),
-            docker_controls_mode: env::var("VPSINER_DOCKER_CONTROLS")
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(DockerControlsMode::Auto),
+            docker_controls_mode: parse_or("VPSINER_DOCKER_CONTROLS", DockerControlsMode::Auto),
             docker_probe_interval: Duration::from_secs(parse_positive_u64_or(
                 "VPSINER_DOCKER_PROBE_INTERVAL_SECS",
                 60,
@@ -112,12 +109,12 @@ fn env_or(key: &str, default: &str) -> String {
 fn parse_or<T>(key: &str, default: T) -> T
 where
     T: std::str::FromStr,
-    T::Err: std::fmt::Display,
+    T::Err: std::fmt::Debug,
 {
     match env::var(key) {
         Ok(value) => value
             .parse()
-            .unwrap_or_else(|err| panic!("{key} must be a valid value, got '{value}': {err}")),
+            .unwrap_or_else(|err| panic!("{key} must be a valid value, got '{value}': {err:?}")),
         Err(_) => default,
     }
 }
