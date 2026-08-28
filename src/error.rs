@@ -5,7 +5,6 @@ use axum::{
 };
 use serde::Serialize;
 
-#[allow(dead_code)] // not every variant has a producer yet
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     #[error("docker error: {0}")]
@@ -29,6 +28,7 @@ pub enum AppError {
     #[error("forbidden: {0}")]
     Forbidden(String),
 
+    #[allow(dead_code)]
     #[error("not implemented: {0}")]
     Unimplemented(&'static str),
 }

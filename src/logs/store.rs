@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
@@ -8,19 +7,12 @@ use sqlx::{
 };
 
 use super::{
-    LogCursor, database_week_start_ms, decode_cursor, detect_level, encode_cursor, safe_group_path,
+    database_week_start_ms, decode_cursor, detect_level, encode_cursor, safe_group_path,
     week_database_name,
 };
 use crate::error::{AppError, AppResult};
-use crate::model::{LogFilter, LogGroupSummary, LogLine, LogPage, LogStream};
+use crate::model::{LogCursor, LogFilter, LogLine, LogPage};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LogResumeBoundary {
-    pub ts: i64,
-    pub occurrences: HashMap<(LogStream, String), usize>,
-}
-
-#[allow(dead_code)]
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait LogStore: Send + Sync + 'static {
@@ -30,12 +22,6 @@ pub trait LogStore: Send + Sync + 'static {
 
     async fn append(&self, log_group: &str, lines: Vec<LogLine>) -> AppResult<()>;
     async fn query(&self, log_group: &str, filter: LogFilter) -> AppResult<LogPage>;
-    async fn list_groups(&self) -> AppResult<Vec<LogGroupSummary>>;
-    async fn resume_boundary(
-        &self,
-        log_group: &str,
-        container_id: &str,
-    ) -> AppResult<Option<LogResumeBoundary>>;
 }
 
 pub struct SqliteLogStore {
@@ -247,6 +233,7 @@ impl LogStore for SqliteLogStore {
                     id,
                     line: LogLine {
                         ts,
+                        log_group: log_group.to_string(),
                         cid: row.get("cid"),
                         stream,
                         level,
@@ -399,106 +386,6 @@ impl LogStore for SqliteLogStore {
             has_newer,
         })
     }
-
-    async fn list_groups(&self) -> AppResult<Vec<LogGroupSummary>> {
-        let mut groups = Vec::new();
-        let mut entries = match tokio::fs::read_dir(&self.root).await {
-            Ok(entries) => entries,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(groups),
-            Err(err) => return Err(storage(err)),
-        };
-        while let Some(entry) = entries.next_entry().await.map_err(storage)? {
-            if entry.file_type().await.map_err(storage)?.is_dir() {
-                let log_group = entry.file_name().to_string_lossy().into_owned();
-                let last_received = self.last_received(&entry.path()).await?;
-                groups.push(LogGroupSummary {
-                    log_group,
-                    last_received,
-                });
-            }
-        }
-        groups.sort_by(|left, right| left.log_group.cmp(&right.log_group));
-        Ok(groups)
-    }
-
-    async fn resume_boundary(
-        &self,
-        log_group: &str,
-        container_id: &str,
-    ) -> AppResult<Option<LogResumeBoundary>> {
-        let group_dir = self.root.join(safe_group_path(log_group));
-        let mut entries = match tokio::fs::read_dir(group_dir).await {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(storage(error)),
-        };
-        let mut databases = Vec::new();
-        let mut latest = None;
-        while let Some(entry) = entries.next_entry().await.map_err(storage)? {
-            let path = entry.path();
-            if path.extension().and_then(|value| value.to_str()) != Some("db") {
-                continue;
-            }
-            let pool = open_pool(path).await?;
-            let row = sqlx::query("SELECT MAX(ts) AS max_ts FROM logs WHERE cid = ?")
-                .bind(container_id)
-                .fetch_one(&pool)
-                .await
-                .map_err(storage)?;
-            if let Some(ts) = row.try_get::<Option<i64>, _>("max_ts").map_err(storage)? {
-                latest = Some(latest.map_or(ts, |current: i64| current.max(ts)));
-            }
-            databases.push(pool);
-        }
-        let Some(ts) = latest else {
-            return Ok(None);
-        };
-        let mut occurrences = HashMap::new();
-        for pool in databases {
-            let rows = sqlx::query("SELECT stream, line FROM logs WHERE cid = ? AND ts = ?")
-                .bind(container_id)
-                .bind(ts)
-                .fetch_all(&pool)
-                .await
-                .map_err(storage)?;
-            for row in rows {
-                let stream = match row
-                    .try_get::<String, _>("stream")
-                    .map_err(storage)?
-                    .as_str()
-                {
-                    "stderr" => LogStream::Stderr,
-                    _ => LogStream::Stdout,
-                };
-                let line = row.try_get::<String, _>("line").map_err(storage)?;
-                *occurrences.entry((stream, line)).or_default() += 1;
-            }
-        }
-        Ok(Some(LogResumeBoundary { ts, occurrences }))
-    }
-}
-
-impl SqliteLogStore {
-    /// Latest `ts` across all weekly databases in a log group directory.
-    async fn last_received(&self, group_dir: &Path) -> AppResult<Option<i64>> {
-        let mut entries = tokio::fs::read_dir(group_dir).await.map_err(storage)?;
-        let mut last: Option<i64> = None;
-        while let Some(entry) = entries.next_entry().await.map_err(storage)? {
-            let path = entry.path();
-            if path.extension().and_then(|value| value.to_str()) != Some("db") {
-                continue;
-            }
-            let pool = open_pool(path).await?;
-            let row = sqlx::query("SELECT MAX(ts) as max_ts FROM logs")
-                .fetch_one(&pool)
-                .await
-                .map_err(storage)?;
-            if let Some(max_ts) = row.try_get::<Option<i64>, _>("max_ts").map_err(storage)? {
-                last = Some(last.map_or(max_ts, |current| current.max(max_ts)));
-            }
-        }
-        Ok(last)
-    }
 }
 
 fn storage(error: impl std::fmt::Display) -> AppError {
@@ -574,6 +461,7 @@ mod tests {
     fn line(ts: i64, line: &str) -> LogLine {
         LogLine {
             ts,
+            log_group: "group".into(),
             cid: "abc123".into(),
             stream: LogStream::Stdout,
             level: None,
@@ -607,49 +495,5 @@ mod tests {
 
         assert_eq!(page.items.len(), 1);
         assert_eq!(page.items[0].line, "duration_ms=42");
-    }
-
-    #[tokio::test]
-    async fn resume_boundary_is_scoped_to_container() {
-        let store = SqliteLogStore::new(test_directory("resume-container"));
-        let first = line(1_700_000_000_000, "repeated");
-        let mut second = first.clone();
-        let mut other = line(1_700_000_001_000, "other container");
-        second.stream = LogStream::Stderr;
-        other.cid = "def456".into();
-        store
-            .append("group", vec![first.clone(), first.clone(), second, other])
-            .await
-            .unwrap();
-
-        let boundary = store
-            .resume_boundary("group", "abc123")
-            .await
-            .unwrap()
-            .unwrap();
-
-        assert_eq!(boundary.ts, first.ts);
-        assert_eq!(
-            boundary
-                .occurrences
-                .get(&(LogStream::Stdout, "repeated".into())),
-            Some(&2)
-        );
-        assert_eq!(
-            boundary
-                .occurrences
-                .get(&(LogStream::Stderr, "repeated".into())),
-            Some(&1)
-        );
-    }
-
-    #[tokio::test]
-    async fn resume_boundary_is_none_without_container_history() {
-        let store = SqliteLogStore::new(test_directory("resume-empty"));
-
-        assert_eq!(
-            store.resume_boundary("group", "missing").await.unwrap(),
-            None
-        );
     }
 }

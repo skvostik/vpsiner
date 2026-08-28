@@ -4,7 +4,6 @@ pub mod metrics;
 
 use axum::{Json, Router, extract::State, routing::get, routing::post};
 use serde::Serialize;
-use std::sync::atomic::Ordering;
 
 use crate::state::AppState;
 
@@ -41,6 +40,6 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
         port: state.config.port,
         sample_interval_ms: state.config.collect_interval.as_millis() as u64,
         retention_weeks: state.config.retention_weeks,
-        docker_controls_available: state.docker_controls_available.load(Ordering::Relaxed),
+        docker_controls_available: state.docker.controls_available(),
     })
 }

@@ -18,6 +18,8 @@ pub enum ContainerState {
     Paused,
     Exited,
     Dead,
+    Stopping,
+    Empty,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,59 +31,35 @@ pub struct ContainerSummary {
     pub image_sha: String,
     pub ports: Vec<String>,
     pub labels: Vec<String>,
-    pub state: ContainerState,
+    pub state: Option<ContainerState>,
     pub started_at: Option<TimestampMs>,
 }
 
-pub fn short_container_id(id: &str) -> &str {
-    id.get(..12).unwrap_or(id)
+pub fn container_short_id(container_id: &str) -> &str {
+    container_id.get(..12).unwrap_or(container_id)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DockerInfo {
-    pub version: String,
-    pub engine: String,
-    pub containers_running: u64,
+pub fn container_log_id(log_group: &str, container_id: &str) -> String {
+    format!(
+        "{}@{}",
+        &container_id.get(..12).unwrap_or(container_id),
+        log_group
+    )
 }
 
-pub fn resolve_log_group(labels: &std::collections::HashMap<String, String>, name: &str) -> String {
-    if let Some(value) = labels
-        .get("vpsiner.log_group")
-        .filter(|value| !value.trim().is_empty())
-    {
-        return value.trim().to_string();
+impl ContainerSummary {
+    pub fn short_id(&self) -> &str {
+        container_short_id(&self.id)
     }
-
-    let compose_project = labels
-        .get("com.docker.compose.project")
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| value.trim().to_string());
-    let compose_service = labels
-        .get("com.docker.compose.service")
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| value.trim().to_string());
-
-    if let (Some(project), Some(service)) = (compose_project, compose_service) {
-        return format!("{project}-{service}");
+    pub fn log_id(&self) -> String {
+        container_log_id(&self.log_group, &self.short_id())
     }
-
-    name.trim_start_matches('/').to_string()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum DockerEventKind {
-    Create,
-    Start,
-    Die,
-    Destroy,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DockerEvent {
-    pub ts: TimestampMs,
-    pub kind: DockerEventKind,
-    pub container_id: String,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContainerCommandResult {
+    Submitted,
+    Noop,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -114,7 +92,6 @@ pub struct ContainerSample {
     pub blk_write: u64,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContainerGroupSample {
     pub ts: TimestampMs,
@@ -128,14 +105,12 @@ pub struct ContainerGroupSample {
     pub blk_write: u64,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContainerGroupMetrics {
     pub sum: Vec<ContainerGroupSample>,
     pub containers: HashMap<String, Vec<ContainerSample>>,
 }
 
-#[allow(dead_code)]
 pub type ContainerMetricsByLogGroup = HashMap<String, Vec<ContainerGroupSample>>;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -170,11 +145,19 @@ pub enum LogLevel {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogLine {
     pub ts: TimestampMs,
+    pub log_group: String,
     pub cid: String,
     pub stream: LogStream,
     pub level: Option<LogLevel>,
     /// Log text with ANSI escape codes stripped.
     pub line: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LogCursor {
+    pub ts: i64,
+    pub week: String,
+    pub id: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -184,12 +167,6 @@ pub struct LogPage {
     pub newer_cursor: Option<String>,
     pub has_older: bool,
     pub has_newer: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LogGroupSummary {
-    pub log_group: String,
-    pub last_received: Option<TimestampMs>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

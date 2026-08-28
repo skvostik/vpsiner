@@ -10,49 +10,97 @@ mod state;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use axum::Router;
 use tower_http::services::{ServeDir, ServeFile};
 
-use crate::config::{Config, DockerControlsMode};
+use crate::config::Config;
 use crate::docker::BollardDocker;
+use crate::logs::metadata::SqliteLogMetadataStore;
 use crate::logs::store::SqliteLogStore;
 use crate::metrics::host::SysinfoHost;
 use crate::metrics::store::SqliteMetricsStore;
 use crate::state::AppState;
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    let mut runtime = tokio::runtime::Builder::new_multi_thread();
+    runtime.enable_all();
+
+    if let Some(worker_threads) = configured_worker_threads() {
+        runtime.worker_threads(worker_threads);
+    }
+
+    runtime
+        .build()
+        .expect("failed to build Tokio runtime")
+        .block_on(async_main());
+}
+
+fn configured_worker_threads() -> Option<usize> {
+    let value = std::env::var("VPSINER_WORKER_THREADS").ok()?;
+    let parsed = value.parse::<usize>().unwrap_or_else(|_| {
+        panic!("VPSINER_WORKER_THREADS must be a positive integer, got: {value}")
+    });
+
+    assert!(
+        parsed > 0,
+        "VPSINER_WORKER_THREADS must be a positive integer, got: {value}"
+    );
+
+    Some(parsed)
+}
+
+async fn async_main() {
     let log_filter = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
     tracing_subscriber::fmt()
         .with_env_filter(log_filter)
         .with_target(false)
         .init();
 
+    tracing::info!(
+        num_workers = tokio::runtime::Handle::current().metrics().num_workers(),
+        "tokio runtime worker-thread allocation"
+    );
+
     let config = Config::from_env();
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
 
-    tracing::info!("Starting vpsiner on http://{}", addr);
+    tracing::info!("starting vpsiner on http://{}", addr);
     tracing::info!(
         retention_weeks = config.retention_weeks,
         "configured data retention"
     );
     if let Some(static_dir) = &config.static_dir {
-        tracing::info!("Static assets directory: {}", static_dir.display());
+        tracing::info!("static assets directory: {}", static_dir.display());
     } else {
-        tracing::info!("Static file serving disabled");
+        tracing::info!("static file serving disabled");
     }
 
     // Composition root: concrete implementations are chosen here and nowhere else.
+    let metadata = Arc::new(SqliteLogMetadataStore::new(
+        config.data_path.join("metadata.db"),
+    ));
     let state = AppState::new(
         config.clone(),
         Arc::new(BollardDocker::new(
             &config.docker_host,
             config.docker_timeout_secs,
+            config.docker_request_timeout_secs,
+            config.collect_interval,
+            config.docker_probe_interval,
+            config.docker_request_concurrency,
+            config.docker_retry_delay,
+            config.log_channel_capacity,
+            config.samples_channel_capacity,
+            config.docker_events_channel_capacity,
+            config.docker_debounce,
+            config.docker_controls_mode,
+            metadata.clone(),
+            config.retention_weeks,
         )),
         Arc::new(SqliteMetricsStore::new(config.data_path.join("metrics.db"))),
         Arc::new(SqliteLogStore::new(config.data_path.join("logs"))),
+        metadata,
         Arc::new(SysinfoHost::default()),
     );
 
@@ -78,36 +126,13 @@ async fn main() {
         state.metrics.clone(),
         config.collect_interval,
     ));
-    tokio::spawn(metrics::collector::run_registry(
-        state.docker.clone(),
-        state.containers.clone(),
-    ));
     tokio::spawn(logs::run_ingestion(
         state.docker.clone(),
         state.logs.clone(),
-        config.log_flush_interval,
-        config.retention_weeks,
+        state.metadata.clone(),
+        config.log_flush_debounce,
+        config.log_flush_keep_alive,
     ));
-
-    match config.docker_controls_mode {
-        DockerControlsMode::Enabled => {
-            state
-                .docker_controls_available
-                .store(true, Ordering::Relaxed);
-            tracing::info!("docker container controls forced enabled via VPSINER_DOCKER_CONTROLS");
-        }
-        DockerControlsMode::Disabled => {
-            tracing::info!("docker container controls forced disabled via VPSINER_DOCKER_CONTROLS");
-        }
-        DockerControlsMode::Auto => {
-            tracing::info!("probing docker socket for container control support");
-            tokio::spawn(docker::run_write_probe(
-                state.docker.clone(),
-                state.docker_controls_available.clone(),
-                config.docker_controls_probe_interval,
-            ));
-        }
-    }
 
     let app = build_router(state, &config);
 
@@ -145,6 +170,7 @@ mod tests {
 
     use crate::docker::MockDockerService;
     use crate::error::AppError;
+    use crate::logs::metadata::MockLogMetadataStore;
     use crate::logs::store::MockLogStore;
     use crate::metrics::host::MockHostMetricsSource;
     use crate::metrics::store::MockMetricsStore;
@@ -153,15 +179,23 @@ mod tests {
     fn test_config() -> Config {
         Config {
             docker_host: "tcp://127.0.0.1:2375".into(),
-            docker_timeout_secs: 30,
+            docker_timeout_secs: 60,
+            docker_request_timeout_secs: 5,
             data_path: "/tmp/vpsiner-test".into(),
             static_dir: None,
             port: 3000,
             retention_weeks: 12,
             collect_interval: std::time::Duration::from_secs(10),
-            log_flush_interval: std::time::Duration::from_millis(500),
+            log_flush_debounce: std::time::Duration::from_millis(500),
+            log_flush_keep_alive: std::time::Duration::from_secs(60),
             docker_controls_mode: crate::config::DockerControlsMode::Disabled,
-            docker_controls_probe_interval: std::time::Duration::from_secs(60),
+            docker_probe_interval: std::time::Duration::from_secs(60),
+            docker_retry_delay: std::time::Duration::from_secs(5),
+            docker_request_concurrency: 8,
+            docker_debounce: std::time::Duration::from_millis(1_000),
+            log_channel_capacity: 10_000,
+            samples_channel_capacity: 32,
+            docker_events_channel_capacity: 256,
         }
     }
 
@@ -172,20 +206,16 @@ mod tests {
             Arc::new(docker),
             Arc::new(MockMetricsStore::new()),
             Arc::new(MockLogStore::new()),
+            Arc::new(MockLogMetadataStore::new()),
             Arc::new(MockHostMetricsSource::new()),
         );
-        // Most tests exercise action logic assuming controls are available; detection itself is
-        // covered separately.
-        state
-            .docker_controls_available
-            .store(true, std::sync::atomic::Ordering::Relaxed);
         (state, config)
     }
 
     #[tokio::test]
     async fn lists_containers_from_the_injected_docker_service() {
         let mut docker = MockDockerService::new();
-        docker.expect_list_containers().times(1).returning(|| {
+        docker.expect_containers_info().times(1).returning(|| {
             Ok(vec![ContainerSummary {
                 id: "abc123".into(),
                 name: "web".into(),
@@ -194,7 +224,7 @@ mod tests {
                 image_sha: String::new(),
                 ports: Vec::new(),
                 labels: Vec::new(),
-                state: ContainerState::Running,
+                state: Some(ContainerState::Running),
                 started_at: Some(1_700_000_000_000),
             }])
         });
@@ -221,10 +251,6 @@ mod tests {
     async fn maps_docker_failures_to_bad_gateway() {
         let mut docker = MockDockerService::new();
         docker
-            .expect_container_state()
-            .withf(|id| id == "abc123")
-            .returning(|_| Ok(ContainerState::Exited));
-        docker
             .expect_start_container()
             .withf(|id| id == "abc123")
             .returning(|_| Err(AppError::Docker("socket unreachable".into())));
@@ -246,12 +272,16 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_container_actions_when_controls_are_unavailable() {
-        // Mock has no expectations set: the request must be rejected before touching Docker.
-        let docker = MockDockerService::new();
+        let mut docker = MockDockerService::new();
+        docker
+            .expect_start_container()
+            .withf(|id| id == "abc123")
+            .returning(|_| {
+                Err(AppError::Forbidden(
+                    "container controls are disabled or unavailable on this backend".into(),
+                ))
+            });
         let (state, config) = state_with_docker(docker);
-        state
-            .docker_controls_available
-            .store(false, std::sync::atomic::Ordering::Relaxed);
 
         let response = build_router(state, &config)
             .oneshot(
@@ -269,7 +299,9 @@ mod tests {
 
     #[tokio::test]
     async fn health_reports_the_backend_version() {
-        let (state, config) = state_with_docker(MockDockerService::new());
+        let mut docker = MockDockerService::new();
+        docker.expect_controls_available().returning(|| false);
+        let (state, config) = state_with_docker(docker);
         let response = build_router(state, &config)
             .oneshot(
                 Request::builder()

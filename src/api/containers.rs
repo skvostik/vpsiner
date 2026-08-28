@@ -3,69 +3,32 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
 };
-use std::sync::atomic::Ordering;
 
-use crate::error::{AppError, AppResult};
-use crate::model::{ContainerState, ContainerSummary};
+use crate::error::AppResult;
+use crate::model::ContainerSummary;
 use crate::state::AppState;
 
-enum ActionPlan {
-    Noop,
-    Start,
-    Stop,
-    Restart,
-}
-
-fn plan_for(state: ContainerState, action: &'static str) -> AppResult<ActionPlan> {
-    match (state, action) {
-        (ContainerState::Removing | ContainerState::Dead, _) => Err(AppError::Conflict(format!(
-            "cannot {action} container while state is {state:?}"
-        ))),
-        (ContainerState::Restarting, "stop") => Ok(ActionPlan::Stop),
-        (ContainerState::Restarting, _) => Err(AppError::Conflict(format!(
-            "cannot {action} container while state is {state:?}"
-        ))),
-        (ContainerState::Running, "start") => Ok(ActionPlan::Noop),
-        (ContainerState::Created | ContainerState::Exited, "stop") => Ok(ActionPlan::Noop),
-        (ContainerState::Created | ContainerState::Exited | ContainerState::Paused, "start") => {
-            Ok(ActionPlan::Start)
-        }
-        (ContainerState::Running | ContainerState::Paused, "stop") => Ok(ActionPlan::Stop),
-        (ContainerState::Created | ContainerState::Exited, "restart") => Ok(ActionPlan::Start),
-        (ContainerState::Running | ContainerState::Paused, "restart") => Ok(ActionPlan::Restart),
-        _ => Err(AppError::BadRequest(format!(
-            "unsupported action: {action}"
-        ))),
-    }
-}
-
 async fn run_action(state: &AppState, id: &str, action: &'static str) -> AppResult<StatusCode> {
-    if !state.docker_controls_available.load(Ordering::Relaxed) {
-        return Err(AppError::Forbidden(
-            "container controls are disabled or unavailable on this backend".into(),
-        ));
+    match action {
+        "start" => {
+            state.docker.start_container(id).await?;
+        }
+        "stop" => {
+            state.docker.stop_container(id).await?;
+        }
+        "restart" => {
+            state.docker.restart_container(id).await?;
+        }
+        _ => unreachable!("container action routes pass known action names"),
     }
 
-    let current = state.docker.container_state(id).await?;
-    match plan_for(current, action)? {
-        ActionPlan::Noop => Ok(StatusCode::NO_CONTENT),
-        ActionPlan::Start => {
-            state.docker.start_container(id).await?;
-            Ok(StatusCode::NO_CONTENT)
-        }
-        ActionPlan::Stop => {
-            state.docker.stop_container(id).await?;
-            Ok(StatusCode::NO_CONTENT)
-        }
-        ActionPlan::Restart => {
-            state.docker.restart_container(id).await?;
-            Ok(StatusCode::NO_CONTENT)
-        }
-    }
+    // TODO: This is a temporary workaround to allow the container state to propagate.
+    tokio::time::sleep(state.config.collect_interval * 2).await;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn list(State(state): State<AppState>) -> AppResult<Json<Vec<ContainerSummary>>> {
-    Ok(Json(state.docker.list_containers().await?))
+    Ok(Json(state.docker.containers_info()?))
 }
 
 pub async fn start(State(state): State<AppState>, Path(id): Path<String>) -> AppResult<StatusCode> {

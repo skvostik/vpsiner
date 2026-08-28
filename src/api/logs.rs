@@ -6,7 +6,7 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 
 use crate::error::{AppError, AppResult};
-use crate::model::{LogFilter, LogGroupStatus, LogGroupSummary, LogLevel, LogPage, LogStream};
+use crate::model::{LogFilter, LogGroupStatus, LogLevel, LogPage, LogStream};
 use crate::state::AppState;
 
 #[derive(Debug, Default, Deserialize)]
@@ -87,22 +87,22 @@ fn parse_streams(value: Option<String>) -> AppResult<Vec<LogStream>> {
 pub async fn list_groups(
     State(state): State<AppState>,
 ) -> AppResult<Json<BTreeMap<String, LogGroupStatus>>> {
-    let stored = state.logs.list_groups().await?;
-    let containers = state.docker.list_containers().await?;
+    let stored = state.metadata.list_last_received().await?;
+    let containers = state.docker.containers_info()?;
     Ok(Json(merge_log_groups(stored, containers)))
 }
 
 fn merge_log_groups(
-    stored: Vec<LogGroupSummary>,
+    stored: BTreeMap<String, i64>,
     containers: Vec<crate::model::ContainerSummary>,
 ) -> BTreeMap<String, LogGroupStatus> {
     let mut groups = stored
         .into_iter()
-        .map(|group| {
+        .map(|(log_group, last_received)| {
             (
-                group.log_group,
+                log_group,
                 LogGroupStatus {
-                    last_received: group.last_received,
+                    last_received: Some(last_received),
                     live: false,
                 },
             )
@@ -115,7 +115,7 @@ fn merge_log_groups(
                 last_received: None,
                 live: false,
             });
-        group.live |= container.state == crate::model::ContainerState::Running;
+        group.live |= container.state == Some(crate::model::ContainerState::Running);
     }
     groups
 }
@@ -134,7 +134,7 @@ mod tests {
             image_sha: String::new(),
             ports: Vec::new(),
             labels: Vec::new(),
-            state,
+            state: Some(state),
             started_at: None,
         }
     }
@@ -142,10 +142,7 @@ mod tests {
     #[test]
     fn merges_container_liveness_into_stored_groups() {
         let groups = merge_log_groups(
-            vec![LogGroupSummary {
-                log_group: "api".into(),
-                last_received: Some(42),
-            }],
+            BTreeMap::from([("api".to_string(), 42)]),
             vec![
                 container("api", ContainerState::Exited),
                 container("api", ContainerState::Running),
