@@ -130,6 +130,7 @@ async fn async_main() {
         state.logs.clone(),
         state.metadata.clone(),
         config.log_flush_debounce,
+        config.log_flush_keep_alive,
     ));
 
     let app = build_router(state, &config);
@@ -185,6 +186,7 @@ mod tests {
             retention_weeks: 12,
             collect_interval: std::time::Duration::from_secs(10),
             log_flush_debounce: std::time::Duration::from_millis(500),
+            log_flush_keep_alive: std::time::Duration::from_secs(60),
             docker_controls_mode: crate::config::DockerControlsMode::Disabled,
             docker_probe_interval: std::time::Duration::from_secs(60),
             docker_retry_delay: std::time::Duration::from_secs(5),

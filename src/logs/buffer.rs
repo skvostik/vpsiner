@@ -22,12 +22,13 @@ struct Inner {
     logs: Arc<dyn LogStore>,
     metadata: Arc<dyn LogMetadataStore>,
     debounce: Duration,
+    keep_alive: Duration,
     groups: Mutex<HashMap<String, GroupHandle>>,
 }
 
 struct GroupHandle {
     state: Arc<Mutex<GroupState>>,
-    flush_tx: mpsc::Sender<()>,
+    flush_tx: Option<mpsc::Sender<()>>,
 }
 
 #[derive(Default)]
@@ -43,8 +44,9 @@ impl LogBuffer {
         logs: Arc<dyn LogStore>,
         metadata: Arc<dyn LogMetadataStore>,
         debounce: Duration,
+        keep_alive: Duration,
     ) -> AppResult<Self> {
-        tracing::info!(debounce = ?debounce, "initializing log buffer");
+        tracing::info!(debounce = ?debounce, keep_alive = ?keep_alive, "initializing log buffer");
         tracing::info!("preloading log buffer checkpoints from metadata store");
         let mut seeded: HashMap<String, GroupState> = HashMap::new();
         for (log_group, container_id, checkpoint) in metadata.list_checkpoints().await? {
@@ -59,40 +61,74 @@ impl LogBuffer {
             logs,
             metadata,
             debounce,
+            keep_alive,
             groups: Mutex::new(HashMap::new()),
         });
         let buffer = Self { inner };
         for (log_group, state) in seeded {
-            buffer.spawn_group(log_group, state);
+            buffer.seed_group(log_group, state);
         }
         Ok(buffer)
     }
 
-    fn spawn_group(&self, log_group: String, state: GroupState) -> Arc<Mutex<GroupState>> {
+    fn seed_group(&self, log_group: String, state: GroupState) {
         let state = Arc::new(Mutex::new(state));
-        let (flush_tx, flush_rx) = mpsc::channel(1);
         self.inner.groups.lock().unwrap().insert(
-            log_group.clone(),
+            log_group,
             GroupHandle {
-                state: state.clone(),
-                flush_tx,
+                state,
+                flush_tx: None,
             },
         );
-        tracing::info!(log_group=%log_group, "spawning flush worker for log group");
-        spawn_flush_worker(
-            Arc::downgrade(&self.inner),
-            log_group,
-            state.clone(),
-            flush_rx,
-        );
-        state
     }
 
     fn group_state(&self, log_group: &str) -> Arc<Mutex<GroupState>> {
-        if let Some(handle) = self.inner.groups.lock().unwrap().get(log_group) {
-            return handle.state.clone();
+        let mut groups = self.inner.groups.lock().unwrap();
+        if !groups.contains_key(log_group) {
+            groups.insert(
+                log_group.to_string(),
+                GroupHandle {
+                    state: Arc::new(Mutex::new(GroupState::default())),
+                    flush_tx: None,
+                },
+            );
         }
-        self.spawn_group(log_group.to_string(), GroupState::default())
+        groups
+            .get(log_group)
+            .expect("group entry must exist")
+            .state
+            .clone()
+    }
+
+    fn schedule_flush(&self, log_group: &str) {
+        let (state, flush_tx) = {
+            let mut groups = self.inner.groups.lock().unwrap();
+            let handle = groups
+                .get_mut(log_group)
+                .expect("group entry must exist before scheduling flush");
+            if handle.flush_tx.is_none() {
+                let (flush_tx, flush_rx) = mpsc::channel(1);
+                tracing::info!(log_group=%log_group, "spawning log flush worker");
+                spawn_flush_worker(
+                    Arc::downgrade(&self.inner),
+                    log_group.to_string(),
+                    handle.state.clone(),
+                    flush_rx,
+                );
+                handle.flush_tx = Some(flush_tx);
+            }
+            (
+                handle.state.clone(),
+                handle
+                    .flush_tx
+                    .clone()
+                    .expect("flush sender must exist after worker spawn"),
+            )
+        };
+
+        // Keep state alive until the scheduling call completes.
+        drop(state);
+        let _ = flush_tx.try_send(());
     }
 
     /// Buffers `line` unless it's dropped by the two-level dedup check, and schedules a
@@ -113,9 +149,7 @@ impl LogBuffer {
             guard.checkpoints.insert(line.cid.clone(), (line.ts, hash));
             guard.lines.push(line);
         }
-        if let Some(handle) = self.inner.groups.lock().unwrap().get(&log_group) {
-            let _ = handle.flush_tx.try_send(());
-        }
+        self.schedule_flush(&log_group);
     }
 
     /// Number of lines currently buffered for `log_group` — mainly for observability.
@@ -191,20 +225,46 @@ fn spawn_flush_worker(
     mut flush_rx: mpsc::Receiver<()>,
 ) {
     tokio::spawn(async move {
-        while flush_rx.recv().await.is_some() {
+        loop {
             let Some(inner_ref) = inner.upgrade() else {
                 return;
             };
-            tokio::time::sleep(inner_ref.debounce).await;
 
-            // Drain any additional requests that arrived while we were sleeping; they're
-            // coalesced into the flush we're about to run.
-            while flush_rx.try_recv().is_ok() {}
+            let keep_alive = inner_ref.keep_alive;
+            let debounce = inner_ref.debounce;
+            drop(inner_ref);
 
-            let Some(inner_ref) = inner.upgrade() else {
-                return;
-            };
-            inner_ref.flush_group(&log_group, &state).await;
+            match tokio::time::timeout(keep_alive, flush_rx.recv()).await {
+                Ok(Some(_)) => {
+                    tokio::time::sleep(debounce).await;
+
+                    // Drain any additional requests that arrived while we were sleeping; they're
+                    // coalesced into the flush we're about to run.
+                    while flush_rx.try_recv().is_ok() {}
+
+                    let Some(inner_ref) = inner.upgrade() else {
+                        return;
+                    };
+                    inner_ref.flush_group(&log_group, &state).await;
+                }
+                Ok(None) => return,
+                Err(_) => {
+                    let Some(inner_ref) = inner.upgrade() else {
+                        return;
+                    };
+
+                    let mut groups = inner_ref.groups.lock().unwrap();
+                    let Some(handle) = groups.get_mut(&log_group) else {
+                        return;
+                    };
+
+                    if handle.state.lock().unwrap().lines.is_empty() {
+                        handle.flush_tx = None;
+                        tracing::info!(log_group=%log_group, keep_alive=?keep_alive, "stopping idle log flush worker");
+                        return;
+                    }
+                }
+            }
         }
     });
 }

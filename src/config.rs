@@ -39,6 +39,7 @@ pub struct Config {
     pub retention_weeks: u32,
     pub collect_interval: Duration,
     pub log_flush_debounce: Duration,
+    pub log_flush_keep_alive: Duration,
     pub docker_controls_mode: DockerControlsMode,
     pub docker_probe_interval: Duration,
     pub docker_retry_delay: Duration,
@@ -63,6 +64,10 @@ impl Config {
             log_flush_debounce: Duration::from_millis(parse_or(
                 "VPSINER_LOG_FLUSH_DEBOUNCE_MS",
                 500,
+            )),
+            log_flush_keep_alive: Duration::from_secs(parse_or(
+                "VPSINER_LOG_FLUSH_KEEP_ALIVE_SECS",
+                60,
             )),
             docker_controls_mode: env::var("VPSINER_DOCKER_CONTROLS")
                 .ok()

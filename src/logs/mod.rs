@@ -22,9 +22,10 @@ pub async fn run_ingestion(
     logs: Arc<dyn LogStore>,
     metadata: Arc<dyn LogMetadataStore>,
     flush_debounce: Duration,
+    flush_keep_alive: Duration,
 ) {
     tracing::info!("log ingestion initialized");
-    let buffer = match LogBuffer::new(logs, metadata, flush_debounce).await {
+    let buffer = match LogBuffer::new(logs, metadata, flush_debounce, flush_keep_alive).await {
         Ok(buffer) => buffer,
         Err(err) => {
             tracing::error!(error = %err, "failed to initialize log buffer; log ingestion disabled");
