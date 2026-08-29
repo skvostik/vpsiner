@@ -104,7 +104,7 @@ onMounted(() => {
 
 <template>
   <Teleport to="#app-header-title-leading">
-    <LogGroupStatusIcon :status="pageStatus" :size="15" />
+    <LogGroupStatusIcon :status="pageStatus" :size="15" :pulse="pageStatus === 'live'" />
   </Teleport>
   <Teleport to="#app-header-title-subtext">
     <template v-if="selectedGroupSummary">

@@ -230,7 +230,7 @@ onBeforeUnmount(() => {
 
 <template>
   <Teleport to="#app-header-title-leading">
-    <LogGroupStatusIcon :status="pageStatus" :size="15" />
+    <LogGroupStatusIcon :status="pageStatus" :size="15" :pulse="pageStatus === 'live'" />
   </Teleport>
   <div>
     <div class="flex items-center gap-3">

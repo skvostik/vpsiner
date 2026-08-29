@@ -8,15 +8,16 @@ const props = withDefaults(
     live?: boolean
     status?: 'live' | 'history' | 'stopped'
     size?: number
+    pulse?: boolean
   }>(),
-  { size: 16, live: true }
+  { size: 16, live: true, pulse: false }
 )
 
 const resolvedStatus = computed(() => props.status ?? (props.live ? 'live' : 'stopped'))
 const tooltipText = computed(() => {
   switch (resolvedStatus.value) {
     case 'live':
-      return 'Live: updating in real time'
+      return props.pulse ? 'Live: updating in real time' : 'Live: at least one container is running'
     case 'history':
       return 'Connected: browsing historical data'
     case 'stopped':
@@ -26,7 +27,7 @@ const tooltipText = computed(() => {
 const ariaLabel = computed(() => {
   switch (resolvedStatus.value) {
     case 'live':
-      return 'Live data updates'
+      return props.pulse ? 'Live data updates' : 'Log group is live'
     case 'history':
       return 'Browsing historical data'
     case 'stopped':
@@ -47,7 +48,7 @@ const ariaLabel = computed(() => {
           v-if="resolvedStatus !== 'stopped'"
           :size="size"
           class="fill-emerald-500 text-emerald-500"
-          :class="resolvedStatus === 'live' ? 'status-live' : 'status-history'"
+          :class="resolvedStatus === 'live' && pulse ? 'status-live' : 'status-static'"
         />
         <CircleStop v-else :size="size" class="text-red-500" />
       </span>
@@ -58,11 +59,11 @@ const ariaLabel = computed(() => {
 
 <style scoped>
 .status-live {
-  animation: page-status-pulse 1.6s ease-in-out infinite;
-  filter: drop-shadow(0 0 4px rgba(16, 185, 129, 0.8)) drop-shadow(0 0 10px rgba(16, 185, 129, 0.5));
+  animation: page-status-pulse 1.2s ease-in-out infinite;
+  filter: drop-shadow(0 0 3px rgba(16, 185, 129, 0.7)) drop-shadow(0 0 12px rgba(16, 185, 129, 0.7));
 }
 
-.status-history {
+.status-static {
   opacity: 0.9;
 }
 
@@ -70,19 +71,16 @@ const ariaLabel = computed(() => {
   0% {
     transform: scale(1);
     opacity: 1;
-    filter: drop-shadow(0 0 3px rgba(16, 185, 129, 0.7)) drop-shadow(0 0 8px rgba(16, 185, 129, 0.45));
   }
 
   50% {
-    transform: scale(1.12);
-    opacity: 0.9;
-    filter: drop-shadow(0 0 7px rgba(16, 185, 129, 0.95)) drop-shadow(0 0 14px rgba(16, 185, 129, 0.68));
+    transform: scale(1.08);
+    opacity: 0.92;
   }
 
   100% {
     transform: scale(1);
     opacity: 1;
-    filter: drop-shadow(0 0 3px rgba(16, 185, 129, 0.7)) drop-shadow(0 0 8px rgba(16, 185, 129, 0.45));
   }
 }
 </style>

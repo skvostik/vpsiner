@@ -44,7 +44,7 @@ usePageTitle('Host Metrics')
 
 <template>
   <Teleport to="#app-header-title-leading">
-    <LogGroupStatusIcon :status="pageStatus" :size="15" />
+    <LogGroupStatusIcon :status="pageStatus" :size="15" :pulse="pageStatus === 'live'" />
   </Teleport>
   <div class="space-y-6">
     <MetricsWindowPicker

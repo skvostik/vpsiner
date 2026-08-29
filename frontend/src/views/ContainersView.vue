@@ -123,7 +123,7 @@ async function handleActionComplete() {
 
 <template>
   <Teleport to="#app-header-title-leading">
-    <LogGroupStatusIcon :status="pageStatus" :size="15" />
+    <LogGroupStatusIcon :status="pageStatus" :size="15" :pulse="pageStatus === 'live'" />
   </Teleport>
   <div class="space-y-5">
     <div class="flex items-center justify-end gap-4">
