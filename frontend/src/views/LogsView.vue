@@ -7,6 +7,7 @@ import { NButton, NEmpty, NTooltip } from 'naive-ui'
 import LogFilterBar from '../components/logs/LogFilterBar.vue'
 import LogGroupStatusIcon from '../components/logs/LogGroupStatusIcon.vue'
 import LogViewer from '../components/logs/LogViewer.vue'
+import { backendOnline } from '../composables/useBackendHealth'
 import { useLogs } from '../composables/useLogs'
 import { usePageTitle } from '../composables/usePageTitle'
 import type { LogGroups, LogLevel, LogLine, LogStream, LogWindow } from '../types'
@@ -77,6 +78,11 @@ const {
   updateCustomTo,
 } = logsState
 const selectedGroupSummary = computed(() => groups.value[selectedGroup.value])
+const pageStatus = computed<'live' | 'history' | 'stopped'>(() => {
+  if (!backendOnline.value || !selectedGroup.value) return 'stopped'
+  if (!selectedGroupSummary.value?.live) return 'stopped'
+  return tailing.value ? 'live' : 'history'
+})
 
 watch(routeGroup, (group) => {
   if (group && group !== selectedGroup.value) selectedGroup.value = group
@@ -98,7 +104,7 @@ onMounted(() => {
 
 <template>
   <Teleport to="#app-header-title-leading">
-    <LogGroupStatusIcon v-if="selectedGroupSummary" :live="selectedGroupSummary.live" :size="15" />
+    <LogGroupStatusIcon :status="pageStatus" :size="15" />
   </Teleport>
   <Teleport to="#app-header-title-subtext">
     <template v-if="selectedGroupSummary">

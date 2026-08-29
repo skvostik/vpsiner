@@ -5,12 +5,12 @@ import { ArrowLeft, ChevronDown, ChevronRight, Logs, Play, RotateCcw, Square } f
 import { NButton, NCard, NEmpty, NSpin, NStatistic, NTooltip } from 'naive-ui'
 
 import MetricChart, { type ChartPoint, type ChartSeries } from '../components/MetricChart.vue'
-import LivePollIndicator from '../components/LivePollIndicator.vue'
+import LogGroupStatusIcon from '../components/logs/LogGroupStatusIcon.vue'
 import MetricsWindowPicker from '../components/MetricsWindowPicker.vue'
 import { api } from '../api'
 import { colorForKey } from '../colors'
 import { formatBytes, formatUptime } from '../format'
-import { dockerControlsAvailable } from '../composables/useBackendHealth'
+import { backendOnline, dockerControlsAvailable } from '../composables/useBackendHealth'
 import { useMetricsWindow } from '../composables/useMetricsWindow'
 import { usePageTitle } from '../composables/usePageTitle'
 import type {
@@ -192,6 +192,11 @@ const {
   updateCustomTo,
   reload,
 } = useMetricsWindow(loadMetrics)
+const pageStatus = computed<'live' | 'history' | 'stopped'>(() => {
+  if (!backendOnline.value) return 'stopped'
+  if (!container.value || !['running', 'restarting'].includes(container.value.state)) return 'stopped'
+  return isLive.value ? 'live' : 'history'
+})
 
 // log_group is only known after the container info loads, so trigger the first metrics fetch then.
 watch(logGroup, (value, previous) => {
@@ -224,6 +229,9 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <Teleport to="#app-header-title-leading">
+    <LogGroupStatusIcon :status="pageStatus" :size="15" />
+  </Teleport>
   <div>
     <div class="flex items-center gap-3">
       <router-link v-if="logGroup" :to="{ name: 'log-viewer', params: { logGroup } }">
@@ -414,6 +422,5 @@ onBeforeUnmount(() => {
         </div>
       </template>
     </main>
-    <LivePollIndicator :active="isLive" label="Live container metrics" />
   </div>
 </template>

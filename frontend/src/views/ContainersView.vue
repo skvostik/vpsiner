@@ -4,10 +4,10 @@ import { NInput, NSpin, NSwitch } from 'naive-ui'
 import { Search } from '@lucide/vue'
 
 import ContainerTable from '../components/ContainerTable.vue'
-import LivePollIndicator from '../components/LivePollIndicator.vue'
+import LogGroupStatusIcon from '../components/logs/LogGroupStatusIcon.vue'
 import { containerMetricsHistory } from '../api'
 import { useContainers } from '../composables/useContainers'
-import { metricsSampleIntervalMs } from '../composables/useBackendHealth'
+import { metricsSampleIntervalMs, useBackendHealth } from '../composables/useBackendHealth'
 import { usePageTitle } from '../composables/usePageTitle'
 import {
   computePollIntervalMs,
@@ -20,11 +20,16 @@ import type { ContainerMetricsByLogGroup, ContainerOverviewMetrics, ContainerRow
 usePageTitle('Containers')
 
 const { containers, loading, reload } = useContainers()
+const { backendOnline } = useBackendHealth()
 const metricsHistory = ref<ContainerMetricsByLogGroup>({})
 const metricsPollIntervalMs = computed(() => computePollIntervalMs(metricsSampleIntervalMs.value))
 const staleAfterMs = computed(() =>
   computeStaleAfterMs(RESOLUTION_BUCKET_MS['10s'], metricsPollIntervalMs.value)
 )
+const pageStatus = computed<'live' | 'history' | 'stopped'>(() => {
+  if (!backendOnline.value) return 'stopped'
+  return document.visibilityState === 'visible' ? 'live' : 'history'
+})
 let metricsPollTimer: number | undefined
 
 async function loadMetricsHistory() {
@@ -117,6 +122,9 @@ async function handleActionComplete() {
 </script>
 
 <template>
+  <Teleport to="#app-header-title-leading">
+    <LogGroupStatusIcon :status="pageStatus" :size="15" />
+  </Teleport>
   <div class="space-y-5">
     <div class="flex items-center justify-end gap-4">
       <div class="flex items-center gap-4">
@@ -134,6 +142,5 @@ async function handleActionComplete() {
       :loading="loading"
       @action-complete="handleActionComplete"
     />
-    <LivePollIndicator label="Live container status" />
   </div>
 </template>

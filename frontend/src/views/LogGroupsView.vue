@@ -4,8 +4,8 @@ import { useMessage, NEmpty, NInput, NSpin, NSwitch } from 'naive-ui'
 import { ChevronRight, Search } from '@lucide/vue'
 
 import { api } from '../api'
-import LivePollIndicator from '../components/LivePollIndicator.vue'
 import LogGroupStatusIcon from '../components/logs/LogGroupStatusIcon.vue'
+import { backendOnline } from '../composables/useBackendHealth'
 import { usePageTitle } from '../composables/usePageTitle'
 import type { LogGroups } from '../types'
 
@@ -19,6 +19,11 @@ const onlyRunning = ref(false)
 const groupSearch = ref('')
 const onlyRunningStorageKey = 'vpsiner.log-groups.only-running.v1'
 let pollTimer: number | undefined
+
+const pageStatus = computed<'live' | 'history' | 'stopped'>(() => {
+  if (!backendOnline.value) return 'stopped'
+  return document.visibilityState === 'visible' ? 'live' : 'history'
+})
 
 const sortedGroups = computed(() => {
   const search = groupSearch.value.trim().toLocaleLowerCase()
@@ -76,6 +81,9 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <Teleport to="#app-header-title-leading">
+    <LogGroupStatusIcon :status="pageStatus" :size="15" />
+  </Teleport>
   <div class="space-y-5">
     <div class="flex flex-wrap items-center justify-end gap-4">
       <label
@@ -123,6 +131,5 @@ onBeforeUnmount(() => {
         </router-link>
       </li>
     </ul>
-    <LivePollIndicator label="Live log groups" />
   </div>
 </template>
