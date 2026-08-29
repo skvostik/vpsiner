@@ -59,6 +59,7 @@ const ariaLabel = computed(() => {
 <style scoped>
 .status-live {
   animation: page-status-pulse 1.6s ease-in-out infinite;
+  filter: drop-shadow(0 0 4px rgba(16, 185, 129, 0.8)) drop-shadow(0 0 10px rgba(16, 185, 129, 0.5));
 }
 
 .status-history {
@@ -69,16 +70,19 @@ const ariaLabel = computed(() => {
   0% {
     transform: scale(1);
     opacity: 1;
+    filter: drop-shadow(0 0 3px rgba(16, 185, 129, 0.7)) drop-shadow(0 0 8px rgba(16, 185, 129, 0.45));
   }
 
   50% {
     transform: scale(1.12);
-    opacity: 0.72;
+    opacity: 0.9;
+    filter: drop-shadow(0 0 7px rgba(16, 185, 129, 0.95)) drop-shadow(0 0 14px rgba(16, 185, 129, 0.68));
   }
 
   100% {
     transform: scale(1);
     opacity: 1;
+    filter: drop-shadow(0 0 3px rgba(16, 185, 129, 0.7)) drop-shadow(0 0 8px rgba(16, 185, 129, 0.45));
   }
 }
 </style>
