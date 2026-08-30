@@ -5,7 +5,6 @@ import { NButton, NEmpty, NSpin } from 'naive-ui'
 import { ListFilter } from '@lucide/vue'
 
 import LogEntry from './LogEntry.vue'
-import LivePollIndicator from '../LivePollIndicator.vue'
 import { logLineKey } from '../../composables/useLogs'
 import type { LogLine } from '../../types'
 
@@ -202,5 +201,4 @@ onMounted(async () => {
   <div v-if="showLoadNewer && loading" class="flex min-h-12 items-center justify-center">
     <n-spin size="small" />
   </div>
-  <LivePollIndicator :active="tailing" label="Following newest logs" />
 </template>
