@@ -117,44 +117,6 @@ Containers no longer available are not listed; there is no `removed` state.
 
 `started_at` is nullable. For running containers it is the best available Docker start timestamp in Unix milliseconds. Clients must tolerate `null` for any state.
 
-### GET `/api/stream/containers` (Server-Sent Events)
-
-Diff-based push equivalent of `GET /api/containers`. Opens a long-lived `text/event-stream` connection and emits two kinds of named events instead of repeatedly sending the full list:
-
-- `snapshot` — sent once, immediately on connect. Payload is the full array, identical in shape to `GET /api/containers`'s response.
-- `diff` — sent whenever the container list actually changes after that. Payload:
-  ```json
-  {
-    "added": [ /* ContainerSummary, container ids not seen before */ ],
-    "updated": [ /* ContainerSummary, whole record for any id whose fields changed */ ],
-    "removed": [ /* container id strings no longer present */ ]
-  }
-  ```
-
-Parameters: none.
-
-Behavior:
-- `updated` entries are whole replacement records, not per-field patches — clients should overwrite their local copy of that container id wholesale
-- no event is emitted at all when a periodic refresh detects no actual change; clients should not expect a steady heartbeat of data (aside from keep-alive comments) while nothing changes
-- each connection tracks its own diff baseline independently — on reconnect, the server always sends a fresh `snapshot` first before resuming `diff` events
-- clients SHOULD rely on the browser's native `EventSource` reconnect behavior rather than implementing their own retry loop
-
-Example:
-```http
-GET /api/stream/containers
-Accept: text/event-stream
-```
-
-Example events:
-```
-event: snapshot
-data: [{"id":"8af7d6c1273d","name":"web-1","log_group":"project-web","image":"nginx:latest","image_sha":"sha256:abcd...","ports":["80:80"],"labels":[],"state":"running","started_at":1720003600000}]
-
-event: diff
-data: {"added":[],"updated":[{"id":"8af7d6c1273d","name":"web-1","log_group":"project-web","image":"nginx:latest","image_sha":"sha256:abcd...","ports":["80:80"],"labels":[],"state":"exited","started_at":1720003600000}],"removed":[]}
-
-```
-
 ---
 
 ## 3) Container management
@@ -353,30 +315,6 @@ Empty response example, valid when nothing has been sampled recently:
   "containers": {},
   "log_groups": {}
 }
-```
-
-### GET `/api/stream/metrics/current` (Server-Sent Events)
-
-Push equivalent of `GET /api/metrics/current` for clients that want live updates without polling. Opens a long-lived `text/event-stream` connection; the server emits one event per message, each carrying a full `MetricsSnapshot` payload with the same shape and staleness rules as the plain GET endpoint above (no diffing — every event is a complete, self-contained snapshot).
-
-Parameters: none.
-
-Behavior:
-- on connect, the server immediately emits the current snapshot, then emits again whenever the underlying host or container data changes
-- host and container updates are collected independently server-side; updates that land within a short window of each other are coalesced into a single emitted event
-- the connection sends periodic keep-alive comments to detect dead connections and avoid idle timeouts
-- clients SHOULD rely on the browser's native `EventSource` reconnect behavior rather than implementing their own retry loop
-
-Example:
-```http
-GET /api/stream/metrics/current
-Accept: text/event-stream
-```
-
-Example event (identical payload shape to `GET /api/metrics/current`):
-```
-data: {"host":{"ts":1720003600000,"cpu_pct":21.4,"mem_used":2147483648,"mem_total":8589934592,"storage_used":104857600,"storage_total":536870912,"metrics_size":5242880,"logs_size":73400320,"net_rx_rate":15432.0,"net_tx_rate":9650.0,"disk_read_rate":2000.0,"disk_write_rate":1500.0},"containers":{},"log_groups":{}}
-
 ```
 
 ---
@@ -667,7 +605,160 @@ Notes:
 
 ---
 
-## 10) Types and contracts
+## 10) Server-Sent Events (streaming)
+
+Every `/api/stream/*` endpoint returns `text/event-stream` and is a push-based alternative to a corresponding plain `GET` endpoint documented above, grouped here together rather than alongside their REST counterparts. Shared conventions across all of them:
+- clients SHOULD rely on the browser's native `EventSource` reconnect behavior rather than implementing their own retry loop
+- connections send periodic keep-alive comments to detect dead connections and avoid idle timeouts
+- reconnecting always restarts with a fresh baseline event before further incremental events resume — the server does not remember a disconnected client's state
+- named SSE `event:` fields distinguish payload kinds (e.g. `snapshot` vs `diff`/`append`) instead of overloading a single unnamed `message` event
+
+### GET `/api/stream/metrics/current`
+
+Push equivalent of `GET /api/metrics/current` for clients that want live updates without polling. The server emits one event per message, each carrying a full `MetricsSnapshot` payload with the same shape and staleness rules as the plain GET endpoint (no diffing — every event is a complete, self-contained snapshot).
+
+Parameters: none.
+
+Behavior:
+- on connect, the server immediately emits the current snapshot, then emits again whenever the underlying host or container data changes
+- host and container updates are collected independently server-side; updates that land within a short window of each other are coalesced into a single emitted event
+
+Example:
+```http
+GET /api/stream/metrics/current
+Accept: text/event-stream
+```
+
+Example event (identical payload shape to `GET /api/metrics/current`):
+```
+data: {"host":{"ts":1720003600000,"cpu_pct":21.4,"mem_used":2147483648,"mem_total":8589934592,"storage_used":104857600,"storage_total":536870912,"metrics_size":5242880,"logs_size":73400320,"net_rx_rate":15432.0,"net_tx_rate":9650.0,"disk_read_rate":2000.0,"disk_write_rate":1500.0},"containers":{},"log_groups":{}}
+
+```
+
+### GET `/api/stream/containers`
+
+Diff-based push equivalent of `GET /api/containers`. Emits two kinds of named events instead of repeatedly sending the full list:
+
+- `snapshot` — sent once, immediately on connect. Payload is the full array, identical in shape to `GET /api/containers`'s response.
+- `diff` — sent whenever the container list actually changes after that. Payload:
+  ```json
+  {
+    "added": [ /* ContainerSummary, container ids not seen before */ ],
+    "updated": [ /* ContainerSummary, whole record for any id whose fields changed */ ],
+    "removed": [ /* container id strings no longer present */ ]
+  }
+  ```
+
+Parameters: none.
+
+Behavior:
+- `updated` entries are whole replacement records, not per-field patches — clients should overwrite their local copy of that container id wholesale
+- no event is emitted at all when a periodic refresh detects no actual change; clients should not expect a steady heartbeat of data (aside from keep-alive comments) while nothing changes
+- each connection tracks its own diff baseline independently
+
+Example:
+```http
+GET /api/stream/containers
+Accept: text/event-stream
+```
+
+Example events:
+```
+event: snapshot
+data: [{"id":"8af7d6c1273d","name":"web-1","log_group":"project-web","image":"nginx:latest","image_sha":"sha256:abcd...","ports":["80:80"],"labels":[],"state":"running","started_at":1720003600000}]
+
+event: diff
+data: {"added":[],"updated":[{"id":"8af7d6c1273d","name":"web-1","log_group":"project-web","image":"nginx:latest","image_sha":"sha256:abcd...","ports":["80:80"],"labels":[],"state":"exited","started_at":1720003600000}],"removed":[]}
+
+```
+
+### GET `/api/stream/metrics/host?from={ts}&resolution={r}`
+
+Push equivalent of `GET /api/metrics/host`, parameterized by `from` and `resolution` — each connection tracks its own range and cursor. There is no `to`: a live stream always runs up to the server's own "now" at connect time and keeps appending indefinitely afterward, so a client-supplied `to` would be redundant and a possible source of clock-skew bugs.
+
+Behavior:
+- on connect, emits one `snapshot` event with the exact same payload as `GET /api/metrics/host?from={ts}&to={now}&resolution={r}` would return, using the server's current time as the implicit `to`
+- afterward, emits one `append` event per newly-completed bucket at the requested `resolution` — payload is a single `HostPoint` (not an array), the new bucket's cross-section
+- a bucket with no host sample in it produces no event at all
+- `resolution` bounds how often `append` can occur: at most once per bucket boundary for that resolution (e.g. up to once every 10 seconds at `10s`, once per hour at `1h`)
+- intended for **live/rolling windows only** (see "Metrics bucket semantics" above); for a fixed historical range, use the plain `GET /api/metrics/host` endpoint instead — the client is responsible for evicting points that fall outside its own sliding window as time advances, since the server does not re-enforce `from` after the initial snapshot
+
+Parameters:
+- `from` (required): start time in ms
+- `resolution` (required): returned sample resolution; allowed values: `10s`, `1m`, `5m`, `1h`
+
+Example:
+```http
+GET /api/stream/metrics/host?from=1720000000000&resolution=10s
+Accept: text/event-stream
+```
+
+Example events:
+```
+event: snapshot
+data: [{"ts":1720000000000,"cpu_pct":21.4,"mem_used":2147483648,"mem_total":8589934592,"storage_used":104857600,"storage_total":536870912,"metrics_size":5242880,"logs_size":73400320,"net_rx_rate":15432.0,"net_tx_rate":9650.0,"disk_read_rate":2000.0,"disk_write_rate":1500.0}]
+
+event: append
+data: {"ts":1720000010000,"cpu_pct":22.1,"mem_used":2148000000,"mem_total":8589934592,"storage_used":104857600,"storage_total":536870912,"metrics_size":5242880,"logs_size":73400320,"net_rx_rate":15900.0,"net_tx_rate":9700.0,"disk_read_rate":2100.0,"disk_write_rate":1600.0}
+
+```
+
+### GET `/api/stream/metrics/containers?from={ts}&resolution={r}`
+
+Push equivalent of `GET /api/metrics/containers` (aggregate per `log_group`); same parameterization (no `to`, see above) and bucket-append behavior as `/api/stream/metrics/host`.
+
+Behavior:
+- `snapshot` payload shape matches `GET /api/metrics/containers` exactly (object keyed by `log_group`, each an array of `GroupPoint`)
+- `append` payload is an object keyed by `log_group`, but each value is a single `GroupPoint` (the new bucket's cross-section), not an array — only `log_group`s with data in that bucket are included
+- a `log_group` that first appears mid-window can show up as a new key in a later `append` event; clients should treat first sight of a key as starting a new series
+
+Parameters:
+- `from` (required): start time in ms
+- `resolution` (required): returned sample resolution; allowed values: `10s`, `1m`, `5m`, `1h`
+
+Example events:
+```
+event: snapshot
+data: {"project-web":[{"ts":1720000000000,"cpu_pct":20.4,"mem_used":704643072,"mem_limit":2147483648,"net_rx_rate":17500.0,"net_tx_rate":12600.0,"blk_read_rate":8800.0,"blk_write_rate":7400.0}]}
+
+event: append
+data: {"project-web":{"ts":1720000010000,"cpu_pct":21.0,"mem_used":705000000,"mem_limit":2147483648,"net_rx_rate":17800.0,"net_tx_rate":12700.0,"blk_read_rate":8900.0,"blk_write_rate":7500.0}}
+
+```
+
+### GET `/api/stream/metrics/containers/{log_group}?from={ts}&resolution={r}`
+
+Push equivalent of `GET /api/metrics/containers/{log_group}`; same parameterization (no `to`, see above) and bucket-append behavior as the other metrics streams above.
+
+Behavior:
+- `snapshot` payload shape matches `GET /api/metrics/containers/{log_group}` exactly (`{ sum: GroupPoint[], containers: { [id]: ContainerPoint[] } }`)
+- `append` payload is `{ sum: GroupPoint | null, containers: { [id]: ContainerPoint } }` — a single cross-section for the newly-completed bucket; an append with `sum: null` and empty `containers` is never sent (skipped instead)
+- a container that starts mid-window appears as a new key under `containers` in a later `append` event
+
+Parameters:
+- `log_group` (path): `log_group` from `/api/containers`
+- `from` (required): start time in ms
+- `resolution` (required): returned sample resolution; allowed values: `10s`, `1m`, `5m`, `1h`
+
+Example:
+```http
+GET /api/stream/metrics/containers/project-web?from=1720000000000&resolution=10s
+Accept: text/event-stream
+```
+
+Example events:
+```
+event: snapshot
+data: {"sum":[{"ts":1720000000000,"cpu_pct":20.4,"mem_used":704643072,"mem_limit":2147483648,"net_rx_rate":17500.0,"net_tx_rate":12600.0,"blk_read_rate":8800.0,"blk_write_rate":7400.0}],"containers":{"8af7d6c1273d":[{"ts":1720000000000,"log_group":"project-web","cpu_pct":12.8,"mem_used":402653184,"mem_limit":1073741824,"net_rx_rate":10500.0,"net_tx_rate":7300.0,"blk_read_rate":5200.0,"blk_write_rate":4100.0}]}}
+
+event: append
+data: {"sum":{"ts":1720000010000,"cpu_pct":21.0,"mem_used":705000000,"mem_limit":2147483648,"net_rx_rate":17800.0,"net_tx_rate":12700.0,"blk_read_rate":8900.0,"blk_write_rate":7500.0},"containers":{"8af7d6c1273d":{"ts":1720000010000,"log_group":"project-web","cpu_pct":13.0,"mem_used":403000000,"mem_limit":1073741824,"net_rx_rate":10600.0,"net_tx_rate":7350.0,"blk_read_rate":5250.0,"blk_write_rate":4150.0}}}
+
+```
+
+---
+
+## 11) Types and contracts
 
 ### `HealthResponse`
 ```json
@@ -694,6 +785,15 @@ Notes:
   "labels": ["string"],
   "state": "created | restarting | running | removing | paused | exited | dead",
   "started_at": null
+}
+```
+
+### `ContainerDiff`
+```json
+{
+  "added": ["ContainerSummary"],
+  "updated": ["ContainerSummary"],
+  "removed": ["string"]
 }
 ```
 
@@ -752,6 +852,14 @@ Notes:
 }
 ```
 
+### `ContainerGroupMetricsAppend`
+```json
+{
+  "sum": "GroupPoint | null",
+  "containers": { "container_id": "ContainerPoint" }
+}
+```
+
 ### `ContainerMetricsByLogGroup`
 ```json
 {
@@ -802,20 +910,23 @@ Notes:
 
 ---
 
-## 11) Route summary
+## 12) Route summary
 
-| Endpoint                              | Method | Description                                                        |
-| ------------------------------------- | ------ | ------------------------------------------------------------------ |
-| `/api/health`                         | GET    | Health check                                                       |
-| `/api/containers`                     | GET    | List containers and details                                        |
-| `/api/stream/containers`              | GET    | Server-Sent Events diff-based push equivalent of `/api/containers` |
-| `/api/containers/{id}/start`          | POST   | Start container                                                    |
-| `/api/containers/{id}/stop`           | POST   | Stop container                                                     |
-| `/api/containers/{id}/restart`        | POST   | Restart container                                                  |
-| `/api/metrics/host`                   | GET    | Host metrics                                                       |
-| `/api/metrics/current`                | GET    | Latest host, per container and per log_group values with rates     |
-| `/api/stream/metrics/current`         | GET    | Server-Sent Events push equivalent of `/api/metrics/current`       |
-| `/api/metrics/containers/{log_group}` | GET    | Container metrics (sum + per container id)                         |
-| `/api/metrics/containers`             | GET    | Aggregate container metrics (sum per log_group)                    |
-| `/api/logs`                           | GET    | List log groups                                                    |
-| `/api/logs/{log_group}`               | GET    | Query logs                                                         |
+| Endpoint                                     | Method | Description                                                               |
+| -------------------------------------------- | ------ | ------------------------------------------------------------------------- |
+| `/api/health`                                | GET    | Health check                                                              |
+| `/api/containers`                            | GET    | List containers and details                                               |
+| `/api/containers/{id}/start`                 | POST   | Start container                                                           |
+| `/api/containers/{id}/stop`                  | POST   | Stop container                                                            |
+| `/api/containers/{id}/restart`               | POST   | Restart container                                                         |
+| `/api/metrics/host`                          | GET    | Host metrics                                                              |
+| `/api/metrics/current`                       | GET    | Latest host, per container and per log_group values with rates            |
+| `/api/metrics/containers/{log_group}`        | GET    | Container metrics (sum + per container id)                                |
+| `/api/metrics/containers`                    | GET    | Aggregate container metrics (sum per log_group)                           |
+| `/api/logs`                                  | GET    | List log groups                                                           |
+| `/api/logs/{log_group}`                      | GET    | Query logs                                                                |
+| `/api/stream/metrics/current`                | GET    | SSE push equivalent of `/api/metrics/current`                             |
+| `/api/stream/containers`                     | GET    | SSE diff-based push equivalent of `/api/containers`                       |
+| `/api/stream/metrics/host`                   | GET    | SSE append-based push equivalent of `/api/metrics/host`                   |
+| `/api/stream/metrics/containers`             | GET    | SSE append-based push equivalent of `/api/metrics/containers`             |
+| `/api/stream/metrics/containers/{log_group}` | GET    | SSE append-based push equivalent of `/api/metrics/containers/{log_group}` |

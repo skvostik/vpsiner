@@ -11,6 +11,7 @@ import { api } from '../api'
 import { colorForKey } from '../colors'
 import { formatBytes, formatUptime } from '../format'
 import { backendOnline, dockerControlsAvailable } from '../composables/useBackendHealth'
+import { useContainerMetricsStream } from '../composables/useContainerMetricsStream'
 import { useContainersStream } from '../composables/useContainersStream'
 import { useMetricsSnapshotStream } from '../composables/useMetricsSnapshotStream'
 import { useMetricsWindow } from '../composables/useMetricsWindow'
@@ -21,7 +22,7 @@ const route = useRoute()
 const router = useRouter()
 const containerId = computed(() => (typeof route.params.id === 'string' ? route.params.id : ''))
 const logGroup = computed(() => container.value?.log_group ?? '')
-const containerSamples = ref<Record<string, ContainerPoint[]>>({})
+const restContainerSamples = ref<Record<string, ContainerPoint[]>>({})
 const error = ref('')
 const labelsExpanded = ref(false)
 const actionKey = ref('')
@@ -125,9 +126,9 @@ function formatRate(value: number) {
 }
 
 async function loadMetrics(range: TimeRange, resolution: MetricsResolution) {
-  if (!logGroup.value) return
+  if (!logGroup.value || isLive.value) return
   const next = await api.containers.metrics(logGroup.value, range, resolution)
-  containerSamples.value = next.containers
+  restContainerSamples.value = next.containers
 }
 
 const {
@@ -135,12 +136,23 @@ const {
   customFrom,
   customTo,
   isLive,
+  resolution,
   resolutionLabel,
+  liveWindowMs,
   updateWindow,
   updateCustomFrom,
   updateCustomTo,
   reload,
 } = useMetricsWindow(loadMetrics)
+const { containers: liveContainerSamples } = useContainerMetricsStream(
+  logGroup,
+  resolution,
+  liveWindowMs,
+  isLive
+)
+const containerSamples = computed(() =>
+  isLive.value ? liveContainerSamples.value : restContainerSamples.value
+)
 const pageStatus = computed<'live' | 'history' | 'stopped'>(() => {
   if (!backendOnline.value) return 'stopped'
   if (!container.value || !['running', 'restarting'].includes(container.value.state))

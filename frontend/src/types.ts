@@ -65,6 +65,12 @@ export interface ContainerGroupMetrics {
 
 export type ContainerMetricsByLogGroup = Record<string, GroupPoint[]>
 
+/** One newly-completed bucket's cross-section, pushed by GET /api/stream/metrics/containers/{log_group}. */
+export interface ContainerGroupMetricsAppend {
+  sum: GroupPoint | null
+  containers: Record<string, ContainerPoint>
+}
+
 export interface MetricsSnapshot {
   host: HostPoint | null
   containers: Record<string, ContainerPoint>

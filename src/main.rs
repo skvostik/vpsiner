@@ -120,12 +120,14 @@ async fn async_main() {
         state.metrics.clone(),
         state.logs.clone(),
         state.snapshot.clone(),
+        state.bucket_watcher.clone(),
         config.collect_interval,
     ));
     tokio::spawn(metrics::collector::run_containers(
         state.docker.clone(),
         state.metrics.clone(),
         state.snapshot.clone(),
+        state.bucket_watcher.clone(),
         config.collect_interval,
     ));
     tokio::spawn(logs::run_ingestion(

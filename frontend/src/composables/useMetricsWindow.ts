@@ -1,7 +1,5 @@
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 
-import { metricsSampleIntervalMs } from './useBackendHealth'
-import { computePollIntervalMs } from '../metricsFreshness'
 import type { MetricsResolution, MetricsWindow, TimeRange } from '../types'
 
 const storageKey = 'vpsiner.metrics.window.v1'
@@ -38,7 +36,6 @@ export function useMetricsWindow(
   const customTo = ref<number>()
   const loading = ref(false)
   const error = ref('')
-  let pollTimer: number | undefined
 
   const isLive = computed(() => timeWindow.value !== 'custom')
 
@@ -52,7 +49,10 @@ export function useMetricsWindow(
   }
 
   const resolutionLabel = computed(() => resolutionLabels[resolutionFor(computeRange())])
-  const pollIntervalMs = computed(() => computePollIntervalMs(metricsSampleIntervalMs.value))
+  const resolution = computed(() => resolutionFor(computeRange()))
+  const liveWindowMs = computed(() =>
+    isLive.value && timeWindow.value !== 'custom' ? durationMs[timeWindow.value] : 0
+  )
 
   async function reload() {
     loading.value = true
@@ -65,17 +65,6 @@ export function useMetricsWindow(
     } finally {
       loading.value = false
     }
-  }
-
-  function restartPolling() {
-    if (pollTimer) {
-      window.clearInterval(pollTimer)
-      pollTimer = undefined
-    }
-    if (!isLive.value) return
-    pollTimer = window.setInterval(() => {
-      if (document.visibilityState === 'visible') reload()
-    }, pollIntervalMs.value)
   }
 
   function persist() {
@@ -97,7 +86,6 @@ export function useMetricsWindow(
     }
     persist()
     reload()
-    restartPolling()
   }
 
   function updateCustomFrom(value: number | null) {
@@ -126,11 +114,6 @@ export function useMetricsWindow(
       // Ignore invalid local preferences.
     }
     reload()
-    restartPolling()
-  })
-
-  onBeforeUnmount(() => {
-    if (pollTimer) window.clearInterval(pollTimer)
   })
 
   return {
@@ -140,7 +123,9 @@ export function useMetricsWindow(
     loading,
     error,
     isLive,
+    resolution,
     resolutionLabel,
+    liveWindowMs,
     updateWindow,
     updateCustomFrom,
     updateCustomTo,

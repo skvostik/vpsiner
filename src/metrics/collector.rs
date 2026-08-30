@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use crate::docker::DockerService;
 use crate::logs::store::LogStore;
+use crate::metrics::bucket_watcher::BucketWatcher;
 use crate::metrics::host::HostMetricsSource;
 use crate::metrics::snapshot::MetricsSnapshotState;
 use crate::metrics::store::MetricsStore;
@@ -13,6 +14,7 @@ pub async fn collect_once(
     metrics: &Arc<dyn MetricsStore>,
     logs: &Arc<dyn LogStore>,
     snapshot: &Arc<MetricsSnapshotState>,
+    bucket_watcher: &Arc<BucketWatcher>,
 ) {
     match host.sample().await {
         Ok(mut sample) => {
@@ -31,8 +33,9 @@ pub async fn collect_once(
                 }
             };
             snapshot.record_host(&sample);
-            if let Err(err) = metrics.insert_host(sample).await {
-                tracing::error!(error = %err, "failed to persist host metrics");
+            match metrics.insert_host(sample).await {
+                Ok(()) => bucket_watcher.observe_sample(sample.ts),
+                Err(err) => tracing::error!(error = %err, "failed to persist host metrics"),
             }
         }
         Err(err) => tracing::error!(error = %err, "failed to sample host metrics"),
@@ -43,13 +46,20 @@ pub async fn run_containers(
     docker: Arc<dyn DockerService>,
     metrics: Arc<dyn MetricsStore>,
     snapshot: Arc<MetricsSnapshotState>,
+    bucket_watcher: Arc<BucketWatcher>,
     _interval: Duration,
 ) {
     let mut samples = docker.container_samples();
     while let Some(samples) = samples.next().await {
         snapshot.record_containers(&samples);
-        if let Err(err) = metrics.insert_containers(samples).await {
-            tracing::error!(error = %err, "failed to persist container metrics");
+        let latest_ts = samples.iter().map(|sample| sample.ts).max();
+        match metrics.insert_containers(samples).await {
+            Ok(()) => {
+                if let Some(ts) = latest_ts {
+                    bucket_watcher.observe_sample(ts);
+                }
+            }
+            Err(err) => tracing::error!(error = %err, "failed to persist container metrics"),
         }
     }
 
@@ -61,12 +71,13 @@ pub async fn run(
     metrics: Arc<dyn MetricsStore>,
     logs: Arc<dyn LogStore>,
     snapshot: Arc<MetricsSnapshotState>,
+    bucket_watcher: Arc<BucketWatcher>,
     interval: Duration,
 ) {
     let mut ticker = tokio::time::interval(interval);
     loop {
         ticker.tick().await;
-        collect_once(&host, &metrics, &logs, &snapshot).await;
+        collect_once(&host, &metrics, &logs, &snapshot, &bucket_watcher).await;
     }
 }
 
@@ -118,7 +129,8 @@ mod tests {
         let metrics: Arc<dyn MetricsStore> = Arc::new(metrics);
         let logs: Arc<dyn LogStore> = Arc::new(logs);
         let snapshot = Arc::new(MetricsSnapshotState::new(Duration::from_secs(10)));
-        collect_once(&host, &metrics, &logs, &snapshot).await;
+        let bucket_watcher = Arc::new(BucketWatcher::new());
+        collect_once(&host, &metrics, &logs, &snapshot, &bucket_watcher).await;
     }
 
     #[tokio::test]
@@ -152,6 +164,14 @@ mod tests {
         let docker: Arc<dyn DockerService> = Arc::new(docker);
         let metrics: Arc<dyn MetricsStore> = Arc::new(metrics);
         let snapshot = Arc::new(MetricsSnapshotState::new(Duration::from_secs(10)));
-        run_containers(docker, metrics, snapshot, Duration::from_secs(10)).await;
+        let bucket_watcher = Arc::new(BucketWatcher::new());
+        run_containers(
+            docker,
+            metrics,
+            snapshot,
+            bucket_watcher,
+            Duration::from_secs(10),
+        )
+        .await;
     }
 }

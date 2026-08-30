@@ -1,6 +1,7 @@
 pub mod containers;
 pub mod logs;
 pub mod metrics;
+pub mod metrics_stream;
 pub mod stream;
 
 use axum::{Json, Router, extract::State, routing::get, routing::post};
@@ -36,6 +37,12 @@ pub fn router() -> Router<AppState> {
             "/stream",
             Router::new()
                 .route("/metrics/current", get(stream::current))
+                .route("/metrics/host", get(metrics_stream::host))
+                .route("/metrics/containers", get(metrics_stream::containers))
+                .route(
+                    "/metrics/containers/{log_group}",
+                    get(metrics_stream::container),
+                )
                 .route("/containers", get(stream::containers)),
         )
 }

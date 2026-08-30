@@ -108,6 +108,13 @@ pub struct ContainerGroupMetrics {
 
 pub type ContainerMetricsByLogGroup = HashMap<String, Vec<GroupPoint>>;
 
+/// One newly-completed bucket's cross-section, pushed by `/api/stream/metrics/containers/{log_group}`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ContainerGroupMetricsAppend {
+    pub sum: Option<GroupPoint>,
+    pub containers: HashMap<String, ContainerPoint>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct HostPoint {
     pub ts: TimestampMs,

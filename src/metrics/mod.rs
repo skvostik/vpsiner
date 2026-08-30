@@ -1,3 +1,4 @@
+pub mod bucket_watcher;
 pub mod collector;
 pub mod downsampling;
 pub mod host;
