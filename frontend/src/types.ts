@@ -82,7 +82,6 @@ export interface ContainerRow extends ContainerSummary {
 }
 export type LogStream = 'stdout' | 'stderr'
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
-export type LogWindow = '1h' | '6h' | '24h' | '7d' | '30d' | 'custom'
 
 export type MetricsWindow = '10m' | '30m' | '1h' | '6h' | '24h' | '7d' | 'custom'
 export type MetricsResolution = '10s' | '1m' | '5m' | '1h'

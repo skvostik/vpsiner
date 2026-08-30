@@ -11,7 +11,6 @@ import type {
   LogQueryParams,
   LogStream,
   LogTailAppend,
-  LogWindow,
 } from '../types'
 
 const storageKey = 'vpsiner.logs.preferences.v1'
@@ -38,7 +37,6 @@ type UseLogsState = {
   query: ReturnType<typeof ref<string>>
   level: ReturnType<typeof ref<LogLevel[]>>
   stream: ReturnType<typeof ref<LogStream[]>>
-  timeWindow: ReturnType<typeof ref<LogWindow>>
   customFrom: ReturnType<typeof ref<number | undefined>>
   customTo: ReturnType<typeof ref<number | undefined>>
   loadingGroups: ReturnType<typeof ref<boolean>>
@@ -55,7 +53,6 @@ type UseLogsState = {
   updateQuery: (value: string) => void
   updateLevel: (value: LogLevel[]) => void
   updateStream: (value: LogStream[]) => void
-  updateWindow: (value: LogWindow) => void
   updateCustomFrom: (value: number | null) => void
   updateCustomTo: (value: number | null) => void
 }
@@ -69,14 +66,13 @@ export function useLogs(initialGroup?: string): UseLogsState {
   const query = ref('')
   const level = ref<LogLevel[]>([])
   const stream = ref<LogStream[]>([])
-  const timeWindow = ref<LogWindow>('1h')
   const customFrom = ref<number>()
   const customTo = ref<number>()
   const loadingLogs = ref(false)
   const hasMore = ref(false)
   const hasNewer = ref(false)
-  // A fixed custom range never auto-refreshes; only the default rolling windows can be tailed.
-  const liveWindow = computed(() => timeWindow.value !== 'custom')
+  // Tailing only makes sense with no upper bound; it never depends on "from".
+  const liveWindow = computed(() => customTo.value === undefined)
   const atBottom = ref(false)
   // Whether being at the bottom of a live window would currently count as tailing.
   const couldTail = computed(() => liveWindow.value && atBottom.value)
@@ -89,7 +85,6 @@ export function useLogs(initialGroup?: string): UseLogsState {
   )
   const freshKeys = ref(new Set<string>())
   const error = ref('')
-  let windowTo = 0
   let searchTimer: number | undefined
   let requestVersion = 0
   let freshTimer: number | undefined
@@ -177,21 +172,10 @@ export function useLogs(initialGroup?: string): UseLogsState {
   }
 
   function currentParams(mode?: 'older' | 'newer'): LogQueryParams {
-    // Tailing must extend the window to now, otherwise it keeps asking for the already-loaded range.
-    const to = mode === 'newer' ? Date.now() : windowTo || Date.now()
-    const windowMs: Record<Exclude<LogWindow, 'custom'>, number> = {
-      '1h': 60 * 60 * 1000,
-      '6h': 6 * 60 * 60 * 1000,
-      '24h': 24 * 60 * 60 * 1000,
-      '7d': 7 * 24 * 60 * 60 * 1000,
-      '30d': 30 * 24 * 60 * 60 * 1000,
-    }
     return {
-      from:
-        timeWindow.value === 'custom' && customFrom.value !== undefined
-          ? customFrom.value
-          : to - (timeWindow.value === 'custom' ? 60 * 60 * 1000 : windowMs[timeWindow.value]),
-      to: timeWindow.value === 'custom' && customTo.value !== undefined ? customTo.value : to,
+      from: customFrom.value,
+      // Tailing's catch-up fetch always extends to whatever exists now, ignoring any upper bound.
+      to: mode === 'newer' ? undefined : customTo.value,
       q: query.value || undefined,
       level: level.value,
       stream: stream.value,
@@ -203,7 +187,6 @@ export function useLogs(initialGroup?: string): UseLogsState {
 
   async function loadLogs() {
     const version = ++requestVersion
-    windowTo = Date.now()
     pages.value = []
     hasMore.value = false
     hasNewer.value = false
@@ -354,7 +337,6 @@ export function useLogs(initialGroup?: string): UseLogsState {
         query: query.value,
         level: level.value,
         stream: stream.value,
-        timeWindow: timeWindow.value,
         customFrom: customFrom.value,
         customTo: customTo.value,
       })
@@ -380,26 +362,16 @@ export function useLogs(initialGroup?: string): UseLogsState {
     loadLogs()
   }
 
-  function updateWindow(value: LogWindow) {
-    timeWindow.value = value
-    if (value === 'custom' && (customFrom.value === undefined || customTo.value === undefined)) {
-      customTo.value = Date.now()
-      customFrom.value = customTo.value - 60 * 60 * 1000
-    }
-    persist()
-    loadLogs()
-  }
-
   function updateCustomFrom(value: number | null) {
     customFrom.value = value ?? undefined
     persist()
-    if (customFrom.value !== undefined && customTo.value !== undefined) loadLogs()
+    loadLogs()
   }
 
   function updateCustomTo(value: number | null) {
     customTo.value = value ?? undefined
     persist()
-    if (customFrom.value !== undefined && customTo.value !== undefined) loadLogs()
+    loadLogs()
   }
 
   watch(selectedGroup, () => {
@@ -414,7 +386,6 @@ export function useLogs(initialGroup?: string): UseLogsState {
         query: string
         level: LogLevel[]
         stream: LogStream[]
-        timeWindow: LogWindow
         customFrom: number
         customTo: number
       }>
@@ -422,7 +393,6 @@ export function useLogs(initialGroup?: string): UseLogsState {
       query.value = saved.query ?? ''
       level.value = saved.level ?? []
       stream.value = saved.stream ?? []
-      if (saved.timeWindow) timeWindow.value = saved.timeWindow
       customFrom.value = saved.customFrom
       customTo.value = saved.customTo
     } catch {
@@ -465,7 +435,6 @@ export function useLogs(initialGroup?: string): UseLogsState {
     query,
     level,
     stream,
-    timeWindow,
     loadingGroups,
     loadingLogs,
     hasMore,
@@ -480,7 +449,6 @@ export function useLogs(initialGroup?: string): UseLogsState {
     updateQuery,
     updateLevel,
     updateStream,
-    updateWindow,
     customFrom,
     customTo,
     updateCustomFrom,

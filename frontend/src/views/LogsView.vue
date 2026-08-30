@@ -10,7 +10,7 @@ import LogViewer from '../components/logs/LogViewer.vue'
 import { backendOnline } from '../composables/useBackendHealth'
 import { useLogs } from '../composables/useLogs'
 import { usePageTitle } from '../composables/usePageTitle'
-import type { LogGroups, LogLevel, LogLine, LogStream, LogWindow } from '../types'
+import type { LogGroups, LogLevel, LogLine, LogStream } from '../types'
 
 type LogsState = {
   groups: Ref<LogGroups>
@@ -19,7 +19,6 @@ type LogsState = {
   query: Ref<string>
   level: Ref<LogLevel[]>
   stream: Ref<LogStream[]>
-  timeWindow: Ref<LogWindow>
   customFrom: Ref<number | undefined>
   customTo: Ref<number | undefined>
   loadingGroups: Ref<boolean>
@@ -36,7 +35,6 @@ type LogsState = {
   updateQuery: (value: string) => void
   updateLevel: (value: LogLevel[]) => void
   updateStream: (value: LogStream[]) => void
-  updateWindow: (value: LogWindow) => void
   updateCustomFrom: (value: number | null) => void
   updateCustomTo: (value: number | null) => void
 }
@@ -56,7 +54,6 @@ const {
   query,
   level,
   stream,
-  timeWindow,
   customFrom,
   customTo,
   loadingGroups,
@@ -73,7 +70,6 @@ const {
   updateQuery,
   updateLevel,
   updateStream,
-  updateWindow,
   updateCustomFrom,
   updateCustomTo,
 } = logsState
@@ -83,6 +79,15 @@ const pageStatus = computed<'live' | 'history' | 'stopped'>(() => {
   if (!selectedGroupSummary.value?.live) return 'stopped'
   return tailing.value ? 'live' : 'history'
 })
+// A lower time bound, text search, or level/stream filter can all hide logs older than what's
+// currently loaded, so "no more older logs" alone doesn't mean the group's history truly ends here.
+const hasActiveFilters = computed(
+  () =>
+    !!query.value ||
+    level.value.length > 0 ||
+    stream.value.length > 0 ||
+    customFrom.value !== undefined
+)
 
 watch(routeGroup, (group) => {
   if (group && group !== selectedGroup.value) selectedGroup.value = group
@@ -139,14 +144,12 @@ onMounted(() => {
       :query="query"
       :level="level"
       :stream="stream"
-      :window="timeWindow"
       :expanded="filtersExpanded"
       :custom-from="customFrom"
       :custom-to="customTo"
       @update:query="updateQuery"
       @update:level="updateLevel"
       @update:stream="updateStream"
-      @update:window="updateWindow"
       @update:custom-from="updateCustomFrom"
       @update:custom-to="updateCustomTo"
     />
@@ -161,6 +164,7 @@ onMounted(() => {
       :query="query"
       :tailing="tailing"
       :has-stored-logs="selectedGroupSummary?.last_received != null"
+      :has-active-filters="hasActiveFilters"
       :fresh-keys="freshKeys"
       :load-older="loadMore"
       :load-newer="loadNewer"
