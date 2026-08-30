@@ -327,6 +327,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn configuration_reports_the_actual_tokio_worker_count() {
+        let docker = MockDockerService::new();
+        let (state, config) = state_with_docker(docker);
+        let response = build_router(state, &config)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/config/computed")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let values: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            values[0]["value"],
+            tokio::runtime::Handle::current()
+                .metrics()
+                .num_workers()
+                .to_string()
+        );
+    }
+
+    #[tokio::test]
     async fn ui_config_returns_default_when_file_does_not_exist() {
         let docker = MockDockerService::new();
         let (state, config) = state_with_docker(docker);

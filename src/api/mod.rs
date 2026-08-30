@@ -27,6 +27,7 @@ pub fn router() -> Router<AppState> {
         .route("/health", get(health))
         .route("/config/ui", get(config::ui))
         .route("/config/settings", get(config::settings))
+        .route("/config/computed", get(config::computed))
         .route("/containers", get(containers::list))
         .route("/containers/{id}/start", post(containers::start))
         .route("/containers/{id}/stop", post(containers::stop))

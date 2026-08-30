@@ -4,11 +4,12 @@ import { NAlert, NSpin, NTag } from 'naive-ui'
 
 import { api } from '../api'
 import { usePageTitle } from '../composables/usePageTitle'
-import type { SettingCategory, SettingEntry } from '../types'
+import type { ComputedEntry, SettingCategory, SettingEntry } from '../types'
 
 usePageTitle('Configuration')
 
 const settings = ref<SettingEntry[]>([])
+const computedValues = ref<ComputedEntry[]>([])
 const loading = ref(true)
 const error = ref('')
 
@@ -30,7 +31,12 @@ const byCategory = computed(() =>
 
 onMounted(async () => {
   try {
-    settings.value = await api.config.settings()
+    const [loadedSettings, loadedComputedValues] = await Promise.all([
+      api.config.settings(),
+      api.config.computed(),
+    ])
+    settings.value = loadedSettings
+    computedValues.value = loadedComputedValues
   } catch (fetchError) {
     error.value = fetchError instanceof Error ? fetchError.message : String(fetchError)
   } finally {
@@ -51,6 +57,44 @@ onMounted(async () => {
       {{ error }}
     </n-alert>
     <template v-else>
+      <section v-if="computedValues.length" class="space-y-2">
+        <div>
+          <h2 class="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Computed</h2>
+          <p class="text-xs text-neutral-500 dark:text-neutral-400">
+            Values measured from the currently running backend
+          </p>
+        </div>
+        <div class="overflow-x-auto rounded border border-neutral-200 dark:border-neutral-800">
+          <table class="w-full border-collapse text-left text-sm">
+            <thead
+              class="bg-neutral-50 text-xs uppercase tracking-wide text-neutral-500 dark:bg-neutral-900 dark:text-neutral-400"
+            >
+              <tr>
+                <th class="px-4 py-2 font-medium">Value</th>
+                <th class="px-4 py-2 font-medium text-right">Current</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-neutral-200 dark:divide-neutral-800">
+              <tr v-for="entry in computedValues" :key="entry.name">
+                <td class="px-4 py-3 align-top">
+                  <span class="font-mono text-xs text-neutral-900 dark:text-neutral-100">{{
+                    entry.name
+                  }}</span>
+                  <p class="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+                    {{ entry.description }}
+                  </p>
+                </td>
+                <td class="px-4 py-3 align-top text-right">
+                  <span
+                    class="break-all font-mono text-xs text-neutral-900 dark:text-neutral-100"
+                    >{{ entry.value }}</span
+                  >
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
       <section v-for="section in byCategory" :key="section.category" class="space-y-2">
         <div>
           <h2 class="text-sm font-semibold text-neutral-900 dark:text-neutral-100">

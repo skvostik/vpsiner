@@ -134,6 +134,30 @@ Fields:
 
 Ordering is stable and groups `common` entries before `advanced` ones, matching the order used in the README.
 
+### GET `/api/config/computed`
+
+Returns live values measured from the running backend. These values are read-only and may differ from their configured inputs; for example, Tokio chooses the available CPU parallelism when `VPSINER_WORKER_THREADS` is unset.
+
+Parameters: none
+
+Example response:
+```json
+[
+  {
+    "name": "tokio_worker_threads",
+    "value": "4",
+    "description": "Actual number of worker threads allocated to the Tokio runtime"
+  }
+]
+```
+
+Fields:
+- `name`: Stable computed-value identifier
+- `value`: Current value, formatted as a string
+- `description`: Short human-readable explanation
+
+`tokio_worker_threads` is the actual worker-thread allocation reported by the active Tokio runtime. It is not necessarily the same as the `VPSINER_WORKER_THREADS` setting: when that environment variable is unset, Tokio selects the allocation automatically.
+
 ---
 
 ## 3) List containers

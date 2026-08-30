@@ -119,14 +119,13 @@ defaults work for the quick-start command above.
 
 ### Common settings
 
-| Variable                  | Default                       | Description                                                                                  |
-| ------------------------- | ----------------------------- | -------------------------------------------------------------------------------------------- |
-| `VPSINER_DOCKER_HOST`     | `unix:///var/run/docker.sock` | Docker socket or socket-proxy endpoint, for example `http://docker-proxy:2375`               |
-| `VPSINER_RETENTION_WEEKS` | `4`                           | Number of weeks of metrics and logs to retain                                                |
-| `VPSINER_DOCKER_CONTROLS` | `auto`                        | Container controls mode: `auto`, `enabled`, or `disabled`                                    |
-| `VPSINER_PORT`            | `3000`                        | HTTP listen port inside the container                                                        |
-| `VPSINER_WORKER_THREADS`  | unset                         | Overrides Tokio runtime worker-thread count; by default Tokio uses available CPU parallelism |
-| `RUST_LOG`                | `info`                        | Backend log filter, such as `debug` or `vpsiner=debug`                                       |
+| Variable                  | Default                       | Description                                                                    |
+| ------------------------- | ----------------------------- | ------------------------------------------------------------------------------ |
+| `VPSINER_DOCKER_HOST`     | `unix:///var/run/docker.sock` | Docker socket or socket-proxy endpoint, for example `http://docker-proxy:2375` |
+| `VPSINER_RETENTION_WEEKS` | `4`                           | Number of weeks of metrics and logs to retain                                  |
+| `VPSINER_DOCKER_CONTROLS` | `auto`                        | Container controls mode: `auto`, `enabled`, or `disabled`                      |
+| `VPSINER_PORT`            | `3000`                        | HTTP listen port inside the container                                          |
+| `RUST_LOG`                | `info`                        | Backend log filter, such as `debug` or `vpsiner=debug`                         |
 
 There are further advanced variables for tuning intervals, buffer sizes and
 timeouts. The **Configuration** page in the app lists every supported variable

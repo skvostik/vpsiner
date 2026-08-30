@@ -8,6 +8,17 @@ pub async fn settings(State(state): State<AppState>) -> Json<Vec<SettingEntry>> 
     Json(state.config.describe())
 }
 
+pub async fn computed() -> Json<Vec<ComputedEntry>> {
+    Json(vec![ComputedEntry {
+        name: "tokio_worker_threads",
+        value: tokio::runtime::Handle::current()
+            .metrics()
+            .num_workers()
+            .to_string(),
+        description: "Actual number of worker threads allocated to the Tokio runtime",
+    }])
+}
+
 pub async fn ui(State(state): State<AppState>) -> Json<Value> {
     let ui_path = state.config.config_path.join("ui.json");
     if let Ok(content) = tokio::fs::read_to_string(&ui_path).await {
@@ -17,6 +28,14 @@ pub async fn ui(State(state): State<AppState>) -> Json<Value> {
     }
 
     Json(default_ui_config())
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComputedEntry {
+    pub name: &'static str,
+    pub value: String,
+    pub description: &'static str,
 }
 
 pub fn default_ui_config() -> Value {

@@ -3,6 +3,7 @@ import type {
   ContainerGroupMetrics,
   ContainerMetricsByLogGroup,
   ContainerSummary,
+  ComputedEntry,
   HostPoint,
   LogPage,
   LogQueryParams,
@@ -67,6 +68,7 @@ export const api = {
   config: {
     ui: () => request<UiConfig>('/api/config/ui'),
     settings: () => request<SettingEntry[]>('/api/config/settings'),
+    computed: () => request<ComputedEntry[]>('/api/config/computed'),
   },
 }
 
