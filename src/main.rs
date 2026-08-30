@@ -343,6 +343,8 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let ui_config: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(ui_config["name"], "VPSiner");
+        assert_eq!(ui_config["eyebrow"], "Simply Observed");
         let links = ui_config.get("links").and_then(|l| l.as_array()).unwrap();
         assert_eq!(links.len(), 1);
         assert_eq!(links[0]["icon"], "Github");
@@ -355,8 +357,7 @@ mod tests {
         let temp_dir = std::env::temp_dir().join(format!("vpsiner-test-{}", std::process::id()));
         tokio::fs::create_dir_all(&temp_dir).await.unwrap();
         let ui_json_path = temp_dir.join("ui.json");
-        let custom_json =
-            r#"{"links":[{"icon":"Server","label":"Custom Server","url":"https://example.com"}]}"#;
+        let custom_json = r#"{"name":"Homelab","eyebrow":"Dashboard","links":[{"icon":"Server","label":"Custom Server","url":"https://example.com"}]}"#;
         tokio::fs::write(&ui_json_path, custom_json).await.unwrap();
 
         let mut config = test_config();
@@ -383,6 +384,8 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let ui_config: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(ui_config["name"], "Homelab");
+        assert_eq!(ui_config["eyebrow"], "Dashboard");
         let links = ui_config.get("links").and_then(|l| l.as_array()).unwrap();
         assert_eq!(links.len(), 1);
         assert_eq!(links[0]["icon"], "Server");

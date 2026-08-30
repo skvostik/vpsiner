@@ -12,7 +12,7 @@ import { useUiConfig } from '../composables/useUiConfig'
 const emit = defineEmits<{ navigate: [] }>()
 const route = useRoute()
 const { runningCount } = useContainersStream()
-const { customLinks } = useUiConfig()
+const { appName, appEyebrow, customLinks } = useUiConfig()
 
 const navItems = computed(() => [
   { key: 'host', label: 'Host Metrics', icon: Gauge },
@@ -46,13 +46,14 @@ function resolveIcon(name: string): Component {
   <div class="flex h-full flex-col">
     <div class="px-4 py-4">
       <p
+        v-if="appEyebrow"
         class="text-xs mb-0 pb-0 font-semibold uppercase tracking-[0.2em] text-cyan-700 dark:text-cyan-400"
       >
-        Simply Observed
+        {{ appEyebrow }}
       </p>
       <span
         class="mt-0 pt-0 block text-xl font-extrabold tracking-tight text-neutral-900 dark:text-neutral-50"
-        >VPSiner</span
+        >{{ appName }}</span
       >
     </div>
     <nav class="flex-1 px-2">

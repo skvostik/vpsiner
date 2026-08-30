@@ -146,5 +146,7 @@ export interface CustomLink {
 }
 
 export interface UiConfig {
+  name?: string
+  eyebrow?: string
   links?: CustomLink[]
 }

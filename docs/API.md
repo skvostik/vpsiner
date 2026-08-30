@@ -67,7 +67,7 @@ Example response:
 
 ### GET `/api/config/ui`
 
-Returns frontend UI configuration, such as custom sidebar navigation links.
+Returns frontend UI configuration, including custom branding (name and eyebrow) and custom sidebar navigation links.
 
 Reads `ui.json` from the configured config directory (`VPSINER_CONFIG_PATH`, default `config` / `/config` in Docker). If `ui.json` does not exist or cannot be read, returns default configuration linking to the VPSiner GitHub repository.
 
@@ -76,6 +76,8 @@ Parameters: none
 Example response:
 ```json
 {
+  "name": "VPSiner",
+  "eyebrow": "Simply Observed",
   "links": [
     {
       "icon": "Github",
@@ -86,10 +88,13 @@ Example response:
 }
 ```
 
-Link fields:
-- `icon`: Name of the Lucide icon (e.g., `Github`, `Server`, `Globe`, `Activity`, `HardDrive`, `Terminal`)
-- `label`: Display text for the menu item
-- `url`: Destination URL (opened in a new tab)
+Fields:
+- `name`: Brand name shown in the sidebar header and browser page title (default: `"VPSiner"`)
+- `eyebrow`: Eyebrow subtitle text shown above the brand name in the sidebar (default: `"Simply Observed"`)
+- `links`: Array of custom link objects:
+  - `icon`: Name of the Lucide icon (e.g., `Github`, `Server`, `Globe`, `Activity`, `HardDrive`, `Terminal`)
+  - `label`: Display text for the menu item
+  - `url`: Destination URL (opened in a new tab)
 
 ---
 
@@ -879,6 +884,8 @@ data: {"items":[{"ts":1720003600000,"log_group":"project-web","cid":"8af7d6c1273
 ### `UiConfig`
 ```json
 {
+  "name": "string",
+  "eyebrow": "string",
   "links": [
     {
       "icon": "string",

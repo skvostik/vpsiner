@@ -20,7 +20,7 @@ under 50 MB. Actual usage depends on the number of containers and log volume.
     - [Advanced settings](#advanced-settings)
     - [Log groups](#log-groups)
     - [Container controls](#container-controls)
-    - [Custom menu links](#custom-menu-links)
+    - [UI customization and custom links](#ui-customization-and-custom-links)
     - [Data persistence](#data-persistence)
   - [Development](#development)
   - [Contributing](#contributing)
@@ -186,16 +186,19 @@ are hidden and the backend rejects direct control requests as well. Set
 `VPSINER_DOCKER_CONTROLS=disabled` for a monitoring-only installation, or allow
 the start, stop, and restart endpoints in your socket proxy to enable controls.
 
-### Custom menu links
+### UI customization and custom links
 
-You can configure custom navigation links in the sidebar menu so VPSiner can
-serve as a main server dashboard with links to your other services.
+You can customize the dashboard branding (name, eyebrow subtitle, and browser page title)
+and configure custom navigation links in the sidebar menu so VPSiner can serve as a
+main server dashboard with convenient links to your other services.
 
 Mount a configuration directory to `/config` (or point `VPSINER_CONFIG_PATH` to
 your config directory) containing a `ui.json` file:
 
 ```json
 {
+  "name": "VPSiner",
+  "eyebrow": "Simply Observed",
   "links": [
     {
       "icon": "Github",
@@ -216,11 +219,13 @@ your config directory) containing a `ui.json` file:
 }
 ```
 
+- `name`: Custom title/brand name shown in the sidebar header and browser `<title>` (default: `"VPSiner"`).
+- `eyebrow`: Eyebrow subtitle text above the title in the sidebar (default: `"Simply Observed"`).
 - `icon`: Any Lucide icon name (e.g. `Server`, `HardDrive`, `Globe`, `Activity`, `Terminal`, `Database`).
 - `label`: Label displayed in the sidebar navigation.
 - `url`: Destination URL (opened in a new tab).
 
-If `ui.json` is not present, VPSiner defaults to showing a link to the VPSiner GitHub repository.
+If `ui.json` is not present, VPSiner defaults to `"VPSiner"`, `"Simply Observed"`, and a link to the VPSiner GitHub repository.
 
 ### Data persistence
 

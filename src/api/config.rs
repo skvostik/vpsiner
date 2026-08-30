@@ -16,6 +16,8 @@ pub async fn ui(State(state): State<AppState>) -> Json<Value> {
 
 pub fn default_ui_config() -> Value {
     json!({
+        "name": "VPSiner",
+        "eyebrow": "Simply Observed",
         "links": [
             {
                 "icon": "Github",
@@ -33,6 +35,8 @@ mod tests {
     #[test]
     fn test_default_ui_config() {
         let val = default_ui_config();
+        assert_eq!(val["name"], "VPSiner");
+        assert_eq!(val["eyebrow"], "Simply Observed");
         let links = val.get("links").and_then(|l| l.as_array()).unwrap();
         assert_eq!(links.len(), 1);
         assert_eq!(links[0]["icon"], "Github");
