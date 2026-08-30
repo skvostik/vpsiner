@@ -35,6 +35,7 @@ flowchart TB
         Containers[GET / POST /containers]
         ContainersStream[GET /stream/containers]
         Logs[GET /logs*]
+        LogsStream[GET /stream/logs*]
         Metrics[GET /metrics/*]
         MetricsStream[GET /stream/metrics/current]
     end
@@ -57,6 +58,7 @@ flowchart TB
     Metadata --> Logs
     MetricsStore --> Metrics
     MetricsCollector -.->|push on change| MetricsStream
+    LogBuffer -.->|push on flush| LogsStream
 
     MetricsCollector -->|read| Docker
     MetricsCollector -->|write| MetricsStore
@@ -69,7 +71,7 @@ flowchart TB
     class MetricsCollector,LogIngest,Retention worker;
     class Docker,Registry,LogBuffer service;
     class MetricsStore,LogStore,Metadata store;
-    class Health,Containers,ContainersStream,Metrics,MetricsStream,Logs api;
+    class Health,Containers,ContainersStream,Metrics,MetricsStream,Logs,LogsStream api;
 ```
 
 - Metrics collector: periodically reads host and container metrics and writes time-series samples to the metrics store.
@@ -77,7 +79,7 @@ flowchart TB
 - Cleanup worker: periodically removes data older than the configured retention window.
 - DockerService: the Docker-facing abstraction that provides container lists/details, log streams, samples, and control actions.
 - ContainerRegistry: maintains discovered containers and their observed runtime state for DockerService.
-- LogBuffer: batches/debounces log lines before persistence, then writes log rows and metadata updates.
+- LogBuffer: batches/debounces log lines before persistence, then writes log rows and metadata updates; also bumps a `LogFlushWatcher` signal per group (plus a global one) on every successful flush, driving `GET /stream/logs` and `GET /stream/logs/{log_group}` instead of polling.
 - Metrics store: persists host and container metrics for dashboards and historical queries.
 - Log store: persists log entries and supports grouped log retrieval.
 - Metadata store: stores log checkpoints/positions and related indexing metadata used by ingestion and Docker resume logic.
@@ -210,5 +212,6 @@ flowchart TB
 - Dedup drops strictly older lines and exact boundary duplicates per container.
 - Checkpoint writes are the mechanism that enables safe backfilling without duplicating already persisted lines.
 - Flush is debounced and coalesces repeated flush requests before writing.
+- On a successful flush, `LogFlushWatcher::notify(log_group)` bumps that group's `watch` channel and a global one; `GET /stream/logs/{log_group}` subscribes per-group to push newly-flushed lines forward, and `GET /stream/logs` subscribes to the global signal (plus `DockerService::subscribe_containers_info()`, since a group's `live` flag depends on container state, not flushes) to push a diff of the groups list.
 
 

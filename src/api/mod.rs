@@ -1,5 +1,6 @@
 pub mod containers;
 pub mod logs;
+pub mod logs_stream;
 pub mod metrics;
 pub mod metrics_stream;
 pub mod stream;
@@ -43,7 +44,9 @@ pub fn router() -> Router<AppState> {
                     "/metrics/containers/{log_group}",
                     get(metrics_stream::container),
                 )
-                .route("/containers", get(stream::containers)),
+                .route("/containers", get(stream::containers))
+                .route("/logs", get(logs_stream::groups))
+                .route("/logs/{log_group}", get(logs_stream::tail)),
         )
 }
 

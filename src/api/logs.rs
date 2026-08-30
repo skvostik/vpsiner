@@ -50,7 +50,7 @@ impl LogQuery {
     }
 }
 
-fn parse_levels(value: Option<String>) -> AppResult<Vec<LogLevel>> {
+pub(crate) fn parse_levels(value: Option<String>) -> AppResult<Vec<LogLevel>> {
     value
         .map(|value| {
             value
@@ -68,7 +68,7 @@ fn parse_levels(value: Option<String>) -> AppResult<Vec<LogLevel>> {
         .map(|value| value.unwrap_or_default())
 }
 
-fn parse_streams(value: Option<String>) -> AppResult<Vec<LogStream>> {
+pub(crate) fn parse_streams(value: Option<String>) -> AppResult<Vec<LogStream>> {
     value
         .map(|value| {
             value
@@ -92,7 +92,7 @@ pub async fn list_groups(
     Ok(Json(merge_log_groups(stored, containers)))
 }
 
-fn merge_log_groups(
+pub(crate) fn merge_log_groups(
     stored: BTreeMap<String, i64>,
     containers: Vec<crate::model::ContainerSummary>,
 ) -> BTreeMap<String, LogGroupStatus> {

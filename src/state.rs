@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::config::Config;
 use crate::docker::DockerService;
+use crate::logs::flush_watcher::LogFlushWatcher;
 use crate::logs::metadata::LogMetadataStore;
 use crate::logs::store::LogStore;
 use crate::metrics::bucket_watcher::BucketWatcher;
@@ -20,6 +21,7 @@ pub struct AppState {
     pub host: Arc<dyn HostMetricsSource>,
     pub snapshot: Arc<MetricsSnapshotState>,
     pub bucket_watcher: Arc<BucketWatcher>,
+    pub log_flush_watcher: Arc<LogFlushWatcher>,
 }
 
 impl AppState {
@@ -33,6 +35,7 @@ impl AppState {
     ) -> Self {
         let snapshot = Arc::new(MetricsSnapshotState::new(config.collect_interval));
         let bucket_watcher = Arc::new(BucketWatcher::new());
+        let log_flush_watcher = Arc::new(LogFlushWatcher::new());
         Self {
             config: Arc::new(config),
             docker,
@@ -42,6 +45,7 @@ impl AppState {
             host,
             snapshot,
             bucket_watcher,
+            log_flush_watcher,
         }
     }
 }

@@ -756,6 +756,79 @@ data: {"sum":{"ts":1720000010000,"cpu_pct":21.0,"mem_used":705000000,"mem_limit"
 
 ```
 
+### GET `/api/stream/logs`
+
+Diff-based push equivalent of `GET /api/logs`. Reacts to two independent change sources: a new log line being flushed (moves `last_received`) and a container starting/stopping (flips `live`). Emits the same two named events as `/api/stream/containers`:
+
+- `snapshot` — sent once, immediately on connect. Payload identical in shape to `GET /api/logs`'s response.
+- `diff` — sent whenever any group's status actually changes. Payload:
+  ```json
+  {
+    "added": { "log_group": "LogGroupStatus" },
+    "updated": { "log_group": "LogGroupStatus" },
+    "removed": [ "log_group" ]
+  }
+  ```
+
+Parameters: none.
+
+Behavior:
+- `updated` entries are whole replacement records for that `log_group`, not per-field patches
+- no event is emitted at all when nothing actually changed
+- each connection tracks its own diff baseline independently
+
+Example:
+```http
+GET /api/stream/logs
+Accept: text/event-stream
+```
+
+Example events:
+```
+event: snapshot
+data: {"project-web":{"last_received":1720003550000,"live":false},"system-nginx":{"last_received":null,"live":false}}
+
+event: diff
+data: {"added":{},"updated":{"project-web":{"last_received":1720003600000,"live":true}},"removed":[]}
+
+```
+
+### GET `/api/stream/logs/{log_group}?q={text}&level={lvl}&stream={s}&after={token}`
+
+Filter-aware, forward-only push equivalent of the tailing use of `GET /api/logs/{log_group}` (polling with `after`). This endpoint only replaces tailing — the REST endpoint keeps its full bidirectional cursor-pagination role for initial page loads and scrolling up/down through history.
+
+Behavior:
+- no `snapshot` event on connect — the connection performs an immediate first check against the given `after` cursor (self-healing any gap between a client's last REST page load and this connection opening), then waits for further log flushes
+- `append` is emitted once per matching batch of newly-flushed lines, never on an empty result:
+  ```json
+  {
+    "items": [ "LogLine" ],
+    "newer_cursor": "string | null"
+  }
+  ```
+- `newer_cursor` lets clients keep their own pagination cursor consistent with what the stream has already delivered, the same way `newer_cursor` works on `GET /api/logs/{log_group}`
+- filters (`q`, `level`, `stream`) apply exactly as they do on the REST endpoint; there is no `from`, `to`, `before`, or `limit` — not meaningful for a forward-only tail
+
+Parameters:
+- `log_group` (path): log group
+- `q` (optional): text search query; default: none
+- `level` (optional): comma-separated log levels; default: no filtering
+- `stream` (optional): comma-separated streams; default: no filtering
+- `after` (optional): opaque cursor to resume from; default: none (tail-only from connect time)
+
+Example:
+```http
+GET /api/stream/logs/project-web?after=eyJ0cyI6MTcyMDAwMDI0MTAwMCwid2VlayI6IjIwMjQtVzI3IiwiaWQiOjEyMzQ2fQ%3D%3D
+Accept: text/event-stream
+```
+
+Example event:
+```
+event: append
+data: {"items":[{"ts":1720003600000,"log_group":"project-web","cid":"8af7d6c1273d","stream":"stdout","level":"info","line":"[2024-07-04T12:33:54Z] INFO Request completed in 42ms"}],"newer_cursor":"eyJ0cyI6MTcyMDAwMzYwMDAwMCwid2VlayI6IjIwMjQtVzI3IiwiaWQiOjEyMzQ3fQ=="}
+
+```
+
 ---
 
 ## 11) Types and contracts
@@ -867,6 +940,31 @@ data: {"sum":{"ts":1720000010000,"cpu_pct":21.0,"mem_used":705000000,"mem_limit"
 }
 ```
 
+### `LogGroupStatus`
+```json
+{
+  "last_received": "number | null",
+  "live": true
+}
+```
+
+### `LogGroupDiff`
+```json
+{
+  "added": { "log_group": "LogGroupStatus" },
+  "updated": { "log_group": "LogGroupStatus" },
+  "removed": ["string"]
+}
+```
+
+### `LogTailAppend`
+```json
+{
+  "items": ["LogLine"],
+  "newer_cursor": "string | null"
+}
+```
+
 ### `MetricsSnapshot`
 ```json
 {
@@ -930,3 +1028,5 @@ data: {"sum":{"ts":1720000010000,"cpu_pct":21.0,"mem_used":705000000,"mem_limit"
 | `/api/stream/metrics/host`                   | GET    | SSE append-based push equivalent of `/api/metrics/host`                   |
 | `/api/stream/metrics/containers`             | GET    | SSE append-based push equivalent of `/api/metrics/containers`             |
 | `/api/stream/metrics/containers/{log_group}` | GET    | SSE append-based push equivalent of `/api/metrics/containers/{log_group}` |
+| `/api/stream/logs`                           | GET    | SSE diff-based push equivalent of `/api/logs`                             |
+| `/api/stream/logs/{log_group}`               | GET    | SSE forward-tailing push equivalent of polling `/api/logs/{log_group}`    |

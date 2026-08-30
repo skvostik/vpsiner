@@ -1,7 +1,7 @@
 //! Domain types shared across the service boundaries.
 //! Nothing from bollard, sqlx or sysinfo may leak through a trait — it is mapped here first.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
@@ -223,6 +223,22 @@ pub struct LogPage {
 pub struct LogGroupStatus {
     pub last_received: Option<TimestampMs>,
     pub live: bool,
+}
+
+/// Incremental update for `/api/stream/logs`, relative to what a client has already seen.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogGroupDiff {
+    pub added: BTreeMap<String, LogGroupStatus>,
+    pub updated: BTreeMap<String, LogGroupStatus>,
+    pub removed: Vec<String>,
+}
+
+/// One batch of newly-flushed lines pushed by `/api/stream/logs/{log_group}`, carrying the
+/// cursor to resume from so clients can keep their own pagination cursors consistent.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogTailAppend {
+    pub items: Vec<LogLine>,
+    pub newer_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

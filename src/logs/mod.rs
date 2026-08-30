@@ -1,4 +1,5 @@
 pub mod buffer;
+pub mod flush_watcher;
 mod helpers;
 pub mod metadata;
 pub mod store;
@@ -9,6 +10,7 @@ use std::time::Duration;
 
 use crate::docker::DockerService;
 use crate::logs::buffer::LogBuffer;
+use crate::logs::flush_watcher::LogFlushWatcher;
 use crate::logs::metadata::LogMetadataStore;
 use crate::logs::store::LogStore;
 
@@ -21,11 +23,20 @@ pub async fn run_ingestion(
     docker: Arc<dyn DockerService>,
     logs: Arc<dyn LogStore>,
     metadata: Arc<dyn LogMetadataStore>,
+    flush_watcher: Arc<LogFlushWatcher>,
     flush_debounce: Duration,
     flush_keep_alive: Duration,
 ) {
     tracing::info!("log ingestion initialized");
-    let buffer = match LogBuffer::new(logs, metadata, flush_debounce, flush_keep_alive).await {
+    let buffer = match LogBuffer::new(
+        logs,
+        metadata,
+        flush_watcher,
+        flush_debounce,
+        flush_keep_alive,
+    )
+    .await
+    {
         Ok(buffer) => buffer,
         Err(err) => {
             tracing::error!(error = %err, "failed to initialize log buffer; log ingestion disabled");

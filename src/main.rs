@@ -134,6 +134,7 @@ async fn async_main() {
         state.docker.clone(),
         state.logs.clone(),
         state.metadata.clone(),
+        state.log_flush_watcher.clone(),
         config.log_flush_debounce,
         config.log_flush_keep_alive,
     ));

@@ -116,6 +116,19 @@ export interface LogGroupStatus {
 
 export type LogGroups = Record<string, LogGroupStatus>
 
+/** Incremental update pushed by GET /api/stream/logs, relative to what the client has already seen. */
+export interface LogGroupDiff {
+  added: LogGroups
+  updated: LogGroups
+  removed: string[]
+}
+
+/** One batch of newly-flushed lines pushed by GET /api/stream/logs/{log_group}. */
+export interface LogTailAppend {
+  items: LogLine[]
+  newer_cursor: string | null
+}
+
 export interface LogQueryParams {
   from?: number
   to?: number

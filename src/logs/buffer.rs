@@ -7,6 +7,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::error::AppResult;
+use crate::logs::flush_watcher::LogFlushWatcher;
 use crate::logs::metadata::LogMetadataStore;
 use crate::logs::store::LogStore;
 use crate::model::LogLine;
@@ -21,6 +22,7 @@ pub struct LogBuffer {
 struct Inner {
     logs: Arc<dyn LogStore>,
     metadata: Arc<dyn LogMetadataStore>,
+    flush_watcher: Arc<LogFlushWatcher>,
     debounce: Duration,
     keep_alive: Duration,
     groups: Mutex<HashMap<String, GroupHandle>>,
@@ -43,6 +45,7 @@ impl LogBuffer {
     pub async fn new(
         logs: Arc<dyn LogStore>,
         metadata: Arc<dyn LogMetadataStore>,
+        flush_watcher: Arc<LogFlushWatcher>,
         debounce: Duration,
         keep_alive: Duration,
     ) -> AppResult<Self> {
@@ -60,6 +63,7 @@ impl LogBuffer {
         let inner = Arc::new(Inner {
             logs,
             metadata,
+            flush_watcher,
             debounce,
             keep_alive,
             groups: Mutex::new(HashMap::new()),
@@ -220,6 +224,7 @@ impl Inner {
                 tracing::error!(log_group = %log_group, cid = %cid, error = %err, "failed to persist last-received checkpoint");
             }
         }
+        self.flush_watcher.notify(log_group);
     }
 
     fn request_group_flush(&self, log_group: &str) {

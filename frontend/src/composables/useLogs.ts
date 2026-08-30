@@ -1,18 +1,24 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch, type ComputedRef } from 'vue'
-import { useDocumentVisibility, useIntervalFn } from '@vueuse/core'
 import { useMessage } from 'naive-ui'
 
 import { api } from '../api'
-import type { LogLevel, LogGroups, LogLine, LogQueryParams, LogStream, LogWindow } from '../types'
+import { reportBackendUnreachable } from './useBackendHealth'
+import { useLogGroupsStream } from './useLogGroupsStream'
+import type {
+  LogLevel,
+  LogGroups,
+  LogLine,
+  LogQueryParams,
+  LogStream,
+  LogTailAppend,
+  LogWindow,
+} from '../types'
 
 const storageKey = 'vpsiner.logs.preferences.v1'
 const pageSize = 20
-// Poll replay chunks are variable-sized, so the retention cap must count lines rather than pages.
+// SSE batches are variable-sized, so the retention cap must count lines rather than pages.
 const maxLoadedLines = 1000
 const freshDurationMs = 2_000
-const pollIntervalMs = 5_000
-// A batch is replayed over slightly less than one poll interval so it drains before the next one.
-const replayWindowMs = pollIntervalMs * 0.9
 
 export function logLineKey(line: LogLine) {
   return `${line.ts}:${line.cid}:${line.stream}:${line.line}`
@@ -42,7 +48,6 @@ type UseLogsState = {
   tailing: ComputedRef<boolean>
   freshKeys: ReturnType<typeof ref<Set<string>>>
   error: ReturnType<typeof ref<string>>
-  loadGroups: () => Promise<void>
   loadLogs: () => Promise<void>
   loadMore: () => Promise<void>
   loadNewer: () => Promise<void>
@@ -57,7 +62,7 @@ type UseLogsState = {
 
 export function useLogs(initialGroup?: string): UseLogsState {
   const message = useMessage()
-  const groups = ref<LogGroups>({})
+  const { groups, loading: loadingGroups } = useLogGroupsStream()
   const selectedGroup = ref(initialGroup ?? '')
   const pages = ref<LogPageEntry[]>([])
   const logs = computed(() => pages.value.flatMap((page) => page.items))
@@ -67,7 +72,6 @@ export function useLogs(initialGroup?: string): UseLogsState {
   const timeWindow = ref<LogWindow>('1h')
   const customFrom = ref<number>()
   const customTo = ref<number>()
-  const loadingGroups = ref(true)
   const loadingLogs = ref(false)
   const hasMore = ref(false)
   const hasNewer = ref(false)
@@ -85,15 +89,12 @@ export function useLogs(initialGroup?: string): UseLogsState {
   )
   const freshKeys = ref(new Set<string>())
   const error = ref('')
-  const visibility = useDocumentVisibility()
   let windowTo = 0
   let searchTimer: number | undefined
   let requestVersion = 0
   let freshTimer: number | undefined
-  let replayTimer: number | undefined
-  let pending: LogLine[] = []
-  let pendingNewerCursor: string | undefined
-  // Serializes polling and pagination so they never mutate pages concurrently.
+  let tailSource: EventSource | undefined
+  // Serializes pagination fetches so they never mutate pages concurrently.
   let fetching = false
 
   function totalLines() {
@@ -169,52 +170,6 @@ export function useLogs(initialGroup?: string): UseLogsState {
     evict('head')
   }
 
-  /** Advances the tail page's resume cursor even when a poll tick had no new lines to append. */
-  function updateTailNewerCursor(cursor?: string) {
-    if (!pages.value.length || !cursor) return
-    const lastIndex = pages.value.length - 1
-    pages.value = pages.value.map((page, index) =>
-      index === lastIndex ? { ...page, newerCursor: cursor } : page
-    )
-  }
-
-  function cancelReplay(flush: boolean) {
-    if (replayTimer) window.clearTimeout(replayTimer)
-    replayTimer = undefined
-    const remaining = pending
-    const cursor = pendingNewerCursor
-    pending = []
-    pendingNewerCursor = undefined
-    if (flush && remaining.length) appendLines(remaining, true, cursor)
-  }
-
-  /** Releases queued lines in step with the gaps between their timestamps. */
-  function replay(startedAt: number, baseTs: number, scale: number) {
-    replayTimer = undefined
-    const elapsed = Date.now() - startedAt
-    const due: LogLine[] = []
-    while (pending.length && (pending[0].ts - baseTs) * scale <= elapsed) {
-      due.push(pending.shift() as LogLine)
-    }
-    if (due.length) appendLines(due, true, pending.length ? undefined : pendingNewerCursor)
-    if (!pending.length) return
-    const wait = (pending[0].ts - baseTs) * scale - elapsed
-    replayTimer = window.setTimeout(() => replay(startedAt, baseTs, scale), Math.max(wait, 16))
-  }
-
-  function queueReplay(lines: LogLine[], newerCursor?: string) {
-    cancelReplay(true)
-    pendingNewerCursor = newerCursor
-    const span = lines[lines.length - 1].ts - lines[0].ts
-    if (span <= 0) {
-      appendLines(lines, true, newerCursor)
-      pendingNewerCursor = undefined
-      return
-    }
-    pending = [...lines]
-    replay(Date.now(), lines[0].ts, Math.min(1, replayWindowMs / span))
-  }
-
   function reportError(value: unknown, fallback: string) {
     const text = value instanceof Error ? value.message : fallback
     error.value = text
@@ -246,24 +201,13 @@ export function useLogs(initialGroup?: string): UseLogsState {
     }
   }
 
-  async function loadGroups() {
-    loadingGroups.value = true
-    try {
-      groups.value = await api.logs.groups()
-    } catch (loadError) {
-      reportError(loadError, 'Unable to load log groups')
-    } finally {
-      loadingGroups.value = false
-    }
-  }
-
   async function loadLogs() {
     const version = ++requestVersion
     windowTo = Date.now()
     pages.value = []
     hasMore.value = false
     hasNewer.value = false
-    cancelReplay(false)
+    stopTailStream()
     freshKeys.value = new Set()
     if (!selectedGroup.value) {
       loadingLogs.value = false
@@ -286,6 +230,7 @@ export function useLogs(initialGroup?: string): UseLogsState {
       // A fresh load fetches the tail of the window, so it's the ground truth for "caught up".
       isTailingAvailable.value = !page.has_newer
       error.value = ''
+      if (tailing.value) startTailStream()
       logEvent('load', {
         page: pageSummary(page.items),
         hasOlder: hasMore.value,
@@ -370,28 +315,35 @@ export function useLogs(initialGroup?: string): UseLogsState {
     }
   }
 
-  async function pollLatest() {
-    if (visibility.value !== 'visible' || !selectedGroup.value || fetching || !tailing.value) return
-    const version = requestVersion
-    const current = currentParams('newer')
-    fetching = true
-    try {
-      const page = await api.logs.query(selectedGroup.value, current)
-      if (version !== requestVersion) return
-      const existing = new Set(logs.value.concat(pending).map((line) => logLineKey(line)))
-      const newLines = page.items.filter((line) => !existing.has(logLineKey(line)))
+  function stopTailStream() {
+    tailSource?.close()
+    tailSource = undefined
+  }
+
+  /** Opens (or reopens) the live tail for the current group/filters, resuming from the last cursor. */
+  function startTailStream() {
+    stopTailStream()
+    if (!selectedGroup.value) return
+    const cursor = pages.value[pages.value.length - 1]?.newerCursor
+    const params = new URLSearchParams({ after: cursor ?? '' })
+    if (query.value) params.set('q', query.value)
+    if (level.value.length) params.set('level', level.value.join(','))
+    if (stream.value.length) params.set('stream', stream.value.join(','))
+    tailSource = new EventSource(
+      `/api/stream/logs/${encodeURIComponent(selectedGroup.value)}?${params}`
+    )
+    tailSource.addEventListener('append', (event) => {
+      const append = JSON.parse((event as MessageEvent).data) as LogTailAppend
+      const existing = new Set(logs.value.map((line) => logLineKey(line)))
+      const newLines = append.items.filter((line) => !existing.has(logLineKey(line)))
       if (newLines.length) {
-        queueReplay(newLines, page.newer_cursor ?? undefined)
-        logEvent('poll-append', { page: pageSummary(newLines) })
-      } else {
-        updateTailNewerCursor(page.newer_cursor ?? undefined)
+        appendLines(newLines, true, append.newer_cursor ?? undefined)
+        logEvent('tail-append', { page: pageSummary(newLines) })
       }
-      hasNewer.value = page.has_newer
-    } catch (pollError) {
-      if (version === requestVersion) reportError(pollError, 'Unable to refresh logs')
-    } finally {
-      fetching = false
-    }
+      hasNewer.value = false
+    })
+    // The browser retries automatically; just surface the outage to the rest of the UI.
+    tailSource.onerror = () => reportBackendUnreachable()
   }
 
   function persist() {
@@ -476,21 +428,14 @@ export function useLogs(initialGroup?: string): UseLogsState {
     } catch {
       // Ignore invalid local preferences.
     }
-    loadGroups().then(loadLogs)
+    loadLogs()
   })
 
-  // The poll only ever runs while genuinely tailing; it's paused the rest of the time.
-  const { pause: pausePoll, resume: resumePoll } = useIntervalFn(pollLatest, pollIntervalMs, {
-    immediate: false,
-  })
-  useIntervalFn(() => {
-    if (visibility.value === 'visible') loadGroups()
-  }, pollIntervalMs)
   watch(
     tailing,
     (value) => {
-      if (value) resumePoll()
-      else pausePoll()
+      if (value) startTailStream()
+      else stopTailStream()
       logEvent('tailing', { active: value })
     },
     { immediate: true }
@@ -506,18 +451,11 @@ export function useLogs(initialGroup?: string): UseLogsState {
       loadNewer()
     }
   })
-  // Poll right away when the tab regains focus instead of waiting out the rest of the interval.
-  watch(visibility, (value) => {
-    if (value === 'visible') {
-      loadGroups()
-      pollLatest()
-    }
-  })
 
   onBeforeUnmount(() => {
     if (searchTimer) window.clearTimeout(searchTimer)
     if (freshTimer) window.clearTimeout(freshTimer)
-    if (replayTimer) window.clearTimeout(replayTimer)
+    stopTailStream()
   })
 
   return {
@@ -535,7 +473,6 @@ export function useLogs(initialGroup?: string): UseLogsState {
     tailing,
     freshKeys,
     error,
-    loadGroups,
     loadLogs,
     loadMore,
     loadNewer,
