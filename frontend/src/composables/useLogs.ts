@@ -267,9 +267,9 @@ export function useLogs(initialGroup?: string): UseLogsState {
       }
       return
     }
-    if (!hasNewer.value && !isTailingAvailable.value) return
-    // Even with no known gap, allow one check when arriving back at the bottom unverified.
-    if (!hasNewer.value && isTailingAvailable.value && !atBottom.value) return
+    // With no known gap, only worth checking when the user is actually at the bottom
+    // (either to re-verify catch-up after tailing stopped, or as a light recheck while there).
+    if (!hasNewer.value && !atBottom.value) return
     const version = requestVersion
     fetching = true
     loadingLogs.value = true
