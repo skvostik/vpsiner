@@ -93,25 +93,60 @@ pub struct ContainerSample {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ContainerGroupSample {
+pub struct ContainerGroupMetrics {
+    pub sum: Vec<GroupPoint>,
+    pub containers: HashMap<String, Vec<ContainerPoint>>,
+}
+
+pub type ContainerMetricsByLogGroup = HashMap<String, Vec<GroupPoint>>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct HostPoint {
+    pub ts: TimestampMs,
+    pub cpu_pct: f64,
+    pub mem_used: u64,
+    pub mem_total: u64,
+    pub storage_used: u64,
+    pub storage_total: u64,
+    pub metrics_size: u64,
+    pub logs_size: u64,
+    pub net_rx_rate: f64,
+    pub net_tx_rate: f64,
+    pub disk_read_rate: f64,
+    pub disk_write_rate: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContainerPoint {
     pub ts: TimestampMs,
     pub log_group: String,
     pub cpu_pct: f64,
     pub mem_used: u64,
     pub mem_limit: u64,
-    pub net_rx: u64,
-    pub net_tx: u64,
-    pub blk_read: u64,
-    pub blk_write: u64,
+    pub net_rx_rate: f64,
+    pub net_tx_rate: f64,
+    pub blk_read_rate: f64,
+    pub blk_write_rate: f64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ContainerGroupMetrics {
-    pub sum: Vec<ContainerGroupSample>,
-    pub containers: HashMap<String, Vec<ContainerSample>>,
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct GroupPoint {
+    pub ts: TimestampMs,
+    pub cpu_pct: f64,
+    pub mem_used: u64,
+    pub mem_limit: u64,
+    pub net_rx_rate: f64,
+    pub net_tx_rate: f64,
+    pub blk_read_rate: f64,
+    pub blk_write_rate: f64,
 }
 
-pub type ContainerMetricsByLogGroup = HashMap<String, Vec<ContainerGroupSample>>;
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct MetricsSnapshot {
+    pub host: Option<HostPoint>,
+    pub containers: HashMap<String, ContainerPoint>,
+    pub log_groups: HashMap<String, GroupPoint>,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContainerStats {

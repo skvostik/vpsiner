@@ -5,12 +5,14 @@ use std::time::Duration;
 use crate::docker::DockerService;
 use crate::logs::store::LogStore;
 use crate::metrics::host::HostMetricsSource;
+use crate::metrics::snapshot::MetricsSnapshotState;
 use crate::metrics::store::MetricsStore;
 
 pub async fn collect_once(
     host: &Arc<dyn HostMetricsSource>,
     metrics: &Arc<dyn MetricsStore>,
     logs: &Arc<dyn LogStore>,
+    snapshot: &Arc<MetricsSnapshotState>,
 ) {
     match host.sample().await {
         Ok(mut sample) => {
@@ -28,6 +30,7 @@ pub async fn collect_once(
                     return;
                 }
             };
+            snapshot.record_host(&sample);
             if let Err(err) = metrics.insert_host(sample).await {
                 tracing::error!(error = %err, "failed to persist host metrics");
             }
@@ -39,10 +42,12 @@ pub async fn collect_once(
 pub async fn run_containers(
     docker: Arc<dyn DockerService>,
     metrics: Arc<dyn MetricsStore>,
+    snapshot: Arc<MetricsSnapshotState>,
     _interval: Duration,
 ) {
     let mut samples = docker.container_samples();
     while let Some(samples) = samples.next().await {
+        snapshot.record_containers(&samples);
         if let Err(err) = metrics.insert_containers(samples).await {
             tracing::error!(error = %err, "failed to persist container metrics");
         }
@@ -55,12 +60,13 @@ pub async fn run(
     host: Arc<dyn HostMetricsSource>,
     metrics: Arc<dyn MetricsStore>,
     logs: Arc<dyn LogStore>,
+    snapshot: Arc<MetricsSnapshotState>,
     interval: Duration,
 ) {
     let mut ticker = tokio::time::interval(interval);
     loop {
         ticker.tick().await;
-        collect_once(&host, &metrics, &logs).await;
+        collect_once(&host, &metrics, &logs, &snapshot).await;
     }
 }
 
@@ -111,7 +117,8 @@ mod tests {
         let host: Arc<dyn HostMetricsSource> = Arc::new(host);
         let metrics: Arc<dyn MetricsStore> = Arc::new(metrics);
         let logs: Arc<dyn LogStore> = Arc::new(logs);
-        collect_once(&host, &metrics, &logs).await;
+        let snapshot = Arc::new(MetricsSnapshotState::new(Duration::from_secs(10)));
+        collect_once(&host, &metrics, &logs, &snapshot).await;
     }
 
     #[tokio::test]
@@ -144,6 +151,7 @@ mod tests {
 
         let docker: Arc<dyn DockerService> = Arc::new(docker);
         let metrics: Arc<dyn MetricsStore> = Arc::new(metrics);
-        run_containers(docker, metrics, std::time::Duration::from_secs(10)).await;
+        let snapshot = Arc::new(MetricsSnapshotState::new(Duration::from_secs(10)));
+        run_containers(docker, metrics, snapshot, Duration::from_secs(10)).await;
     }
 }

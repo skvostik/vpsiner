@@ -1,12 +1,13 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::{collections::HashMap, collections::hash_map::Entry};
 
 use async_trait::async_trait;
 use sqlx::{Row, SqlitePool, sqlite::SqliteConnectOptions, sqlite::SqlitePoolOptions};
 
 use crate::error::{AppError, AppResult};
+use crate::metrics::downsampling::{downsample_container, downsample_host, sum_by_bucket};
 use crate::model::{
-    ContainerGroupMetrics, ContainerGroupSample, ContainerMetricsByLogGroup, ContainerSample,
+    ContainerGroupMetrics, ContainerMetricsByLogGroup, ContainerPoint, ContainerSample, HostPoint,
     HostSample, MetricsResolution, TimeRange,
 };
 
@@ -26,7 +27,7 @@ pub trait MetricsStore: Send + Sync + 'static {
         &self,
         range: TimeRange,
         resolution: MetricsResolution,
-    ) -> AppResult<Vec<HostSample>>;
+    ) -> AppResult<Vec<HostPoint>>;
 
     async fn query_container(
         &self,
@@ -40,218 +41,6 @@ pub trait MetricsStore: Send + Sync + 'static {
         range: TimeRange,
         resolution: MetricsResolution,
     ) -> AppResult<ContainerMetricsByLogGroup>;
-}
-
-/// The end of the half-open `(bucket_end - bucket_ms, bucket_end]` window containing `ts`.
-fn bucket_end(ts: i64, bucket_ms: i64) -> i64 {
-    -(-ts).div_euclid(bucket_ms) * bucket_ms
-}
-
-fn now_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as i64)
-        .unwrap_or(0)
-}
-
-fn downsample_host(samples: Vec<HostSample>, resolution: MetricsResolution) -> Vec<HostSample> {
-    let bucket_ms = resolution.bucket_ms();
-    let mut buckets: Vec<HostSample> = Vec::new();
-    let mut current_bucket = i64::MIN;
-    let mut count = 0_u64;
-    let mut cpu_sum = 0.0_f64;
-    let mut mem_used_sum = 0_u128;
-    let mut mem_total_sum = 0_u128;
-    let mut storage_used_sum = 0_u128;
-    let mut storage_total_sum = 0_u128;
-    let mut metrics_size_sum = 0_u128;
-    let mut logs_size_sum = 0_u128;
-    let mut last_counter = (0_u64, 0_u64, 0_u64, 0_u64);
-
-    let flush = |bucket: i64,
-                 count: u64,
-                 cpu_sum: f64,
-                 mem_used_sum: u128,
-                 mem_total_sum: u128,
-                 storage_used_sum: u128,
-                 storage_total_sum: u128,
-                 metrics_size_sum: u128,
-                 logs_size_sum: u128,
-                 last_counter: (u64, u64, u64, u64),
-                 buckets: &mut Vec<HostSample>| {
-        if count == 0 {
-            return;
-        }
-        buckets.push(HostSample {
-            ts: bucket,
-            cpu_pct: cpu_sum / count as f64,
-            mem_used: (mem_used_sum / count as u128) as u64,
-            mem_total: (mem_total_sum / count as u128) as u64,
-            storage_used: (storage_used_sum / count as u128) as u64,
-            storage_total: (storage_total_sum / count as u128) as u64,
-            metrics_size: (metrics_size_sum / count as u128) as u64,
-            logs_size: (logs_size_sum / count as u128) as u64,
-            net_rx: last_counter.0,
-            net_tx: last_counter.1,
-            disk_read: last_counter.2,
-            disk_write: last_counter.3,
-        });
-    };
-
-    for sample in samples {
-        let bucket = bucket_end(sample.ts, bucket_ms);
-        if bucket != current_bucket {
-            flush(
-                current_bucket,
-                count,
-                cpu_sum,
-                mem_used_sum,
-                mem_total_sum,
-                storage_used_sum,
-                storage_total_sum,
-                metrics_size_sum,
-                logs_size_sum,
-                last_counter,
-                &mut buckets,
-            );
-            current_bucket = bucket;
-            count = 0;
-            cpu_sum = 0.0;
-            mem_used_sum = 0;
-            mem_total_sum = 0;
-            storage_used_sum = 0;
-            storage_total_sum = 0;
-            metrics_size_sum = 0;
-            logs_size_sum = 0;
-        }
-
-        count += 1;
-        cpu_sum += sample.cpu_pct;
-        mem_used_sum += sample.mem_used as u128;
-        mem_total_sum += sample.mem_total as u128;
-        storage_used_sum += sample.storage_used as u128;
-        storage_total_sum += sample.storage_total as u128;
-        metrics_size_sum += sample.metrics_size as u128;
-        logs_size_sum += sample.logs_size as u128;
-        last_counter = (
-            sample.net_rx,
-            sample.net_tx,
-            sample.disk_read,
-            sample.disk_write,
-        );
-    }
-
-    flush(
-        current_bucket,
-        count,
-        cpu_sum,
-        mem_used_sum,
-        mem_total_sum,
-        storage_used_sum,
-        storage_total_sum,
-        metrics_size_sum,
-        logs_size_sum,
-        last_counter,
-        &mut buckets,
-    );
-    // ts is the bucket's closing instant, so a bucket has fully elapsed exactly when ts <= now.
-    buckets.retain(|sample| sample.ts <= now_ms());
-    buckets
-}
-
-fn downsample_container(
-    samples: Vec<ContainerSample>,
-    resolution: MetricsResolution,
-) -> Vec<ContainerSample> {
-    let bucket_ms = resolution.bucket_ms();
-    let mut buckets: Vec<ContainerSample> = Vec::new();
-    let mut current_bucket = i64::MIN;
-    let mut count = 0_u64;
-    let mut cpu_sum = 0.0_f64;
-    let mut mem_used_sum = 0_u128;
-    let mut mem_limit_sum = 0_u128;
-    let mut last_counter = (0_u64, 0_u64, 0_u64, 0_u64);
-    let mut cid = String::new();
-    let mut log_group = String::new();
-
-    let flush = |bucket: i64,
-                 count: u64,
-                 cpu_sum: f64,
-                 mem_used_sum: u128,
-                 mem_limit_sum: u128,
-                 last_counter: (u64, u64, u64, u64),
-                 cid: &str,
-                 log_group: &str,
-                 buckets: &mut Vec<ContainerSample>| {
-        if count == 0 {
-            return;
-        }
-        buckets.push(ContainerSample {
-            ts: bucket,
-            log_group: log_group.to_string(),
-            cid: cid.to_string(),
-            cpu_pct: cpu_sum / count as f64,
-            mem_used: (mem_used_sum / count as u128) as u64,
-            mem_limit: (mem_limit_sum / count as u128) as u64,
-            net_rx: last_counter.0,
-            net_tx: last_counter.1,
-            blk_read: last_counter.2,
-            blk_write: last_counter.3,
-        });
-    };
-
-    for sample in samples {
-        let bucket = bucket_end(sample.ts, bucket_ms);
-        if bucket != current_bucket {
-            flush(
-                current_bucket,
-                count,
-                cpu_sum,
-                mem_used_sum,
-                mem_limit_sum,
-                last_counter,
-                &cid,
-                &log_group,
-                &mut buckets,
-            );
-            current_bucket = bucket;
-            count = 0;
-            cpu_sum = 0.0;
-            mem_used_sum = 0;
-            mem_limit_sum = 0;
-        }
-
-        if count == 0 {
-            cid = sample.cid.clone();
-            log_group = sample.log_group.clone();
-        }
-        count += 1;
-        cpu_sum += sample.cpu_pct;
-        mem_used_sum += sample.mem_used as u128;
-        mem_limit_sum += sample.mem_limit as u128;
-        last_counter = (
-            sample.net_rx,
-            sample.net_tx,
-            sample.blk_read,
-            sample.blk_write,
-        );
-    }
-
-    flush(
-        current_bucket,
-        count,
-        cpu_sum,
-        mem_used_sum,
-        mem_limit_sum,
-        last_counter,
-        &cid,
-        &log_group,
-        &mut buckets,
-    );
-    // ts is the bucket's closing instant, so a bucket has fully elapsed exactly when ts <= now.
-    buckets.retain(|sample| sample.ts <= now_ms());
-    buckets
 }
 
 /// SQLite-backed implementation.
@@ -438,12 +227,16 @@ impl MetricsStore for SqliteMetricsStore {
         &self,
         range: TimeRange,
         resolution: MetricsResolution,
-    ) -> AppResult<Vec<HostSample>> {
+    ) -> AppResult<Vec<HostPoint>> {
         let pool = self.pool().await?;
+        // Reach one sample before `from` so the first in-range bucket has a rate.
         let rows = sqlx::query(
             "SELECT ts, cpu_pct, mem_used, mem_total, storage_used, storage_total, metrics_size, logs_size, net_rx, net_tx, disk_read, disk_write
-             FROM host_metrics WHERE ts >= ? AND ts <= ? ORDER BY ts ASC",
+             FROM host_metrics
+             WHERE ts >= COALESCE((SELECT MAX(ts) FROM host_metrics WHERE ts < ?), ?) AND ts <= ?
+             ORDER BY ts ASC",
         )
+        .bind(range.from)
         .bind(range.from)
         .bind(range.to)
         .fetch_all(&pool)
@@ -504,7 +297,9 @@ impl MetricsStore for SqliteMetricsStore {
             })
             .collect();
 
-        Ok(downsample_host(samples?, resolution))
+        let mut points = downsample_host(samples?, resolution);
+        points.retain(|point| point.ts >= range.from);
+        Ok(points)
     }
 
     async fn query_container(
@@ -514,12 +309,18 @@ impl MetricsStore for SqliteMetricsStore {
         resolution: MetricsResolution,
     ) -> AppResult<ContainerGroupMetrics> {
         let pool = self.pool().await?;
+        // Reach one sample before `from` so the first in-range bucket has a rate.
         let rows = sqlx::query(
             "SELECT ts, log_group, cid, cpu_pct, mem_used, mem_limit, net_rx, net_tx, blk_read, blk_write
              FROM container_metrics
-             WHERE log_group = ? AND ts >= ? AND ts <= ? ORDER BY ts ASC",
+             WHERE log_group = ?
+               AND ts >= COALESCE((SELECT MAX(ts) FROM container_metrics WHERE log_group = ? AND ts < ?), ?)
+               AND ts <= ?
+             ORDER BY ts ASC",
         )
         .bind(log_group)
+        .bind(log_group)
+        .bind(range.from)
         .bind(range.from)
         .bind(range.to)
         .fetch_all(&pool)
@@ -578,44 +379,14 @@ impl MetricsStore for SqliteMetricsStore {
                 .push(sample);
         }
 
-        let mut containers: HashMap<String, Vec<ContainerSample>> = HashMap::new();
+        let mut containers: HashMap<String, Vec<ContainerPoint>> = HashMap::new();
         for (cid, samples) in by_container {
-            containers.insert(cid, downsample_container(samples, resolution));
+            let mut points = downsample_container(samples, resolution);
+            points.retain(|point| point.ts >= range.from);
+            containers.insert(cid, points);
         }
 
-        let mut sum_by_ts: HashMap<i64, ContainerGroupSample> = HashMap::new();
-        for samples in containers.values() {
-            for sample in samples {
-                match sum_by_ts.entry(sample.ts) {
-                    Entry::Occupied(mut entry) => {
-                        let acc = entry.get_mut();
-                        acc.cpu_pct += sample.cpu_pct;
-                        acc.mem_used = acc.mem_used.saturating_add(sample.mem_used);
-                        acc.mem_limit = acc.mem_limit.saturating_add(sample.mem_limit);
-                        acc.net_rx = acc.net_rx.saturating_add(sample.net_rx);
-                        acc.net_tx = acc.net_tx.saturating_add(sample.net_tx);
-                        acc.blk_read = acc.blk_read.saturating_add(sample.blk_read);
-                        acc.blk_write = acc.blk_write.saturating_add(sample.blk_write);
-                    }
-                    Entry::Vacant(entry) => {
-                        entry.insert(ContainerGroupSample {
-                            ts: sample.ts,
-                            log_group: sample.log_group.clone(),
-                            cpu_pct: sample.cpu_pct,
-                            mem_used: sample.mem_used,
-                            mem_limit: sample.mem_limit,
-                            net_rx: sample.net_rx,
-                            net_tx: sample.net_tx,
-                            blk_read: sample.blk_read,
-                            blk_write: sample.blk_write,
-                        });
-                    }
-                }
-            }
-        }
-
-        let mut sum: Vec<ContainerGroupSample> = sum_by_ts.into_values().collect();
-        sum.sort_by_key(|sample| sample.ts);
+        let sum = sum_by_bucket(containers.values());
         Ok(ContainerGroupMetrics { sum, containers })
     }
 
@@ -625,11 +396,14 @@ impl MetricsStore for SqliteMetricsStore {
         resolution: MetricsResolution,
     ) -> AppResult<ContainerMetricsByLogGroup> {
         let pool = self.pool().await?;
+        // Reach one sample before `from` so the first in-range bucket has a rate.
         let rows = sqlx::query(
             "SELECT ts, log_group, cid, cpu_pct, mem_used, mem_limit, net_rx, net_tx, blk_read, blk_write
              FROM container_metrics
-             WHERE ts >= ? AND ts <= ? ORDER BY log_group ASC, ts ASC",
+             WHERE ts >= COALESCE((SELECT MAX(ts) FROM container_metrics WHERE ts < ?), ?) AND ts <= ?
+             ORDER BY log_group ASC, ts ASC",
         )
+        .bind(range.from)
         .bind(range.from)
         .bind(range.to)
         .fetch_all(&pool)
@@ -693,39 +467,15 @@ impl MetricsStore for SqliteMetricsStore {
 
         let mut by_group: ContainerMetricsByLogGroup = HashMap::new();
         for (log_group, by_container) in by_group_and_container {
-            let mut sum_by_ts: HashMap<i64, ContainerGroupSample> = HashMap::new();
-            for samples in by_container.into_values() {
-                for sample in downsample_container(samples, resolution) {
-                    match sum_by_ts.entry(sample.ts) {
-                        Entry::Occupied(mut entry) => {
-                            let acc = entry.get_mut();
-                            acc.cpu_pct += sample.cpu_pct;
-                            acc.mem_used = acc.mem_used.saturating_add(sample.mem_used);
-                            acc.mem_limit = acc.mem_limit.saturating_add(sample.mem_limit);
-                            acc.net_rx = acc.net_rx.saturating_add(sample.net_rx);
-                            acc.net_tx = acc.net_tx.saturating_add(sample.net_tx);
-                            acc.blk_read = acc.blk_read.saturating_add(sample.blk_read);
-                            acc.blk_write = acc.blk_write.saturating_add(sample.blk_write);
-                        }
-                        Entry::Vacant(entry) => {
-                            entry.insert(ContainerGroupSample {
-                                ts: sample.ts,
-                                log_group: log_group.clone(),
-                                cpu_pct: sample.cpu_pct,
-                                mem_used: sample.mem_used,
-                                mem_limit: sample.mem_limit,
-                                net_rx: sample.net_rx,
-                                net_tx: sample.net_tx,
-                                blk_read: sample.blk_read,
-                                blk_write: sample.blk_write,
-                            });
-                        }
-                    }
-                }
-            }
-            let mut series: Vec<ContainerGroupSample> = sum_by_ts.into_values().collect();
-            series.sort_by_key(|sample| sample.ts);
-            by_group.insert(log_group, series);
+            let containers: Vec<Vec<ContainerPoint>> = by_container
+                .into_values()
+                .map(|samples| {
+                    let mut points = downsample_container(samples, resolution);
+                    points.retain(|point| point.ts >= range.from);
+                    points
+                })
+                .collect();
+            by_group.insert(log_group, sum_by_bucket(containers.iter()));
         }
 
         Ok(by_group)
@@ -777,22 +527,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn averages_database_sizes_within_host_buckets() {
-        let mut first = host_sample(100);
-        first.metrics_size = 100;
-        first.logs_size = 200;
-        let mut second = host_sample(200);
-        second.metrics_size = 300;
-        second.logs_size = 600;
-
-        let samples = downsample_host(vec![first, second], MetricsResolution::TenSeconds);
-
-        assert_eq!(samples.len(), 1);
-        assert_eq!(samples[0].metrics_size, 200);
-        assert_eq!(samples[0].logs_size, 400);
-    }
-
     #[tokio::test]
     async fn persists_and_queries_samples_by_range() {
         let directory = test_directory("range");
@@ -817,13 +551,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(hosts.len(), 1);
-        assert_eq!(
-            hosts[0],
-            HostSample {
-                ts: 10_000,
-                ..host_sample(200)
-            }
-        );
+        assert_eq!(hosts[0].ts, 10_000);
+        assert_eq!(hosts[0].cpu_pct, 12.5);
+        assert_eq!(hosts[0].mem_used, 100);
+        assert_eq!(hosts[0].net_rx_rate, 0.0);
 
         let containers = store
             .query_container(
@@ -835,15 +566,11 @@ mod tests {
             .unwrap();
         assert_eq!(containers.sum.len(), 1);
         assert_eq!(containers.sum[0].ts, 10_000);
-        assert_eq!(containers.sum[0].log_group, "web");
+        assert_eq!(containers.sum[0].cpu_pct, 25.0);
         assert_eq!(containers.containers.len(), 1);
-        assert_eq!(
-            containers.containers["abc123"][0],
-            ContainerSample {
-                ts: 10_000,
-                ..container_sample(100, "web")
-            }
-        );
+        assert_eq!(containers.containers["abc123"][0].ts, 10_000);
+        assert_eq!(containers.containers["abc123"][0].log_group, "web");
+        assert_eq!(containers.containers["abc123"][0].mem_used, 1_000);
 
         let _ = tokio::fs::remove_dir_all(directory).await;
     }

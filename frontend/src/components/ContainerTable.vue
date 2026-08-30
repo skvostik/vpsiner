@@ -127,7 +127,7 @@ function stateType(state: ContainerState) {
             <dd class="mt-1 whitespace-nowrap font-medium text-neutral-900 dark:text-neutral-100">
               {{
                 row.metrics
-                  ? `${formatBytes(row.metrics.disk_read_rate)}/s / ${formatBytes(row.metrics.disk_write_rate)}/s`
+                  ? `${formatBytes(row.metrics.blk_read_rate)}/s / ${formatBytes(row.metrics.blk_write_rate)}/s`
                   : '—'
               }}
             </dd>

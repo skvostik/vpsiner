@@ -5,6 +5,7 @@ use crate::docker::DockerService;
 use crate::logs::metadata::LogMetadataStore;
 use crate::logs::store::LogStore;
 use crate::metrics::host::HostMetricsSource;
+use crate::metrics::snapshot::MetricsSnapshotState;
 use crate::metrics::store::MetricsStore;
 
 /// Injection point for every external dependency. Cloning is cheap — only `Arc`s are copied.
@@ -16,6 +17,7 @@ pub struct AppState {
     pub logs: Arc<dyn LogStore>,
     pub metadata: Arc<dyn LogMetadataStore>,
     pub host: Arc<dyn HostMetricsSource>,
+    pub snapshot: Arc<MetricsSnapshotState>,
 }
 
 impl AppState {
@@ -27,6 +29,7 @@ impl AppState {
         metadata: Arc<dyn LogMetadataStore>,
         host: Arc<dyn HostMetricsSource>,
     ) -> Self {
+        let snapshot = Arc::new(MetricsSnapshotState::new(config.collect_interval));
         Self {
             config: Arc::new(config),
             docker,
@@ -34,6 +37,7 @@ impl AppState {
             logs,
             metadata,
             host,
+            snapshot,
         }
     }
 }

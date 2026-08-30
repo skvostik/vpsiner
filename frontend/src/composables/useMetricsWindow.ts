@@ -1,11 +1,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { metricsSampleIntervalMs } from './useBackendHealth'
-import {
-  computePollIntervalMs,
-  computeStaleAfterMs,
-  RESOLUTION_BUCKET_MS,
-} from '../metricsFreshness'
+import { computePollIntervalMs } from '../metricsFreshness'
 import type { MetricsResolution, MetricsWindow, TimeRange } from '../types'
 
 const storageKey = 'vpsiner.metrics.window.v1'
@@ -34,8 +30,6 @@ function resolutionFor(range: TimeRange): MetricsResolution {
   return '1h'
 }
 
-const bucketMs = RESOLUTION_BUCKET_MS
-
 export function useMetricsWindow(
   load: (range: TimeRange, resolution: MetricsResolution) => Promise<void>
 ) {
@@ -58,12 +52,7 @@ export function useMetricsWindow(
   }
 
   const resolutionLabel = computed(() => resolutionLabels[resolutionFor(computeRange())])
-  // How old a sample can be before it no longer counts as "current" for a live summary stat.
-  const resolutionBucketMs = computed(() => bucketMs[resolutionFor(computeRange())])
   const pollIntervalMs = computed(() => computePollIntervalMs(metricsSampleIntervalMs.value))
-  const staleAfterMs = computed(() =>
-    computeStaleAfterMs(resolutionBucketMs.value, pollIntervalMs.value)
-  )
 
   async function reload() {
     loading.value = true
@@ -152,8 +141,6 @@ export function useMetricsWindow(
     error,
     isLive,
     resolutionLabel,
-    resolutionBucketMs,
-    staleAfterMs,
     updateWindow,
     updateCustomFrom,
     updateCustomTo,
