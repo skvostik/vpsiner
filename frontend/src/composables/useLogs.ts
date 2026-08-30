@@ -2,7 +2,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch, type ComputedRef } fr
 import { useMessage } from 'naive-ui'
 
 import { api } from '../api'
-import { reportBackendUnreachable } from './useBackendHealth'
+import { reportSseIssue } from './useBackendHealth'
 import { useLogGroupsStream } from './useLogGroupsStream'
 import type {
   LogLevel,
@@ -258,15 +258,18 @@ export function useLogs(initialGroup?: string): UseLogsState {
 
   async function loadNewer() {
     const cursor = pages.value[pages.value.length - 1]?.newerCursor
-    if (
-      !selectedGroup.value ||
-      // Even with no known gap, allow one check when arriving back at the bottom unverified.
-      (!hasNewer.value && isTailingAvailable.value) ||
-      loadingLogs.value ||
-      fetching ||
-      !cursor
-    )
+    if (!selectedGroup.value || loadingLogs.value || fetching) return
+    if (!cursor) {
+      // No known tail cursor means we have nothing to ask for; only re-verify once the user
+      // is at the bottom and the stream has been interrupted.
+      if (atBottom.value && !hasNewer.value) {
+        isTailingAvailable.value = false
+      }
       return
+    }
+    if (!hasNewer.value && !isTailingAvailable.value) return
+    // Even with no known gap, allow one check when arriving back at the bottom unverified.
+    if (!hasNewer.value && isTailingAvailable.value && !atBottom.value) return
     const version = requestVersion
     fetching = true
     loadingLogs.value = true
@@ -308,7 +311,8 @@ export function useLogs(initialGroup?: string): UseLogsState {
     stopTailStream()
     if (!selectedGroup.value) return
     const cursor = pages.value[pages.value.length - 1]?.newerCursor
-    const params = new URLSearchParams({ after: cursor ?? '' })
+    const params = new URLSearchParams()
+    if (cursor) params.set('after', cursor)
     if (query.value) params.set('q', query.value)
     if (level.value.length) params.set('level', level.value.join(','))
     if (stream.value.length) params.set('stream', stream.value.join(','))
@@ -325,8 +329,8 @@ export function useLogs(initialGroup?: string): UseLogsState {
       }
       hasNewer.value = false
     })
-    // The browser retries automatically; just surface the outage to the rest of the UI.
-    tailSource.onerror = () => reportBackendUnreachable()
+    // The browser retries automatically; only surface a real outage once the stream is closed.
+    tailSource.onerror = () => reportSseIssue(tailSource)
   }
 
   function persist() {

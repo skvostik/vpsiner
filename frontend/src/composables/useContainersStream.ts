@@ -1,6 +1,6 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
-import { reportBackendUnreachable } from './useBackendHealth'
+import { reportSseIssue } from './useBackendHealth'
 import type { ContainerDiff, ContainerSummary } from '../types'
 
 // Shared state: the sidebar badge and the containers view run off a single connection.
@@ -35,8 +35,8 @@ function connect() {
     }
     console.debug('[containers-stream] diff', diff)
   })
-  // The browser retries automatically; just surface the outage to the rest of the UI.
-  source.onerror = () => reportBackendUnreachable()
+  // The browser retries automatically; only report an outage once the stream is definitively closed.
+  source.onerror = () => reportSseIssue(source)
 }
 
 export function useContainersStream() {

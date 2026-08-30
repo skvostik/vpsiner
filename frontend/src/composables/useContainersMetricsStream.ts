@@ -1,6 +1,6 @@
 import { onBeforeUnmount, ref, watch, type Ref } from 'vue'
 
-import { reportBackendUnreachable } from './useBackendHealth'
+import { reportSseIssue } from './useBackendHealth'
 import type { ContainerMetricsByLogGroup, GroupPoint, MetricsResolution } from '../types'
 
 const trimTickMs = 5_000
@@ -50,8 +50,8 @@ export function useContainersMetricsStream(
       trim()
       console.debug('[containers-metrics-stream] append', append)
     })
-    // The browser retries automatically; just surface the outage to the rest of the UI.
-    source.onerror = () => reportBackendUnreachable()
+    // The browser retries automatically; only report an outage once the stream is definitively closed.
+    source.onerror = () => reportSseIssue(source)
 
     trimTimer = window.setInterval(trim, trimTickMs)
   }

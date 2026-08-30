@@ -1,6 +1,6 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
-import { reportBackendUnreachable } from './useBackendHealth'
+import { reportSseIssue } from './useBackendHealth'
 import type { MetricsSnapshot } from '../types'
 
 /** Pushes MetricsSnapshot updates over SSE instead of polling /api/metrics/current. */
@@ -14,8 +14,8 @@ export function useMetricsSnapshotStream() {
       snapshot.value = JSON.parse(event.data)
       console.debug('[metrics-stream] event received', snapshot.value)
     }
-    // The browser retries automatically; just surface the outage to the rest of the UI.
-    source.onerror = () => reportBackendUnreachable()
+    // The browser retries automatically; only report an outage once the stream is definitively closed.
+    source.onerror = () => reportSseIssue(source)
   })
 
   onBeforeUnmount(() => {

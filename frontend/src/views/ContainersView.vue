@@ -30,7 +30,7 @@ const rows = computed<ContainerRow[]>(() =>
 
 const showOnlyRunning = ref(false)
 const containerSearch = ref('')
-const showOnlyRunningStorageKey = 'vpsiner.show-only-running.v1'
+const showOnlyRunningStorageKey = 'vpsiner.show-only-running.v2'
 const visibleContainers = computed(() => {
   const search = containerSearch.value.trim().toLocaleLowerCase()
   return rows.value
@@ -52,7 +52,7 @@ const visibleContainers = computed(() => {
 
 onMounted(() => {
   const storedOnlyRunning = window.localStorage.getItem(showOnlyRunningStorageKey)
-  showOnlyRunning.value = storedOnlyRunning === null ? false : storedOnlyRunning === 'true'
+  showOnlyRunning.value = storedOnlyRunning === null ? true : storedOnlyRunning === 'true'
 })
 
 watch(showOnlyRunning, (value) =>

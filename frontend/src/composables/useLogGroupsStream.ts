@@ -1,6 +1,6 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
-import { reportBackendUnreachable } from './useBackendHealth'
+import { reportSseIssue } from './useBackendHealth'
 import type { LogGroupDiff, LogGroups } from '../types'
 
 // Shared state: the groups list view and the log viewer's group dropdown run off one connection.
@@ -25,8 +25,8 @@ function connect() {
     }
     console.debug('[log-groups-stream] diff', diff)
   })
-  // The browser retries automatically; just surface the outage to the rest of the UI.
-  source.onerror = () => reportBackendUnreachable()
+  // The browser retries automatically; only report an outage once the stream is definitively closed.
+  source.onerror = () => reportSseIssue(source)
 }
 
 export function useLogGroupsStream() {

@@ -1,6 +1,6 @@
 import { onBeforeUnmount, ref, watch, type Ref } from 'vue'
 
-import { reportBackendUnreachable } from './useBackendHealth'
+import { reportSseIssue } from './useBackendHealth'
 import type { HostPoint, MetricsResolution } from '../types'
 
 const trimTickMs = 5_000
@@ -46,8 +46,8 @@ export function useHostMetricsStream(
       trim()
       console.debug('[host-metrics-stream] append', point)
     })
-    // The browser retries automatically; just surface the outage to the rest of the UI.
-    source.onerror = () => reportBackendUnreachable()
+    // The browser retries automatically; only report an outage once the stream is definitively closed.
+    source.onerror = () => reportSseIssue(source)
 
     trimTimer = window.setInterval(trim, trimTickMs)
   }

@@ -62,7 +62,7 @@ function stateType(state: ContainerState) {
         class="absolute inset-0 z-10"
       />
       <article
-        class="relative pointer-events-none w-full min-w-0 overflow-hidden lg:grid lg:grid-cols-[minmax(12rem,1fr)_minmax(12rem,16rem)_minmax(16rem,1fr)_auto] lg:items-center lg:gap-4"
+        class="relative pointer-events-none w-full min-w-0 overflow-hidden lg:grid lg:grid-cols-[minmax(12rem,1fr)_minmax(12rem,16rem)_minmax(16rem,1fr)_7rem] lg:items-center lg:gap-4"
       >
         <div class="min-w-0 overflow-hidden">
           <div class="flex min-w-0 items-center justify-between gap-3">
@@ -134,7 +134,7 @@ function stateType(state: ContainerState) {
 
         <div
           v-if="canControl"
-          class="relative z-20 mt-4 flex justify-end gap-1 pointer-events-auto lg:mt-0 lg:justify-self-end"
+          class="relative z-20 mt-4 flex w-full justify-end gap-2 pointer-events-auto lg:mt-0 lg:justify-self-end"
         >
           <n-tooltip v-if="supportsStart(row.state)">
             <template #trigger>
@@ -142,6 +142,7 @@ function stateType(state: ContainerState) {
                 circle
                 tertiary
                 type="primary"
+                class="w-8! h-8!"
                 :loading="pendingAction(row.id) === 'start'"
                 :disabled="!!pendingAction(row.id) && pendingAction(row.id) !== 'start'"
                 aria-label="Start container"
@@ -158,6 +159,7 @@ function stateType(state: ContainerState) {
                 circle
                 tertiary
                 type="error"
+                class="w-8! h-8!"
                 :loading="pendingAction(row.id) === 'stop'"
                 :disabled="!!pendingAction(row.id) && pendingAction(row.id) !== 'stop'"
                 aria-label="Stop container"
@@ -173,6 +175,7 @@ function stateType(state: ContainerState) {
               <n-button
                 circle
                 tertiary
+                class="w-8! h-8!"
                 :loading="pendingAction(row.id) === 'restart'"
                 :disabled="!!pendingAction(row.id) && pendingAction(row.id) !== 'restart'"
                 aria-label="Restart container"

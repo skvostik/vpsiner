@@ -44,6 +44,13 @@ export function reportBackendUnreachable() {
   check()
 }
 
+/** Only mark the backend as unreachable after an SSE connection is definitively closed. */
+export function reportSseIssue(source?: EventSource) {
+  if (source?.readyState === EventSource.CLOSED) {
+    reportBackendUnreachable()
+  }
+}
+
 export function useBackendHealth() {
   onMounted(check)
   onBeforeUnmount(() => {

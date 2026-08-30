@@ -13,7 +13,7 @@ usePageTitle('Explore Logs')
 const { groups, loading } = useLogGroupsStream()
 const onlyRunning = ref(false)
 const groupSearch = ref('')
-const onlyRunningStorageKey = 'vpsiner.log-groups.only-running.v1'
+const onlyRunningStorageKey = 'vpsiner.log-groups.only-running.v2'
 
 const pageStatus = computed<'live' | 'history' | 'stopped'>(() => {
   if (!backendOnline.value) return 'stopped'
@@ -50,7 +50,7 @@ function updateOnlyRunning(value: boolean) {
 }
 
 const storedOnlyRunning = window.localStorage.getItem(onlyRunningStorageKey)
-onlyRunning.value = storedOnlyRunning === null ? false : storedOnlyRunning === 'true'
+onlyRunning.value = storedOnlyRunning === null ? true : storedOnlyRunning === 'true'
 </script>
 
 <template>
