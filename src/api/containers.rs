@@ -22,8 +22,6 @@ async fn run_action(state: &AppState, id: &str, action: &'static str) -> AppResu
         _ => unreachable!("container action routes pass known action names"),
     }
 
-    // TODO: This is a temporary workaround to allow the container state to propagate.
-    tokio::time::sleep(state.config.collect_interval * 2).await;
     Ok(StatusCode::NO_CONTENT)
 }
 

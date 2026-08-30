@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import { NButton, NCard, NEmpty, NSpin, NTag, NTooltip, useMessage } from 'naive-ui'
 import { Play, RotateCcw, Square } from '@lucide/vue'
 
-import { api } from '../api'
 import { dockerControlsAvailable } from '../composables/useBackendHealth'
+import { pendingAction, runContainerAction } from '../composables/useContainerActions'
 import { useNow } from '../composables/useNow'
 import { formatBytes, formatUptime } from '../format'
 import type { ContainerRow, ContainerState } from '../types'
@@ -14,9 +14,7 @@ defineProps<{
   loading: boolean
 }>()
 
-const emit = defineEmits<{ actionComplete: [] }>()
 const message = useMessage()
-const actionKey = ref('')
 const now = useNow()
 
 const canControl = computed(() => dockerControlsAvailable.value)
@@ -34,15 +32,11 @@ function supportsRestart(state: ContainerState) {
 }
 
 async function runAction(row: ContainerRow, action: 'start' | 'stop' | 'restart') {
-  actionKey.value = `${row.id}:${action}`
   try {
-    await api.containers.action(row.id, action)
-    emit('actionComplete')
+    await runContainerAction(row, action)
   } catch (actionError) {
     const text = actionError instanceof Error ? actionError.message : 'Container action failed'
     message.error(text)
-  } finally {
-    actionKey.value = ''
   }
 }
 
@@ -148,7 +142,8 @@ function stateType(state: ContainerState) {
                 circle
                 tertiary
                 type="primary"
-                :loading="actionKey === `${row.id}:start`"
+                :loading="pendingAction(row.id) === 'start'"
+                :disabled="!!pendingAction(row.id) && pendingAction(row.id) !== 'start'"
                 aria-label="Start container"
                 @click="runAction(row, 'start')"
               >
@@ -163,7 +158,8 @@ function stateType(state: ContainerState) {
                 circle
                 tertiary
                 type="error"
-                :loading="actionKey === `${row.id}:stop`"
+                :loading="pendingAction(row.id) === 'stop'"
+                :disabled="!!pendingAction(row.id) && pendingAction(row.id) !== 'stop'"
                 aria-label="Stop container"
                 @click="runAction(row, 'stop')"
               >
@@ -177,7 +173,8 @@ function stateType(state: ContainerState) {
               <n-button
                 circle
                 tertiary
-                :loading="actionKey === `${row.id}:restart`"
+                :loading="pendingAction(row.id) === 'restart'"
+                :disabled="!!pendingAction(row.id) && pendingAction(row.id) !== 'restart'"
                 aria-label="Restart container"
                 @click="runAction(row, 'restart')"
               >

@@ -4,7 +4,8 @@ import { reportBackendUnreachable } from './useBackendHealth'
 import type { ContainerDiff, ContainerSummary } from '../types'
 
 // Shared state: the sidebar badge and the containers view run off a single connection.
-const containersById = ref<Record<string, ContainerSummary>>({})
+// Exported so useContainerActions can watch a container's real streamed state.
+export const containersById = ref<Record<string, ContainerSummary>>({})
 const loading = ref(true)
 const containers = computed(() => Object.values(containersById.value))
 const runningCount = computed(

@@ -12,6 +12,7 @@ import { colorForKey } from '../colors'
 import { formatBytes, formatUptime } from '../format'
 import { backendOnline, dockerControlsAvailable } from '../composables/useBackendHealth'
 import { useContainerMetricsStream } from '../composables/useContainerMetricsStream'
+import { pendingAction, runContainerAction } from '../composables/useContainerActions'
 import { useContainersStream } from '../composables/useContainersStream'
 import { useMetricsSnapshotStream } from '../composables/useMetricsSnapshotStream'
 import { useMetricsWindow } from '../composables/useMetricsWindow'
@@ -26,7 +27,6 @@ const logGroup = computed(() => container.value?.log_group ?? '')
 const restContainerSamples = ref<Record<string, ContainerPoint[]>>({})
 const error = ref('')
 const labelsExpanded = ref(false)
-const actionKey = ref('')
 const now = useNow()
 
 // Card headers always show current values, independently of the chart window below them.
@@ -169,14 +169,11 @@ watch(logGroup, (value, previous) => {
 
 async function runAction(action: 'start' | 'stop' | 'restart') {
   if (!container.value) return
-  actionKey.value = action
   try {
-    await api.containers.action(container.value.id, action)
+    await runContainerAction(container.value, action)
     error.value = ''
   } catch (actionError) {
     error.value = actionError instanceof Error ? actionError.message : 'Container action failed'
-  } finally {
-    actionKey.value = ''
   }
 }
 
@@ -202,7 +199,8 @@ usePageTitle(() => container.value?.name || logGroup.value || 'Container')
               circle
               tertiary
               type="primary"
-              :loading="actionKey === 'start'"
+              :loading="pendingAction(container!.id) === 'start'"
+              :disabled="!!pendingAction(container!.id) && pendingAction(container!.id) !== 'start'"
               aria-label="Start container"
               @click="runAction('start')"
               ><template #icon><Play :size="15" /></template></n-button
@@ -215,7 +213,8 @@ usePageTitle(() => container.value?.name || logGroup.value || 'Container')
               circle
               tertiary
               type="error"
-              :loading="actionKey === 'stop'"
+              :loading="pendingAction(container!.id) === 'stop'"
+              :disabled="!!pendingAction(container!.id) && pendingAction(container!.id) !== 'stop'"
               aria-label="Stop container"
               @click="runAction('stop')"
               ><template #icon><Square :size="14" /></template></n-button
@@ -227,7 +226,10 @@ usePageTitle(() => container.value?.name || logGroup.value || 'Container')
             ><n-button
               circle
               tertiary
-              :loading="actionKey === 'restart'"
+              :loading="pendingAction(container!.id) === 'restart'"
+              :disabled="
+                !!pendingAction(container!.id) && pendingAction(container!.id) !== 'restart'
+              "
               aria-label="Restart container"
               @click="runAction('restart')"
               ><template #icon><RotateCcw :size="15" /></template></n-button
