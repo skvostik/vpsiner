@@ -63,7 +63,42 @@ Example response:
 
 ---
 
-## 2) List containers
+## 2) UI configuration
+
+### GET `/api/config/ui`
+
+Returns frontend UI configuration, including custom branding (name and eyebrow) and custom sidebar navigation links.
+
+Reads `ui.json` from the configured config directory (`VPSINER_CONFIG_PATH`, default `config` / `/config` in Docker). If `ui.json` does not exist or cannot be read, returns default configuration linking to the VPSiner GitHub repository.
+
+Parameters: none
+
+Example response:
+```json
+{
+  "name": "VPSiner",
+  "eyebrow": "Simply Observed",
+  "links": [
+    {
+      "icon": "Github",
+      "label": "GitHub",
+      "url": "https://github.com/skvostik/vpsiner"
+    }
+  ]
+}
+```
+
+Fields:
+- `name`: Brand name shown in the sidebar header and browser page title (default: `"VPSiner"`)
+- `eyebrow`: Eyebrow subtitle text shown above the brand name in the sidebar (default: `"Simply Observed"`)
+- `links`: Array of custom link objects:
+  - `icon`: Name of the Lucide icon (e.g., `Github`, `Server`, `Globe`, `Activity`, `HardDrive`, `Terminal`)
+  - `label`: Display text for the menu item
+  - `url`: Destination URL (opened in a new tab)
+
+---
+
+## 3) List containers
 
 ### GET `/api/containers`
 
@@ -119,7 +154,7 @@ Containers no longer available are not listed; there is no `removed` state.
 
 ---
 
-## 3) Container management
+## 4) Container management
 
 ### POST `/api/containers/{id}/start`
 ### POST `/api/containers/{id}/stop`
@@ -162,7 +197,7 @@ Result:
 
 ---
 
-## 4) Host metrics
+## 5) Host metrics
 
 ### GET `/api/metrics/host?from={ts}&to={ts}&resolution={r}`
 
@@ -216,7 +251,7 @@ Example response:
 
 ---
 
-## 5) Current metrics snapshot
+## 6) Current metrics snapshot
 
 ### GET `/api/metrics/current`
 
@@ -319,7 +354,7 @@ Empty response example, valid when nothing has been sampled recently:
 
 ---
 
-## 6) Metrics for a specific log group
+## 7) Metrics for a specific log group
 
 ### GET `/api/metrics/containers/{log_group}?from={ts}&to={ts}&resolution={r}`
 
@@ -419,7 +454,7 @@ Notes:
 
 ---
 
-## 7) Aggregate metrics for all container log groups
+## 8) Aggregate metrics for all container log groups
 
 ### GET `/api/metrics/containers?from={ts}&to={ts}&resolution={r}`
 
@@ -489,7 +524,7 @@ Example response:
 
 ---
 
-## 8) List log groups
+## 9) List log groups
 
 ### GET `/api/logs`
 
@@ -516,7 +551,7 @@ Example response:
 
 ---
 
-## 9) Query logs
+## 10) Query logs
 
 ### GET `/api/logs/{log_group}?from={ts}&to={ts}&q={text}&level={lvl}&stream={s}&limit={n}&before={token}&after={token}`
 
@@ -605,7 +640,7 @@ Notes:
 
 ---
 
-## 10) Server-Sent Events (streaming)
+## 11) Server-Sent Events (streaming)
 
 Every `/api/stream/*` endpoint returns `text/event-stream` and is a push-based alternative to a corresponding plain `GET` endpoint documented above, grouped here together rather than alongside their REST counterparts. Shared conventions across all of them:
 - clients SHOULD rely on the browser's native `EventSource` reconnect behavior rather than implementing their own retry loop
@@ -831,7 +866,7 @@ data: {"items":[{"ts":1720003600000,"log_group":"project-web","cid":"8af7d6c1273
 
 ---
 
-## 11) Types and contracts
+## 12) Types and contracts
 
 ### `HealthResponse`
 ```json
@@ -843,6 +878,21 @@ data: {"items":[{"ts":1720003600000,"log_group":"project-web","cid":"8af7d6c1273
   "sample_interval_ms": 10000,
   "retention_weeks": 12,
   "docker_controls_available": true
+}
+```
+
+### `UiConfig`
+```json
+{
+  "name": "string",
+  "eyebrow": "string",
+  "links": [
+    {
+      "icon": "string",
+      "label": "string",
+      "url": "string"
+    }
+  ]
 }
 ```
 
@@ -1008,11 +1058,12 @@ data: {"items":[{"ts":1720003600000,"log_group":"project-web","cid":"8af7d6c1273
 
 ---
 
-## 12) Route summary
+## 13) Route summary
 
 | Endpoint                                     | Method | Description                                                               |
 | -------------------------------------------- | ------ | ------------------------------------------------------------------------- |
 | `/api/health`                                | GET    | Health check                                                              |
+| `/api/config/ui`                             | GET    | UI configuration and custom links                                         |
 | `/api/containers`                            | GET    | List containers and details                                               |
 | `/api/containers/{id}/start`                 | POST   | Start container                                                           |
 | `/api/containers/{id}/stop`                  | POST   | Stop container                                                            |
