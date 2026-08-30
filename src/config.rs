@@ -25,6 +25,8 @@ const ENV_DOCKER_DEBOUNCE_MS: &str = "VPSINER_DOCKER_DEBOUNCE_MS";
 const ENV_LOG_CHANNEL_CAPACITY: &str = "VPSINER_LOG_CHANNEL_CAPACITY";
 const ENV_SAMPLES_CHANNEL_CAPACITY: &str = "VPSINER_SAMPLES_CHANNEL_CAPACITY";
 const ENV_DOCKER_EVENTS_CHANNEL_CAPACITY: &str = "VPSINER_DOCKER_EVENTS_CHANNEL_CAPACITY";
+const ENV_SQLITE_CACHE_SIZE_KB: &str = "VPSINER_SQLITE_CACHE_SIZE_KB";
+const ENV_SQLITE_BUSY_TIMEOUT_MS: &str = "VPSINER_SQLITE_BUSY_TIMEOUT_MS";
 /// Read by the Tokio runtime builder in `main`, not stored on [`Config`].
 const ENV_WORKER_THREADS: &str = "VPSINER_WORKER_THREADS";
 /// Read by the tracing subscriber in `main`, not stored on [`Config`].
@@ -49,6 +51,8 @@ const DEFAULT_DOCKER_DEBOUNCE_MS: u64 = 1_000;
 const DEFAULT_LOG_CHANNEL_CAPACITY: usize = 10_000;
 const DEFAULT_SAMPLES_CHANNEL_CAPACITY: usize = 32;
 const DEFAULT_DOCKER_EVENTS_CHANNEL_CAPACITY: usize = 256;
+const DEFAULT_SQLITE_CACHE_SIZE_KB: u64 = 1_024;
+const DEFAULT_SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
 
 /// Whether container start/stop/restart endpoints are exposed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,6 +123,8 @@ pub struct Config {
     pub log_channel_capacity: usize,
     pub samples_channel_capacity: usize,
     pub docker_events_channel_capacity: usize,
+    pub sqlite_cache_size_kb: u64,
+    pub sqlite_busy_timeout: Duration,
 }
 
 impl Config {
@@ -179,6 +185,14 @@ impl Config {
                 ENV_DOCKER_EVENTS_CHANNEL_CAPACITY,
                 DEFAULT_DOCKER_EVENTS_CHANNEL_CAPACITY,
             ),
+            sqlite_cache_size_kb: parse_positive_u64_or(
+                ENV_SQLITE_CACHE_SIZE_KB,
+                DEFAULT_SQLITE_CACHE_SIZE_KB,
+            ),
+            sqlite_busy_timeout: Duration::from_millis(parse_positive_u64_or(
+                ENV_SQLITE_BUSY_TIMEOUT_MS,
+                DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
+            )),
         }
     }
 
@@ -333,6 +347,20 @@ impl Config {
                 "advanced",
             ),
             entry(
+                ENV_SQLITE_CACHE_SIZE_KB,
+                self.sqlite_cache_size_kb.to_string(),
+                DEFAULT_SQLITE_CACHE_SIZE_KB.to_string(),
+                "Page cache limit in KiB for each SQLite database connection",
+                "advanced",
+            ),
+            entry(
+                ENV_SQLITE_BUSY_TIMEOUT_MS,
+                self.sqlite_busy_timeout.as_millis().to_string(),
+                DEFAULT_SQLITE_BUSY_TIMEOUT_MS.to_string(),
+                "How long SQLite waits for a locked database before failing",
+                "advanced",
+            ),
+            entry(
                 ENV_STATIC_DIR,
                 self.static_dir.as_ref().map(path).unwrap_or_default(),
                 String::new(),
@@ -420,6 +448,8 @@ mod tests {
             log_channel_capacity: DEFAULT_LOG_CHANNEL_CAPACITY,
             samples_channel_capacity: DEFAULT_SAMPLES_CHANNEL_CAPACITY,
             docker_events_channel_capacity: DEFAULT_DOCKER_EVENTS_CHANNEL_CAPACITY,
+            sqlite_cache_size_kb: DEFAULT_SQLITE_CACHE_SIZE_KB,
+            sqlite_busy_timeout: Duration::from_millis(DEFAULT_SQLITE_BUSY_TIMEOUT_MS),
         }
     }
 
@@ -429,7 +459,7 @@ mod tests {
         let names: HashSet<_> = entries.iter().map(|entry| entry.name).collect();
 
         assert_eq!(names.len(), entries.len(), "duplicate setting names");
-        assert_eq!(entries.len(), 21);
+        assert_eq!(entries.len(), 23);
         assert!(names.contains(ENV_WORKER_THREADS));
         assert!(names.contains(ENV_RUST_LOG));
         assert!(names.contains(ENV_DOCKER_HOST));
