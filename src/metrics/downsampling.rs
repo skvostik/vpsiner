@@ -8,7 +8,7 @@ use crate::model::{
 };
 
 /// The end of the half-open `(bucket_end - bucket_ms, bucket_end]` window containing `ts`.
-fn bucket_end(ts: i64, bucket_ms: i64) -> i64 {
+pub(crate) fn bucket_end(ts: i64, bucket_ms: i64) -> i64 {
     -(-ts).div_euclid(bucket_ms) * bucket_ms
 }
 

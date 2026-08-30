@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import { NButton, NCard, NEmpty, NSpin, NTag, NTooltip, useMessage } from 'naive-ui'
 import { Play, RotateCcw, Square } from '@lucide/vue'
 
-import { api } from '../api'
 import { dockerControlsAvailable } from '../composables/useBackendHealth'
+import { pendingAction, runContainerAction } from '../composables/useContainerActions'
+import { useNow } from '../composables/useNow'
 import { formatBytes, formatUptime } from '../format'
 import type { ContainerRow, ContainerState } from '../types'
 
@@ -13,9 +14,8 @@ defineProps<{
   loading: boolean
 }>()
 
-const emit = defineEmits<{ actionComplete: [] }>()
 const message = useMessage()
-const actionKey = ref('')
+const now = useNow()
 
 const canControl = computed(() => dockerControlsAvailable.value)
 
@@ -32,15 +32,11 @@ function supportsRestart(state: ContainerState) {
 }
 
 async function runAction(row: ContainerRow, action: 'start' | 'stop' | 'restart') {
-  actionKey.value = `${row.id}:${action}`
   try {
-    await api.containers.action(row.id, action)
-    emit('actionComplete')
+    await runContainerAction(row, action)
   } catch (actionError) {
     const text = actionError instanceof Error ? actionError.message : 'Container action failed'
     message.error(text)
-  } finally {
-    actionKey.value = ''
   }
 }
 
@@ -66,7 +62,7 @@ function stateType(state: ContainerState) {
         class="absolute inset-0 z-10"
       />
       <article
-        class="relative pointer-events-none w-full min-w-0 overflow-hidden lg:grid lg:grid-cols-[minmax(12rem,1fr)_minmax(12rem,16rem)_minmax(16rem,1fr)_auto] lg:items-center lg:gap-4"
+        class="relative pointer-events-none w-full min-w-0 overflow-hidden lg:grid lg:grid-cols-[minmax(12rem,1fr)_minmax(12rem,16rem)_minmax(16rem,1fr)_7rem] lg:items-center lg:gap-4"
       >
         <div class="min-w-0 overflow-hidden">
           <div class="flex min-w-0 items-center justify-between gap-3">
@@ -81,7 +77,9 @@ function stateType(state: ContainerState) {
                 v-if="row.state === 'running'"
                 class="mt-1 text-xs text-neutral-500 dark:text-neutral-400"
               >
-                {{ row.started_at ? `Up ${formatUptime(row.started_at)}` : 'Uptime unavailable' }}
+                {{
+                  row.started_at ? `Up ${formatUptime(row.started_at, now)}` : 'Uptime unavailable'
+                }}
               </p>
             </div>
             <n-tag :type="stateType(row.state)" size="small" class="shrink-0">{{
@@ -136,7 +134,7 @@ function stateType(state: ContainerState) {
 
         <div
           v-if="canControl"
-          class="relative z-20 mt-4 flex justify-end gap-1 pointer-events-auto lg:mt-0 lg:justify-self-end"
+          class="relative z-20 mt-4 flex w-full justify-end gap-2 pointer-events-auto lg:mt-0 lg:justify-self-end"
         >
           <n-tooltip v-if="supportsStart(row.state)">
             <template #trigger>
@@ -144,7 +142,9 @@ function stateType(state: ContainerState) {
                 circle
                 tertiary
                 type="primary"
-                :loading="actionKey === `${row.id}:start`"
+                class="w-8! h-8!"
+                :loading="pendingAction(row.id) === 'start'"
+                :disabled="!!pendingAction(row.id) && pendingAction(row.id) !== 'start'"
                 aria-label="Start container"
                 @click="runAction(row, 'start')"
               >
@@ -159,7 +159,9 @@ function stateType(state: ContainerState) {
                 circle
                 tertiary
                 type="error"
-                :loading="actionKey === `${row.id}:stop`"
+                class="w-8! h-8!"
+                :loading="pendingAction(row.id) === 'stop'"
+                :disabled="!!pendingAction(row.id) && pendingAction(row.id) !== 'stop'"
                 aria-label="Stop container"
                 @click="runAction(row, 'stop')"
               >
@@ -173,7 +175,9 @@ function stateType(state: ContainerState) {
               <n-button
                 circle
                 tertiary
-                :loading="actionKey === `${row.id}:restart`"
+                class="w-8! h-8!"
+                :loading="pendingAction(row.id) === 'restart'"
+                :disabled="!!pendingAction(row.id) && pendingAction(row.id) !== 'restart'"
                 aria-label="Restart container"
                 @click="runAction(row, 'restart')"
               >

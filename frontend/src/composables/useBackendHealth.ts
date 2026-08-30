@@ -4,8 +4,6 @@ const onlineIntervalMs = 15_000
 const offlineIntervalMs = 3_000
 
 export const backendOnline = ref(true)
-/** Backend metrics collection interval, reported via /api/health; defaults to 10s until first check. */
-export const metricsSampleIntervalMs = ref(10_000)
 /** Whether container start/stop/restart endpoints are usable against the current Docker socket/proxy. */
 export const dockerControlsAvailable = ref(false)
 /** Backend app version, reported via /api/health. */
@@ -21,12 +19,10 @@ async function check() {
     backendOnline.value = response.ok
     if (response.ok) {
       const body = (await response.json()) as {
-        sample_interval_ms?: number
         docker_controls_available?: boolean
         version?: string
         retention_weeks?: number
       }
-      if (body.sample_interval_ms) metricsSampleIntervalMs.value = body.sample_interval_ms
       dockerControlsAvailable.value = body.docker_controls_available ?? false
       if (body.version) backendVersion.value = body.version
       if (body.retention_weeks !== undefined) retentionWeeks.value = body.retention_weeks
@@ -46,6 +42,13 @@ function schedule() {
 export function reportBackendUnreachable() {
   backendOnline.value = false
   check()
+}
+
+/** Only mark the backend as unreachable after an SSE connection is definitively closed. */
+export function reportSseIssue(source?: EventSource) {
+  if (source?.readyState === EventSource.CLOSED) {
+    reportBackendUnreachable()
+  }
 }
 
 export function useBackendHealth() {

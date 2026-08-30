@@ -9,7 +9,7 @@ use std::{
     collections::HashMap,
     sync::{Arc, Mutex, RwLock, Weak},
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ObservedContainer {
@@ -53,6 +53,9 @@ pub(super) trait ContainerRegistry: Send + Sync + 'static {
 
     /// Sends stream of containers as they are added or removed to the list of observed containers.
     fn take_observe_events_stream(&self) -> AppResult<BoxStream<'static, ContainerObserveEvent>>;
+
+    /// Bumped whenever `containers_info` is refreshed, so SSE subscribers know to re-read it.
+    fn subscribe(&self) -> watch::Receiver<u64>;
 }
 
 pub(super) struct BollardContainerRegistry {
@@ -69,6 +72,7 @@ struct Inner {
     observe_events_tx: mpsc::Sender<ContainerObserveEvent>,
     observed_update_tx: mpsc::Sender<()>,
     containers_info_update_tx: mpsc::Sender<()>,
+    containers_info_revision_tx: watch::Sender<u64>,
 }
 
 impl ContainerRegistry for BollardContainerRegistry {
@@ -86,6 +90,10 @@ impl ContainerRegistry for BollardContainerRegistry {
 
     fn take_observe_events_stream(&self) -> AppResult<BoxStream<'static, ContainerObserveEvent>> {
         self.inner.take_observe_events_stream()
+    }
+
+    fn subscribe(&self) -> watch::Receiver<u64> {
+        self.inner.containers_info_revision_tx.subscribe()
     }
 }
 
@@ -143,6 +151,7 @@ impl BollardContainerRegistry {
 
         let containers_info = Arc::new(RwLock::new(Vec::new()));
         let observed_containers = Arc::new(RwLock::new(HashMap::new()));
+        let (containers_info_revision_tx, _) = watch::channel(0);
 
         let inner = Arc::new(Inner {
             docker,
@@ -154,6 +163,7 @@ impl BollardContainerRegistry {
             observe_events_tx,
             observed_update_tx,
             containers_info_update_tx,
+            containers_info_revision_tx,
         });
 
         spawn_containers_observer(Arc::downgrade(&inner), probe_interval, retry_delay);
@@ -271,6 +281,9 @@ impl Inner {
             AppError::Docker(format!("container_info registry lock poisoned: {err}"))
         })?;
         *current = containers;
+        drop(current);
+        self.containers_info_revision_tx
+            .send_modify(|revision| *revision += 1);
         Ok(())
     }
 }

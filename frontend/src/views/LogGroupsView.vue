@@ -1,24 +1,19 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { useMessage, NEmpty, NInput, NSpin, NSwitch } from 'naive-ui'
+import { computed, ref } from 'vue'
+import { NEmpty, NInput, NSpin, NSwitch } from 'naive-ui'
 import { ChevronRight, Search } from '@lucide/vue'
 
-import { api } from '../api'
 import LiveStatusIcon from '../components/LiveStatusIcon.vue'
 import { backendOnline } from '../composables/useBackendHealth'
+import { useLogGroupsStream } from '../composables/useLogGroupsStream'
 import { usePageTitle } from '../composables/usePageTitle'
-import type { LogGroups } from '../types'
 
 usePageTitle('Explore Logs')
 
-const message = useMessage()
-const groups = ref<LogGroups>({})
-const loading = ref(true)
-const error = ref('')
+const { groups, loading } = useLogGroupsStream()
 const onlyRunning = ref(false)
 const groupSearch = ref('')
-const onlyRunningStorageKey = 'vpsiner.log-groups.only-running.v1'
-let pollTimer: number | undefined
+const onlyRunningStorageKey = 'vpsiner.log-groups.only-running.v2'
 
 const pageStatus = computed<'live' | 'history' | 'stopped'>(() => {
   if (!backendOnline.value) return 'stopped'
@@ -37,13 +32,11 @@ const sortedGroups = computed(() => {
       log_group,
       ...status,
     }))
-    .sort(
-      (left, right) =>
-        Number(right.live) - Number(left.live) ||
-        left.log_group.localeCompare(right.log_group, undefined, {
-          sensitivity: 'base',
-          numeric: true,
-        })
+    .sort((left, right) =>
+      left.log_group.localeCompare(right.log_group, undefined, {
+        sensitivity: 'base',
+        numeric: true,
+      })
     )
 })
 
@@ -56,28 +49,8 @@ function updateOnlyRunning(value: boolean) {
   window.localStorage.setItem(onlyRunningStorageKey, String(value))
 }
 
-async function load() {
-  try {
-    groups.value = await api.logs.groups()
-    error.value = ''
-  } catch (loadError) {
-    error.value = loadError instanceof Error ? loadError.message : 'Unable to load log groups'
-    message.error(error.value)
-  } finally {
-    loading.value = false
-  }
-}
-
-onMounted(() => {
-  const storedOnlyRunning = window.localStorage.getItem(onlyRunningStorageKey)
-  onlyRunning.value = storedOnlyRunning === null ? false : storedOnlyRunning === 'true'
-  load()
-  pollTimer = window.setInterval(load, 5_000)
-})
-
-onBeforeUnmount(() => {
-  if (pollTimer) window.clearInterval(pollTimer)
-})
+const storedOnlyRunning = window.localStorage.getItem(onlyRunningStorageKey)
+onlyRunning.value = storedOnlyRunning === null ? true : storedOnlyRunning === 'true'
 </script>
 
 <template>

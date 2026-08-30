@@ -4,11 +4,9 @@ import type {
   ContainerMetricsByLogGroup,
   ContainerSummary,
   HostPoint,
-  LogGroups,
   LogPage,
   LogQueryParams,
   MetricsResolution,
-  MetricsSnapshot,
   TimeRange,
 } from './types'
 
@@ -60,11 +58,7 @@ export const api = {
     metrics: (range: TimeRange, resolution: MetricsResolution) =>
       request<HostPoint[]>(`/api/metrics/host?${metricsRange(range, resolution)}`),
   },
-  metrics: {
-    current: () => request<MetricsSnapshot>('/api/metrics/current'),
-  },
   logs: {
-    groups: () => request<LogGroups>('/api/logs'),
     query: (group: string, params: LogQueryParams) =>
       request<LogPage>(`/api/logs/${encodeURIComponent(group)}?${queryString(params)}`),
   },

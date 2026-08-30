@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, ChevronDown, ChevronRight, Logs, Play, RotateCcw, Square } from '@lucide/vue'
 import { NButton, NCard, NEmpty, NSpin, NStatistic, NTooltip } from 'naive-ui'
@@ -10,48 +10,29 @@ import MetricsWindowPicker from '../components/MetricsWindowPicker.vue'
 import { api } from '../api'
 import { colorForKey } from '../colors'
 import { formatBytes, formatUptime } from '../format'
-import {
-  backendOnline,
-  dockerControlsAvailable,
-  metricsSampleIntervalMs,
-} from '../composables/useBackendHealth'
+import { backendOnline, dockerControlsAvailable } from '../composables/useBackendHealth'
+import { useContainerMetricsStream } from '../composables/useContainerMetricsStream'
+import { pendingAction, runContainerAction } from '../composables/useContainerActions'
+import { useContainersStream } from '../composables/useContainersStream'
+import { useMetricsSnapshotStream } from '../composables/useMetricsSnapshotStream'
 import { useMetricsWindow } from '../composables/useMetricsWindow'
+import { useNow } from '../composables/useNow'
 import { usePageTitle } from '../composables/usePageTitle'
-import { computePollIntervalMs } from '../metricsFreshness'
-import type {
-  ContainerPoint,
-  ContainerSummary,
-  MetricsResolution,
-  MetricsSnapshot,
-  TimeRange,
-} from '../types'
+import type { ContainerPoint, MetricsResolution, TimeRange } from '../types'
 
 const route = useRoute()
 const router = useRouter()
 const containerId = computed(() => (typeof route.params.id === 'string' ? route.params.id : ''))
 const logGroup = computed(() => container.value?.log_group ?? '')
-const containerSamples = ref<Record<string, ContainerPoint[]>>({})
-const container = ref<ContainerSummary>()
-const allContainers = ref<ContainerSummary[]>([])
-const loading = ref(true)
+const restContainerSamples = ref<Record<string, ContainerPoint[]>>({})
 const error = ref('')
 const labelsExpanded = ref(false)
-const actionKey = ref('')
-let infoPollTimer: number | undefined
+const now = useNow()
 
 // Card headers always show current values, independently of the chart window below them.
-const snapshot = ref<MetricsSnapshot>({ host: null, containers: {}, log_groups: {} })
-const snapshotPollIntervalMs = computed(() => computePollIntervalMs(metricsSampleIntervalMs.value))
-let snapshotPollTimer: number | undefined
-
-async function loadSnapshot() {
-  if (document.visibilityState !== 'visible') return
-  try {
-    snapshot.value = await api.metrics.current()
-  } catch {
-    // Headline numbers are a nice-to-have; the charts below still render on failure.
-  }
-}
+const { snapshot } = useMetricsSnapshotStream()
+const { containers: allContainers, loading } = useContainersStream()
+const container = computed(() => allContainers.value.find((item) => item.id === containerId.value))
 
 function containerNameFor(cid: string) {
   return allContainers.value.find((item) => item.id === cid)?.name ?? cid.slice(0, 12)
@@ -146,24 +127,10 @@ function formatRate(value: number) {
   return `${formatBytes(value)}/s`
 }
 
-async function loadContainerInfo() {
-  if (!containerId.value) return
-  try {
-    const containers = await api.containers.list()
-    allContainers.value = containers
-    container.value = containers.find((item) => item.id === containerId.value)
-    error.value = ''
-  } catch (loadError) {
-    error.value = loadError instanceof Error ? loadError.message : 'Unable to load container info'
-  } finally {
-    loading.value = false
-  }
-}
-
 async function loadMetrics(range: TimeRange, resolution: MetricsResolution) {
-  if (!logGroup.value) return
+  if (!logGroup.value || isLive.value) return
   const next = await api.containers.metrics(logGroup.value, range, resolution)
-  containerSamples.value = next.containers
+  restContainerSamples.value = next.containers
 }
 
 const {
@@ -171,12 +138,23 @@ const {
   customFrom,
   customTo,
   isLive,
+  resolution,
   resolutionLabel,
+  liveWindowMs,
   updateWindow,
   updateCustomFrom,
   updateCustomTo,
   reload,
 } = useMetricsWindow(loadMetrics)
+const { containers: liveContainerSamples } = useContainerMetricsStream(
+  logGroup,
+  resolution,
+  liveWindowMs,
+  isLive
+)
+const containerSamples = computed(() =>
+  isLive.value ? liveContainerSamples.value : restContainerSamples.value
+)
 const pageStatus = computed<'live' | 'history' | 'stopped'>(() => {
   if (!backendOnline.value) return 'stopped'
   if (!container.value || !['running', 'restarting'].includes(container.value.state))
@@ -191,30 +169,15 @@ watch(logGroup, (value, previous) => {
 
 async function runAction(action: 'start' | 'stop' | 'restart') {
   if (!container.value) return
-  actionKey.value = action
   try {
-    await api.containers.action(container.value.id, action)
-    await loadContainerInfo()
+    await runContainerAction(container.value, action)
+    error.value = ''
   } catch (actionError) {
     error.value = actionError instanceof Error ? actionError.message : 'Container action failed'
-  } finally {
-    actionKey.value = ''
   }
 }
 
-onMounted(() => {
-  loadContainerInfo()
-  infoPollTimer = window.setInterval(loadContainerInfo, 5_000)
-  loadSnapshot()
-  snapshotPollTimer = window.setInterval(loadSnapshot, snapshotPollIntervalMs.value)
-})
-
 usePageTitle(() => container.value?.name || logGroup.value || 'Container')
-
-onBeforeUnmount(() => {
-  if (infoPollTimer) window.clearInterval(infoPollTimer)
-  if (snapshotPollTimer) window.clearInterval(snapshotPollTimer)
-})
 </script>
 
 <template>
@@ -236,7 +199,8 @@ onBeforeUnmount(() => {
               circle
               tertiary
               type="primary"
-              :loading="actionKey === 'start'"
+              :loading="pendingAction(container!.id) === 'start'"
+              :disabled="!!pendingAction(container!.id) && pendingAction(container!.id) !== 'start'"
               aria-label="Start container"
               @click="runAction('start')"
               ><template #icon><Play :size="15" /></template></n-button
@@ -249,7 +213,8 @@ onBeforeUnmount(() => {
               circle
               tertiary
               type="error"
-              :loading="actionKey === 'stop'"
+              :loading="pendingAction(container!.id) === 'stop'"
+              :disabled="!!pendingAction(container!.id) && pendingAction(container!.id) !== 'stop'"
               aria-label="Stop container"
               @click="runAction('stop')"
               ><template #icon><Square :size="14" /></template></n-button
@@ -261,7 +226,10 @@ onBeforeUnmount(() => {
             ><n-button
               circle
               tertiary
-              :loading="actionKey === 'restart'"
+              :loading="pendingAction(container!.id) === 'restart'"
+              :disabled="
+                !!pendingAction(container!.id) && pendingAction(container!.id) !== 'restart'
+              "
               aria-label="Restart container"
               @click="runAction('restart')"
               ><template #icon><RotateCcw :size="15" /></template></n-button
@@ -299,7 +267,7 @@ onBeforeUnmount(() => {
             <div v-if="container.state === 'running'">
               <p class="text-xs text-neutral-500 dark:text-neutral-400">Uptime</p>
               <p class="mt-1 text-sm font-medium text-neutral-900 dark:text-neutral-100">
-                {{ container.started_at ? formatUptime(container.started_at) : 'Unavailable' }}
+                {{ container.started_at ? formatUptime(container.started_at, now) : 'Unavailable' }}
               </p>
             </div>
             <div>

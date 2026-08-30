@@ -1,7 +1,7 @@
 //! Domain types shared across the service boundaries.
 //! Nothing from bollard, sqlx or sysinfo may leak through a trait — it is mapped here first.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +33,14 @@ pub struct ContainerSummary {
     pub labels: Vec<String>,
     pub state: Option<ContainerState>,
     pub started_at: Option<TimestampMs>,
+}
+
+/// Incremental update for `/api/stream/containers`, relative to what a client has already seen.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContainerDiff {
+    pub added: Vec<ContainerSummary>,
+    pub updated: Vec<ContainerSummary>,
+    pub removed: Vec<String>,
 }
 
 pub fn container_short_id(container_id: &str) -> &str {
@@ -99,6 +107,13 @@ pub struct ContainerGroupMetrics {
 }
 
 pub type ContainerMetricsByLogGroup = HashMap<String, Vec<GroupPoint>>;
+
+/// One newly-completed bucket's cross-section, pushed by `/api/stream/metrics/containers/{log_group}`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ContainerGroupMetricsAppend {
+    pub sum: Option<GroupPoint>,
+    pub containers: HashMap<String, ContainerPoint>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct HostPoint {
@@ -208,6 +223,22 @@ pub struct LogPage {
 pub struct LogGroupStatus {
     pub last_received: Option<TimestampMs>,
     pub live: bool,
+}
+
+/// Incremental update for `/api/stream/logs`, relative to what a client has already seen.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogGroupDiff {
+    pub added: BTreeMap<String, LogGroupStatus>,
+    pub updated: BTreeMap<String, LogGroupStatus>,
+    pub removed: Vec<String>,
+}
+
+/// One batch of newly-flushed lines pushed by `/api/stream/logs/{log_group}`, carrying the
+/// cursor to resume from so clients can keep their own pagination cursors consistent.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogTailAppend {
+    pub items: Vec<LogLine>,
+    pub newer_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

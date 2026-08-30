@@ -12,7 +12,7 @@ use bollard::{
 };
 use futures_util::{StreamExt, stream::BoxStream};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::{sync::mpsc, sync::watch, task::JoinHandle};
 
 use crate::config::DockerControlsMode;
 use crate::docker::container_registry::{ContainerObserveAction, ObservedContainer};
@@ -33,6 +33,9 @@ use self::container_registry::{BollardContainerRegistry, ContainerRegistry};
 #[async_trait]
 pub trait DockerService: Send + Sync + 'static {
     fn containers_info(&self) -> AppResult<Vec<ContainerSummary>>;
+
+    /// Bumped whenever `containers_info` is refreshed, so SSE subscribers know to re-read it.
+    fn subscribe_containers_info(&self) -> watch::Receiver<u64>;
 
     fn controls_available(&self) -> bool;
 
@@ -160,6 +163,10 @@ impl BollardDocker {
 impl DockerService for BollardDocker {
     fn containers_info(&self) -> AppResult<Vec<ContainerSummary>> {
         self.inner.container_registry.containers_info()
+    }
+
+    fn subscribe_containers_info(&self) -> watch::Receiver<u64> {
+        self.inner.container_registry.subscribe()
     }
 
     fn controls_available(&self) -> bool {

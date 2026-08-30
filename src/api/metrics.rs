@@ -19,28 +19,29 @@ pub struct MetricsQuery {
 }
 
 impl MetricsQuery {
-    fn parse(self) -> AppResult<(TimeRange, MetricsResolution)> {
+    pub(crate) fn parse(self) -> AppResult<(TimeRange, MetricsResolution)> {
         if self.from > self.to {
             return Err(AppError::BadRequest(
                 "from must be before or equal to to".into(),
             ));
         }
-        let resolution = match self.resolution.as_str() {
-            "10s" => MetricsResolution::TenSeconds,
-            "1m" => MetricsResolution::OneMinute,
-            "5m" => MetricsResolution::FiveMinutes,
-            "1h" => MetricsResolution::OneHour,
-            value => {
-                return Err(AppError::BadRequest(format!("invalid resolution: {value}")));
-            }
-        };
         Ok((
             TimeRange {
                 from: self.from,
                 to: self.to,
             },
-            resolution,
+            parse_resolution(&self.resolution)?,
         ))
+    }
+}
+
+pub(crate) fn parse_resolution(value: &str) -> AppResult<MetricsResolution> {
+    match value {
+        "10s" => Ok(MetricsResolution::TenSeconds),
+        "1m" => Ok(MetricsResolution::OneMinute),
+        "5m" => Ok(MetricsResolution::FiveMinutes),
+        "1h" => Ok(MetricsResolution::OneHour),
+        value => Err(AppError::BadRequest(format!("invalid resolution: {value}"))),
     }
 }
 

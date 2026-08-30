@@ -13,6 +13,13 @@ export interface ContainerSummary {
   started_at: number | null
 }
 
+/** Incremental update pushed by GET /api/stream/containers, relative to what the client has already seen. */
+export interface ContainerDiff {
+  added: ContainerSummary[]
+  updated: ContainerSummary[]
+  removed: string[]
+}
+
 export interface HostPoint {
   ts: number
   cpu_pct: number
@@ -58,6 +65,12 @@ export interface ContainerGroupMetrics {
 
 export type ContainerMetricsByLogGroup = Record<string, GroupPoint[]>
 
+/** One newly-completed bucket's cross-section, pushed by GET /api/stream/metrics/containers/{log_group}. */
+export interface ContainerGroupMetricsAppend {
+  sum: GroupPoint | null
+  containers: Record<string, ContainerPoint>
+}
+
 export interface MetricsSnapshot {
   host: HostPoint | null
   containers: Record<string, ContainerPoint>
@@ -69,7 +82,6 @@ export interface ContainerRow extends ContainerSummary {
 }
 export type LogStream = 'stdout' | 'stderr'
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
-export type LogWindow = '1h' | '6h' | '24h' | '7d' | '30d' | 'custom'
 
 export type MetricsWindow = '10m' | '30m' | '1h' | '6h' | '24h' | '7d' | 'custom'
 export type MetricsResolution = '10s' | '1m' | '5m' | '1h'
@@ -102,6 +114,19 @@ export interface LogGroupStatus {
 }
 
 export type LogGroups = Record<string, LogGroupStatus>
+
+/** Incremental update pushed by GET /api/stream/logs, relative to what the client has already seen. */
+export interface LogGroupDiff {
+  added: LogGroups
+  updated: LogGroups
+  removed: string[]
+}
+
+/** One batch of newly-flushed lines pushed by GET /api/stream/logs/{log_group}. */
+export interface LogTailAppend {
+  items: LogLine[]
+  newer_cursor: string | null
+}
 
 export interface LogQueryParams {
   from?: number

@@ -20,6 +20,7 @@ const props = defineProps<{
   query: string
   tailing: boolean
   hasStoredLogs: boolean
+  hasActiveFilters: boolean
   freshKeys: Set<string>
   loadOlder: () => Promise<void>
   loadNewer: () => Promise<void>
@@ -169,7 +170,9 @@ onMounted(async () => {
     <span
       v-else-if="!hasMore && lines.length"
       class="text-xs text-neutral-500 dark:text-neutral-400"
-      >Beginning of logs</span
+      >{{
+        hasActiveFilters ? 'No older logs match the current filters' : 'No older logs exist'
+      }}</span
     >
   </div>
   <div v-if="lines.length" class="space-y-2">

@@ -1,46 +1,32 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 
 import HostOverview from '../components/HostOverview.vue'
 import LiveStatusIcon from '../components/LiveStatusIcon.vue'
 import MetricsWindowPicker from '../components/MetricsWindowPicker.vue'
 import { api, containerMetricsHistory } from '../api'
-import { metricsSampleIntervalMs, useBackendHealth } from '../composables/useBackendHealth'
+import { useBackendHealth } from '../composables/useBackendHealth'
+import { useContainersMetricsStream } from '../composables/useContainersMetricsStream'
+import { useHostMetricsStream } from '../composables/useHostMetricsStream'
+import { useMetricsSnapshotStream } from '../composables/useMetricsSnapshotStream'
 import { useMetricsWindow } from '../composables/useMetricsWindow'
 import { usePageTitle } from '../composables/usePageTitle'
-import { computePollIntervalMs } from '../metricsFreshness'
-import type {
-  ContainerMetricsByLogGroup,
-  HostPoint,
-  MetricsResolution,
-  MetricsSnapshot,
-  TimeRange,
-} from '../types'
+import type { ContainerMetricsByLogGroup, HostPoint, MetricsResolution, TimeRange } from '../types'
 
-const hostSamples = ref<HostPoint[]>([])
-const containerMetricHistory = ref<ContainerMetricsByLogGroup>({})
+const restHostSamples = ref<HostPoint[]>([])
+const restContainerMetricHistory = ref<ContainerMetricsByLogGroup>({})
 
 // Card headers always show current values, independently of the chart window below them.
-const snapshot = ref<MetricsSnapshot>({ host: null, containers: {}, log_groups: {} })
-const snapshotPollIntervalMs = computed(() => computePollIntervalMs(metricsSampleIntervalMs.value))
-let snapshotPollTimer: number | undefined
-
-async function loadSnapshot() {
-  if (document.visibilityState !== 'visible') return
-  try {
-    snapshot.value = await api.metrics.current()
-  } catch {
-    // Headline numbers are a nice-to-have; the charts below still render on failure.
-  }
-}
+const { snapshot } = useMetricsSnapshotStream()
 
 async function load(range: TimeRange, resolution: MetricsResolution) {
+  if (isLive.value) return // live windows are handled by the SSE streams instead
   const [hostMetrics, history] = await Promise.all([
     api.host.metrics(range, resolution),
     containerMetricsHistory(range, resolution),
   ])
-  hostSamples.value = hostMetrics
-  containerMetricHistory.value = history
+  restHostSamples.value = hostMetrics
+  restContainerMetricHistory.value = history
 }
 
 const {
@@ -48,24 +34,27 @@ const {
   customFrom,
   customTo,
   isLive,
+  resolution,
   resolutionLabel,
+  liveWindowMs,
   updateWindow,
   updateCustomFrom,
   updateCustomTo,
 } = useMetricsWindow(load)
+const { points: liveHostSamples } = useHostMetricsStream(resolution, liveWindowMs, isLive)
+const { series: liveContainerMetricHistory } = useContainersMetricsStream(
+  resolution,
+  liveWindowMs,
+  isLive
+)
+const hostSamples = computed(() => (isLive.value ? liveHostSamples.value : restHostSamples.value))
+const containerMetricHistory = computed(() =>
+  isLive.value ? liveContainerMetricHistory.value : restContainerMetricHistory.value
+)
 const { backendOnline } = useBackendHealth()
 const pageStatus = computed<'live' | 'history' | 'stopped'>(() => {
   if (!backendOnline.value) return 'stopped'
   return isLive.value ? 'live' : 'history'
-})
-
-onMounted(() => {
-  loadSnapshot()
-  snapshotPollTimer = window.setInterval(loadSnapshot, snapshotPollIntervalMs.value)
-})
-
-onBeforeUnmount(() => {
-  if (snapshotPollTimer) window.clearInterval(snapshotPollTimer)
 })
 
 usePageTitle('Host Metrics')

@@ -1,14 +1,13 @@
 <script setup lang="ts">
-import { NDatePicker, NInput, NSelect } from 'naive-ui'
+import { NDatePicker, NInput } from 'naive-ui'
 import { Search } from '@lucide/vue'
 
-import type { LogLevel, LogStream, LogWindow } from '../../types'
+import type { LogLevel, LogStream } from '../../types'
 
 defineProps<{
   query: string
   level: LogLevel[]
   stream: LogStream[]
-  window: LogWindow
   expanded: boolean
   customFrom?: number
   customTo?: number
@@ -18,7 +17,6 @@ defineEmits<{
   'update:query': [value: string]
   'update:level': [value: LogLevel[]]
   'update:stream': [value: LogStream[]]
-  'update:window': [value: LogWindow]
   'update:custom-from': [value: number | null]
   'update:custom-to': [value: number | null]
 }>()
@@ -33,14 +31,6 @@ const streamOptions = [
   { label: 'stdout', value: 'stdout' },
   { label: 'stderr', value: 'stderr' },
 ]
-const windowOptions = [
-  { label: 'Last hour', value: '1h' },
-  { label: 'Last 6 hours', value: '6h' },
-  { label: 'Last 24 hours', value: '24h' },
-  { label: 'Last 7 days', value: '7d' },
-  { label: 'Last 30 days', value: '30d' },
-  { label: 'Custom range', value: 'custom' },
-]
 
 function toggleValue<T extends string>(values: T[], value: T) {
   return values.includes(value) ? values.filter((item) => item !== value) : [...values, value]
@@ -48,9 +38,9 @@ function toggleValue<T extends string>(values: T[], value: T) {
 </script>
 
 <template>
-  <div class="grid min-w-0 gap-3 sm:grid-cols-[minmax(0,1fr)_10rem] sm:items-center">
+  <div class="grid min-w-0 gap-3 sm:items-center">
     <n-input
-      :class="expanded ? 'min-w-0 w-full' : 'min-w-0 w-full sm:col-span-2'"
+      class="min-w-0 w-full"
       :value="query"
       placeholder="Search log text"
       clearable
@@ -58,24 +48,13 @@ function toggleValue<T extends string>(values: T[], value: T) {
     >
       <template #prefix><Search :size="16" /></template>
     </n-input>
-    <n-select
-      v-if="expanded"
-      class="min-w-0 w-full"
-      :value="window"
-      :options="windowOptions"
-      placeholder="Time window"
-      @update:value="$emit('update:window', $event)"
-    />
-    <div
-      v-if="expanded && window === 'custom'"
-      class="grid min-w-0 gap-3 sm:col-span-2 sm:grid-cols-2"
-    >
+    <div v-if="expanded" class="grid min-w-0 gap-3 sm:grid-cols-2">
       <n-date-picker
         class="min-w-0 w-full"
         :value="customFrom ?? null"
         type="datetime"
         clearable
-        placeholder="From"
+        placeholder="From (unbounded if empty)"
         @update:value="$emit('update:custom-from', $event)"
       />
       <n-date-picker
@@ -83,11 +62,11 @@ function toggleValue<T extends string>(values: T[], value: T) {
         :value="customTo ?? null"
         type="datetime"
         clearable
-        placeholder="To"
+        placeholder="To (tailing if empty)"
         @update:value="$emit('update:custom-to', $event)"
       />
     </div>
-    <div v-if="expanded" class="flex flex-wrap items-center gap-2 sm:col-span-2">
+    <div v-if="expanded" class="flex flex-wrap items-center gap-2">
       <span class="w-full text-xs font-medium text-neutral-500 dark:text-neutral-400 sm:w-auto"
         >Level</span
       >
