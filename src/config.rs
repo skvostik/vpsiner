@@ -221,6 +221,13 @@ impl Config {
                 "common",
             ),
             entry(
+                ENV_PORT,
+                self.port.to_string(),
+                DEFAULT_PORT.to_string(),
+                "HTTP listen port inside the container",
+                "common",
+            ),
+            entry(
                 ENV_WORKER_THREADS,
                 env::var(ENV_WORKER_THREADS).unwrap_or_default(),
                 String::new(),
@@ -239,13 +246,6 @@ impl Config {
                 path(&self.config_path),
                 DEFAULT_CONFIG_PATH.to_string(),
                 "Directory containing UI configuration (ui.json)",
-                "advanced",
-            ),
-            entry(
-                ENV_PORT,
-                self.port.to_string(),
-                DEFAULT_PORT.to_string(),
-                "HTTP listen port inside the container",
                 "advanced",
             ),
             entry(
