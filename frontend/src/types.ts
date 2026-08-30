@@ -153,7 +153,6 @@ export interface UiConfig {
 
 export type SettingCategory = 'common' | 'advanced'
 
-/** One environment variable exposed by GET /api/config/settings. */
 export interface SettingEntry {
   name: string
   value: string
@@ -161,4 +160,10 @@ export interface SettingEntry {
   description: string
   category: SettingCategory
   overridden: boolean
+}
+
+export interface ComputedEntry {
+  name: string
+  value: string
+  description: string
 }

@@ -232,7 +232,7 @@ impl Config {
                 env::var(ENV_WORKER_THREADS).unwrap_or_default(),
                 String::new(),
                 "Overrides Tokio runtime worker-thread count; by default Tokio uses available CPU parallelism",
-                "common",
+                "advanced",
             ),
             entry(
                 ENV_DATA_PATH,
