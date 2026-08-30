@@ -3,7 +3,7 @@ import { computed, type Component } from 'vue'
 import { useRoute } from 'vue-router'
 import { NBadge } from 'naive-ui'
 import * as LucideIcons from '@lucide/vue'
-import { Boxes, ExternalLink, Gauge, Logs } from '@lucide/vue'
+import { Boxes, ExternalLink, Gauge, Logs, Settings } from '@lucide/vue'
 
 import { useContainersStream } from '../composables/useContainersStream'
 import { backendVersion, retentionWeeks } from '../composables/useBackendHealth'
@@ -18,11 +18,13 @@ const navItems = computed(() => [
   { key: 'host', label: 'Host Metrics', icon: Gauge },
   { key: 'containers', label: 'Containers', icon: Boxes },
   { key: 'logs', label: 'Explore Logs', icon: Logs },
+  { key: 'configuration', label: 'Configuration', icon: Settings },
 ])
 
 const activeKey = () => {
   if (route.name === 'containers' || route.name === 'container-detail') return 'containers'
   if (route.name === 'logs' || route.name === 'log-viewer') return 'logs'
+  if (route.name === 'configuration') return 'configuration'
   return 'host'
 }
 

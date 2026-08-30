@@ -118,6 +118,10 @@ docker compose -f examples/test-load/docker-compose.yml up -d
 Configuration is read from environment variables when VPSiner starts. The
 defaults work for the quick-start command above.
 
+The **Configuration** page in the UI lists every variable below together with the
+value the running instance actually resolved, so you can check what is in effect
+without inspecting the container environment.
+
 ### Common settings
 
 | Variable                  | Default in the image          | Description                                                                    |

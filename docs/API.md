@@ -63,7 +63,7 @@ Example response:
 
 ---
 
-## 2) UI configuration
+## 2) Configuration
 
 ### GET `/api/config/ui`
 
@@ -95,6 +95,44 @@ Fields:
   - `icon`: Name of the Lucide icon (e.g., `Github`, `Server`, `Globe`, `Activity`, `HardDrive`, `Terminal`)
   - `label`: Display text for the menu item
   - `url`: Destination URL (opened in a new tab)
+
+### GET `/api/config/settings`
+
+Returns every environment variable VPSiner supports, together with the value the running instance resolved and the built-in default. Read-only; there is no endpoint to change settings, they are applied at startup from the process environment.
+
+Parameters: none
+
+Example response:
+```json
+[
+  {
+    "name": "VPSINER_DOCKER_HOST",
+    "value": "http://docker-proxy:2375",
+    "default": "unix:///var/run/docker.sock",
+    "description": "Docker socket or socket-proxy endpoint, for example http://docker-proxy:2375",
+    "category": "common",
+    "overridden": true
+  },
+  {
+    "name": "VPSINER_WORKER_THREADS",
+    "value": "",
+    "default": "",
+    "description": "Overrides Tokio runtime worker-thread count; by default Tokio uses available CPU parallelism",
+    "category": "common",
+    "overridden": false
+  }
+]
+```
+
+Fields:
+- `name`: Environment variable name
+- `value`: Effective value in use, formatted in the same unit the variable accepts. Empty string when the setting is unset and has no default
+- `default`: Built-in default. Empty string when the variable has no default
+- `description`: Short human-readable description, matching the tables in the README
+- `category`: `"common"` for frequently adjusted settings, `"advanced"` for tuning knobs
+- `overridden`: `true` when the variable is present in the process environment, regardless of whether its value differs from the default
+
+Ordering is stable and groups `common` entries before `advanced` ones, matching the order used in the README.
 
 ---
 
@@ -1064,6 +1102,7 @@ data: {"items":[{"ts":1720003600000,"log_group":"project-web","cid":"8af7d6c1273
 | -------------------------------------------- | ------ | ------------------------------------------------------------------------- |
 | `/api/health`                                | GET    | Health check                                                              |
 | `/api/config/ui`                             | GET    | UI configuration and custom links                                         |
+| `/api/config/settings`                       | GET    | Supported environment variables with effective and default values         |
 | `/api/containers`                            | GET    | List containers and details                                               |
 | `/api/containers/{id}/start`                 | POST   | Start container                                                           |
 | `/api/containers/{id}/stop`                  | POST   | Stop container                                                            |
