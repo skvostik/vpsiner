@@ -3,7 +3,7 @@ import type {
   ContainerGroupMetrics,
   ContainerMetricsByLogGroup,
   ContainerSummary,
-  HostSample,
+  HostPoint,
   LogGroups,
   LogPage,
   LogQueryParams,
@@ -58,7 +58,7 @@ export const api = {
   },
   host: {
     metrics: (range: TimeRange, resolution: MetricsResolution) =>
-      request<HostSample[]>(`/api/metrics/host?${metricsRange(range, resolution)}`),
+      request<HostPoint[]>(`/api/metrics/host?${metricsRange(range, resolution)}`),
   },
   metrics: {
     current: () => request<MetricsSnapshot>('/api/metrics/current'),

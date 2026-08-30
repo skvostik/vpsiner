@@ -6,7 +6,7 @@ use serde::Deserialize;
 
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    ContainerGroupMetrics, ContainerMetricsByLogGroup, HostSample, MetricsResolution,
+    ContainerGroupMetrics, ContainerMetricsByLogGroup, HostPoint, MetricsResolution,
     MetricsSnapshot, TimeRange,
 };
 use crate::state::AppState;
@@ -47,7 +47,7 @@ impl MetricsQuery {
 pub async fn host(
     State(state): State<AppState>,
     Query(query): Query<MetricsQuery>,
-) -> AppResult<Json<Vec<HostSample>>> {
+) -> AppResult<Json<Vec<HostPoint>>> {
     let (range, resolution) = query.parse()?;
     Ok(Json(state.metrics.query_host(range, resolution).await?))
 }

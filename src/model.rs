@@ -93,28 +93,15 @@ pub struct ContainerSample {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ContainerGroupSample {
-    pub ts: TimestampMs,
-    pub log_group: String,
-    pub cpu_pct: f64,
-    pub mem_used: u64,
-    pub mem_limit: u64,
-    pub net_rx: u64,
-    pub net_tx: u64,
-    pub blk_read: u64,
-    pub blk_write: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContainerGroupMetrics {
-    pub sum: Vec<ContainerGroupSample>,
-    pub containers: HashMap<String, Vec<ContainerSample>>,
+    pub sum: Vec<GroupPoint>,
+    pub containers: HashMap<String, Vec<ContainerPoint>>,
 }
 
-pub type ContainerMetricsByLogGroup = HashMap<String, Vec<ContainerGroupSample>>;
+pub type ContainerMetricsByLogGroup = HashMap<String, Vec<GroupPoint>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct HostSnapshot {
+pub struct HostPoint {
     pub ts: TimestampMs,
     pub cpu_pct: f64,
     pub mem_used: u64,
@@ -130,7 +117,7 @@ pub struct HostSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ContainerSnapshot {
+pub struct ContainerPoint {
     pub ts: TimestampMs,
     pub log_group: String,
     pub cpu_pct: f64,
@@ -143,7 +130,7 @@ pub struct ContainerSnapshot {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
-pub struct GroupSnapshot {
+pub struct GroupPoint {
     pub ts: TimestampMs,
     pub cpu_pct: f64,
     pub mem_used: u64,
@@ -156,9 +143,9 @@ pub struct GroupSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct MetricsSnapshot {
-    pub host: Option<HostSnapshot>,
-    pub containers: HashMap<String, ContainerSnapshot>,
-    pub log_groups: HashMap<String, GroupSnapshot>,
+    pub host: Option<HostPoint>,
+    pub containers: HashMap<String, ContainerPoint>,
+    pub log_groups: HashMap<String, GroupPoint>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

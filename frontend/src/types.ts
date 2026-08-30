@@ -13,54 +13,7 @@ export interface ContainerSummary {
   started_at: number | null
 }
 
-export interface HostSample {
-  ts: number
-  cpu_pct: number
-  mem_used: number
-  mem_total: number
-  storage_used: number
-  storage_total: number
-  metrics_size: number
-  logs_size: number
-  net_rx: number
-  net_tx: number
-  disk_read: number
-  disk_write: number
-}
-
-export interface ContainerSample {
-  ts: number
-  log_group: string
-  cid: string
-  cpu_pct: number
-  mem_used: number
-  mem_limit: number
-  net_rx: number
-  net_tx: number
-  blk_read: number
-  blk_write: number
-}
-
-export interface ContainerGroupSample {
-  ts: number
-  log_group: string
-  cpu_pct: number
-  mem_used: number
-  mem_limit: number
-  net_rx: number
-  net_tx: number
-  blk_read: number
-  blk_write: number
-}
-
-export interface ContainerGroupMetrics {
-  sum: ContainerGroupSample[]
-  containers: Record<string, ContainerSample[]>
-}
-
-export type ContainerMetricsByLogGroup = Record<string, ContainerGroupSample[]>
-
-export interface HostSnapshot {
+export interface HostPoint {
   ts: number
   cpu_pct: number
   mem_used: number
@@ -75,7 +28,7 @@ export interface HostSnapshot {
   disk_write_rate: number
 }
 
-export interface ContainerSnapshot {
+export interface ContainerPoint {
   ts: number
   log_group: string
   cpu_pct: number
@@ -87,7 +40,7 @@ export interface ContainerSnapshot {
   blk_write_rate: number
 }
 
-export interface GroupSnapshot {
+export interface GroupPoint {
   ts: number
   cpu_pct: number
   mem_used: number
@@ -98,14 +51,21 @@ export interface GroupSnapshot {
   blk_write_rate: number
 }
 
+export interface ContainerGroupMetrics {
+  sum: GroupPoint[]
+  containers: Record<string, ContainerPoint[]>
+}
+
+export type ContainerMetricsByLogGroup = Record<string, GroupPoint[]>
+
 export interface MetricsSnapshot {
-  host: HostSnapshot | null
-  containers: Record<string, ContainerSnapshot>
-  log_groups: Record<string, GroupSnapshot>
+  host: HostPoint | null
+  containers: Record<string, ContainerPoint>
+  log_groups: Record<string, GroupPoint>
 }
 
 export interface ContainerRow extends ContainerSummary {
-  metrics?: ContainerSnapshot
+  metrics?: ContainerPoint
 }
 export type LogStream = 'stdout' | 'stderr'
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error'

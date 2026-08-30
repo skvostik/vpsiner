@@ -2,33 +2,23 @@
 import { computed } from 'vue'
 import { NCard, NStatistic } from 'naive-ui'
 
-import MetricChart, { type ChartPoint, type ChartSeries } from './MetricChart.vue'
+import MetricChart, { type ChartSeries } from './MetricChart.vue'
 import { colorForKey } from '../colors'
 import { formatBytes } from '../format'
-import type { ContainerGroupSample, HostSample, HostSnapshot, MetricsSnapshot } from '../types'
+import type { ContainerMetricsByLogGroup, HostPoint, MetricsSnapshot } from '../types'
 
 const props = defineProps<{
   snapshot: MetricsSnapshot
-  history: HostSample[]
-  containerHistory: ContainerGroupSample[]
+  history: HostPoint[]
+  containerHistory: ContainerMetricsByLogGroup
 }>()
 
 const host = computed(() => props.snapshot.host)
 
-function points(key: 'cpu_pct' | 'mem_used') {
+function points(
+  key: 'cpu_pct' | 'mem_used' | 'net_rx_rate' | 'net_tx_rate' | 'disk_read_rate' | 'disk_write_rate'
+) {
   return props.history.map((sample) => ({ ts: sample.ts, value: sample[key] }))
-}
-
-function ratePoints(key: 'net_rx' | 'net_tx' | 'disk_read' | 'disk_write'): ChartPoint[] {
-  return props.history.map((sample, index) => {
-    const previous = props.history[index - 1]
-    if (!previous || sample.ts <= previous.ts || sample[key] < previous[key])
-      return { ts: sample.ts, value: 0 }
-    return {
-      ts: sample.ts,
-      value: (sample[key] - previous[key]) / ((sample.ts - previous.ts) / 1_000),
-    }
-  })
 }
 
 const cpuPoints = computed(() => points('cpu_pct'))
@@ -39,10 +29,10 @@ const storagePoints = computed(() =>
     value: sample.storage_total ? (sample.storage_used / sample.storage_total) * 100 : 0,
   }))
 )
-const networkReceivedPoints = computed(() => ratePoints('net_rx'))
-const networkSentPoints = computed(() => ratePoints('net_tx'))
-const diskReadPoints = computed(() => ratePoints('disk_read'))
-const diskWritePoints = computed(() => ratePoints('disk_write'))
+const networkReceivedPoints = computed(() => points('net_rx_rate'))
+const networkSentPoints = computed(() => points('net_tx_rate'))
+const diskReadPoints = computed(() => points('disk_read_rate'))
+const diskWritePoints = computed(() => points('disk_write_rate'))
 const databaseSizeSeries = computed<ChartSeries[]>(() => [
   {
     name: 'Metrics database',
@@ -63,12 +53,8 @@ const diskSeries = computed<ChartSeries[]>(() => [
   { name: 'Read', points: diskReadPoints.value, color: '#0891b2' },
   { name: 'Write', points: diskWritePoints.value, color: '#f59e0b' },
 ])
-const containerSeries = computed(() => {
-  const grouped = new Map<string, ContainerGroupSample[]>()
-  for (const sample of props.containerHistory) {
-    grouped.set(sample.log_group, [...(grouped.get(sample.log_group) ?? []), sample])
-  }
-  return [...grouped.entries()].map(([logGroup, samples]) => ({
+const containerSeries = computed(() =>
+  Object.entries(props.containerHistory).map(([logGroup, samples]) => ({
     logGroup,
     color: colorForKey(logGroup),
     cpu: samples.map((sample) => ({
@@ -80,7 +66,7 @@ const containerSeries = computed(() => {
       value: sample.mem_used,
     })),
   }))
-})
+)
 const containerCpuSeries = computed<ChartSeries[]>(() =>
   containerSeries.value.map((series) => ({
     name: series.logGroup,
@@ -110,21 +96,21 @@ function formatRate(value: number) {
   return `${formatBytes(value)}/s`
 }
 
-function formatMemorySummary(sample?: HostSnapshot | null) {
+function formatMemorySummary(sample?: HostPoint | null) {
   return sample ? `${formatBytes(sample.mem_used)} / ${formatBytes(sample.mem_total)}` : '—'
 }
 
-function formatCpuSummary(sample?: HostSnapshot | null) {
+function formatCpuSummary(sample?: HostPoint | null) {
   return sample ? `${sample.cpu_pct.toFixed(1)}%` : '—'
 }
 
-function formatStorageSummary(sample?: HostSnapshot | null) {
+function formatStorageSummary(sample?: HostPoint | null) {
   return sample && sample.storage_total
     ? `${formatBytes(sample.storage_used)} / ${formatBytes(sample.storage_total)}`
     : '—'
 }
 
-function formatDatabaseStorageSummary(sample?: HostSnapshot | null) {
+function formatDatabaseStorageSummary(sample?: HostPoint | null) {
   return sample ? formatBytes(sample.metrics_size + sample.logs_size) : '—'
 }
 </script>

@@ -19,7 +19,7 @@ import { useMetricsWindow } from '../composables/useMetricsWindow'
 import { usePageTitle } from '../composables/usePageTitle'
 import { computePollIntervalMs } from '../metricsFreshness'
 import type {
-  ContainerSample,
+  ContainerPoint,
   ContainerSummary,
   MetricsResolution,
   MetricsSnapshot,
@@ -30,7 +30,7 @@ const route = useRoute()
 const router = useRouter()
 const containerId = computed(() => (typeof route.params.id === 'string' ? route.params.id : ''))
 const logGroup = computed(() => container.value?.log_group ?? '')
-const containerSamples = ref<Record<string, ContainerSample[]>>({})
+const containerSamples = ref<Record<string, ContainerPoint[]>>({})
 const container = ref<ContainerSummary>()
 const allContainers = ref<ContainerSummary[]>([])
 const loading = ref(true)
@@ -67,18 +67,10 @@ const containerSeriesEntries = computed(() =>
 )
 
 function containerRatePoints(
-  cidSamples: ContainerSample[],
-  key: 'net_rx' | 'net_tx' | 'blk_read' | 'blk_write'
+  cidSamples: ContainerPoint[],
+  key: 'net_rx_rate' | 'net_tx_rate' | 'blk_read_rate' | 'blk_write_rate'
 ): ChartPoint[] {
-  return cidSamples.map((sample, index) => {
-    const previous = cidSamples[index - 1]
-    if (!previous || sample.ts <= previous.ts || sample[key] < previous[key])
-      return { ts: sample.ts, value: 0 }
-    return {
-      ts: sample.ts,
-      value: (sample[key] - previous[key]) / ((sample.ts - previous.ts) / 1_000),
-    }
-  })
+  return cidSamples.map((sample) => ({ ts: sample.ts, value: sample[key] }))
 }
 
 const cpuSeries = computed<ChartSeries[]>(() =>
@@ -99,28 +91,28 @@ const networkInSeries = computed<ChartSeries[]>(() =>
   containerSeriesEntries.value.map((entry) => ({
     name: entry.name,
     color: entry.color,
-    points: containerRatePoints(entry.samples, 'net_rx'),
+    points: containerRatePoints(entry.samples, 'net_rx_rate'),
   }))
 )
 const networkOutSeries = computed<ChartSeries[]>(() =>
   containerSeriesEntries.value.map((entry) => ({
     name: entry.name,
     color: entry.color,
-    points: containerRatePoints(entry.samples, 'net_tx'),
+    points: containerRatePoints(entry.samples, 'net_tx_rate'),
   }))
 )
 const diskReadSeries = computed<ChartSeries[]>(() =>
   containerSeriesEntries.value.map((entry) => ({
     name: entry.name,
     color: entry.color,
-    points: containerRatePoints(entry.samples, 'blk_read'),
+    points: containerRatePoints(entry.samples, 'blk_read_rate'),
   }))
 )
 const diskWriteSeries = computed<ChartSeries[]>(() =>
   containerSeriesEntries.value.map((entry) => ({
     name: entry.name,
     color: entry.color,
-    points: containerRatePoints(entry.samples, 'blk_write'),
+    points: containerRatePoints(entry.samples, 'blk_write_rate'),
   }))
 )
 

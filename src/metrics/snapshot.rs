@@ -4,8 +4,9 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use crate::metrics::rate::rate;
 use crate::model::{
-    ContainerSample, ContainerSnapshot, GroupSnapshot, HostSample, HostSnapshot, MetricsSnapshot,
+    ContainerPoint, ContainerSample, GroupPoint, HostPoint, HostSample, MetricsSnapshot,
     TimestampMs,
 };
 
@@ -20,19 +21,11 @@ fn now_ms() -> TimestampMs {
         .unwrap_or(0)
 }
 
-/// Bytes per second between two cumulative counter readings; a decrease means the counter reset.
-fn rate(current: u64, previous: u64, dt_ms: i64) -> f64 {
-    if dt_ms <= 0 || current < previous {
-        return 0.0;
-    }
-    (current - previous) as f64 / (dt_ms as f64 / 1000.0)
-}
-
 #[derive(Default)]
 struct Inner {
-    host: Option<HostSnapshot>,
+    host: Option<HostPoint>,
     previous_host: Option<HostSample>,
-    containers: HashMap<String, ContainerSnapshot>,
+    containers: HashMap<String, ContainerPoint>,
     previous_containers: HashMap<String, ContainerSample>,
 }
 
@@ -65,7 +58,7 @@ impl MetricsSnapshotState {
             None => (0.0, 0.0, 0.0, 0.0),
         };
 
-        inner.host = Some(HostSnapshot {
+        inner.host = Some(HostPoint {
             ts: sample.ts,
             cpu_pct: sample.cpu_pct,
             mem_used: sample.mem_used,
@@ -105,7 +98,7 @@ impl MetricsSnapshotState {
 
             containers.insert(
                 sample.cid.clone(),
-                ContainerSnapshot {
+                ContainerPoint {
                     ts: sample.ts,
                     log_group: sample.log_group.clone(),
                     cpu_pct: sample.cpu_pct,
@@ -133,20 +126,20 @@ impl MetricsSnapshotState {
         let cutoff = now - self.stale_after_ms;
 
         let host = inner.host.filter(|snapshot| snapshot.ts >= cutoff);
-        let containers: HashMap<String, ContainerSnapshot> = inner
+        let containers: HashMap<String, ContainerPoint> = inner
             .containers
             .iter()
             .filter(|(_, snapshot)| snapshot.ts >= cutoff)
             .map(|(cid, snapshot)| (cid.clone(), snapshot.clone()))
             .collect();
 
-        let mut log_groups: HashMap<String, GroupSnapshot> = HashMap::new();
+        let mut log_groups: HashMap<String, GroupPoint> = HashMap::new();
         for snapshot in containers.values() {
             let group = log_groups
                 .entry(snapshot.log_group.clone())
-                .or_insert_with(|| GroupSnapshot {
+                .or_insert_with(|| GroupPoint {
                     ts: snapshot.ts,
-                    ..GroupSnapshot::default()
+                    ..GroupPoint::default()
                 });
             group.ts = group.ts.max(snapshot.ts);
             group.cpu_pct += snapshot.cpu_pct;

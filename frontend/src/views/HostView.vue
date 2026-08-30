@@ -10,15 +10,15 @@ import { useMetricsWindow } from '../composables/useMetricsWindow'
 import { usePageTitle } from '../composables/usePageTitle'
 import { computePollIntervalMs } from '../metricsFreshness'
 import type {
-  ContainerGroupSample,
-  HostSample,
+  ContainerMetricsByLogGroup,
+  HostPoint,
   MetricsResolution,
   MetricsSnapshot,
   TimeRange,
 } from '../types'
 
-const hostSamples = ref<HostSample[]>([])
-const containerMetricHistory = ref<ContainerGroupSample[]>([])
+const hostSamples = ref<HostPoint[]>([])
+const containerMetricHistory = ref<ContainerMetricsByLogGroup>({})
 
 // Card headers always show current values, independently of the chart window below them.
 const snapshot = ref<MetricsSnapshot>({ host: null, containers: {}, log_groups: {} })
@@ -40,7 +40,7 @@ async function load(range: TimeRange, resolution: MetricsResolution) {
     containerMetricsHistory(range, resolution),
   ])
   hostSamples.value = hostMetrics
-  containerMetricHistory.value = Object.values(history).flat()
+  containerMetricHistory.value = history
 }
 
 const {
