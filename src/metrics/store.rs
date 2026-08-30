@@ -158,6 +158,11 @@ impl SqliteMetricsStore {
             .execute(&self.pool)
             .await
             .map_err(storage)?;
+        // Serves retention deletes and range queries that span every log group.
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_ctr_ts_only ON container_metrics(ts)")
+            .execute(&self.pool)
+            .await
+            .map_err(storage)?;
 
         Ok(())
     }
@@ -490,7 +495,7 @@ impl MetricsStore for SqliteMetricsStore {
             "SELECT ts, log_group, cid, cpu_pct, mem_used, mem_limit, net_rx, net_tx, blk_read, blk_write
              FROM container_metrics
              WHERE ts >= COALESCE((SELECT MAX(ts) FROM container_metrics WHERE ts < ?), ?) AND ts <= ?
-             ORDER BY log_group ASC, ts ASC",
+             ORDER BY ts ASC",
         )
         .bind(range.from)
         .bind(range.from)
