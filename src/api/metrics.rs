@@ -6,7 +6,8 @@ use serde::Deserialize;
 
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    ContainerGroupMetrics, ContainerMetricsByLogGroup, HostSample, MetricsResolution, TimeRange,
+    ContainerGroupMetrics, ContainerMetricsByLogGroup, HostSample, MetricsResolution,
+    MetricsSnapshot, TimeRange,
 };
 use crate::state::AppState;
 
@@ -73,4 +74,8 @@ pub async fn containers_history(
     Ok(Json(
         state.metrics.query_containers(range, resolution).await?,
     ))
+}
+
+pub async fn current(State(state): State<AppState>) -> Json<MetricsSnapshot> {
+    Json(state.snapshot.current())
 }

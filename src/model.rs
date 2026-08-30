@@ -113,6 +113,54 @@ pub struct ContainerGroupMetrics {
 
 pub type ContainerMetricsByLogGroup = HashMap<String, Vec<ContainerGroupSample>>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct HostSnapshot {
+    pub ts: TimestampMs,
+    pub cpu_pct: f64,
+    pub mem_used: u64,
+    pub mem_total: u64,
+    pub storage_used: u64,
+    pub storage_total: u64,
+    pub metrics_size: u64,
+    pub logs_size: u64,
+    pub net_rx_rate: f64,
+    pub net_tx_rate: f64,
+    pub disk_read_rate: f64,
+    pub disk_write_rate: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContainerSnapshot {
+    pub ts: TimestampMs,
+    pub log_group: String,
+    pub cpu_pct: f64,
+    pub mem_used: u64,
+    pub mem_limit: u64,
+    pub net_rx_rate: f64,
+    pub net_tx_rate: f64,
+    pub blk_read_rate: f64,
+    pub blk_write_rate: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct GroupSnapshot {
+    pub ts: TimestampMs,
+    pub cpu_pct: f64,
+    pub mem_used: u64,
+    pub mem_limit: u64,
+    pub net_rx_rate: f64,
+    pub net_tx_rate: f64,
+    pub blk_read_rate: f64,
+    pub blk_write_rate: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct MetricsSnapshot {
+    pub host: Option<HostSnapshot>,
+    pub containers: HashMap<String, ContainerSnapshot>,
+    pub log_groups: HashMap<String, GroupSnapshot>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContainerStats {
     pub ts: TimestampMs,

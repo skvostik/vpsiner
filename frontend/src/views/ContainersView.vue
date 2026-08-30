@@ -5,78 +5,40 @@ import { Search } from '@lucide/vue'
 
 import ContainerTable from '../components/ContainerTable.vue'
 import LiveStatusIcon from '../components/LiveStatusIcon.vue'
-import { containerMetricsHistory } from '../api'
+import { api } from '../api'
 import { useContainers } from '../composables/useContainers'
 import { metricsSampleIntervalMs, useBackendHealth } from '../composables/useBackendHealth'
 import { usePageTitle } from '../composables/usePageTitle'
-import {
-  computePollIntervalMs,
-  computeStaleAfterMs,
-  latestFreshSamples,
-  RESOLUTION_BUCKET_MS,
-} from '../metricsFreshness'
-import type { ContainerMetricsByLogGroup, ContainerOverviewMetrics, ContainerRow } from '../types'
+import { computePollIntervalMs } from '../metricsFreshness'
+import type { ContainerRow, MetricsSnapshot } from '../types'
 
 usePageTitle('Containers')
 
 const { containers, loading, reload } = useContainers()
 const { backendOnline } = useBackendHealth()
-const metricsHistory = ref<ContainerMetricsByLogGroup>({})
+const snapshot = ref<MetricsSnapshot>({ host: null, containers: {}, log_groups: {} })
 const metricsPollIntervalMs = computed(() => computePollIntervalMs(metricsSampleIntervalMs.value))
-const staleAfterMs = computed(() =>
-  computeStaleAfterMs(RESOLUTION_BUCKET_MS['10s'], metricsPollIntervalMs.value)
-)
 const pageStatus = computed<'live' | 'history' | 'stopped'>(() => {
   if (!backendOnline.value) return 'stopped'
   return document.visibilityState === 'visible' ? 'live' : 'history'
 })
 let metricsPollTimer: number | undefined
 
-async function loadMetricsHistory() {
+async function loadSnapshot() {
   if (document.visibilityState !== 'visible') return
   try {
-    const to = Date.now()
-    metricsHistory.value = await containerMetricsHistory(
-      { from: to - staleAfterMs.value - metricsPollIntervalMs.value, to },
-      '10s'
-    )
+    snapshot.value = await api.metrics.current()
   } catch {
     // Row-level metrics are a nice-to-have; the container list itself still renders on failure.
   }
 }
 
-const rows = computed<ContainerRow[]>(() => {
-  const flatSamples = Object.values(metricsHistory.value).flat()
-  const freshGroups = new Set(
-    latestFreshSamples(flatSamples, (sample) => sample.log_group, staleAfterMs.value).map(
-      (sample) => sample.log_group
-    )
-  )
-  const metricsByGroup = new Map<string, ContainerOverviewMetrics>()
-  for (const [group, samples] of Object.entries(metricsHistory.value)) {
-    if (!freshGroups.has(group)) continue
-    const latest = samples[samples.length - 1]
-    const previous = samples[samples.length - 2]
-    if (!latest) continue
-    const rate = (key: 'net_rx' | 'net_tx' | 'blk_read' | 'blk_write') => {
-      if (!previous || latest.ts <= previous.ts || latest[key] < previous[key]) return 0
-      return (latest[key] - previous[key]) / ((latest.ts - previous.ts) / 1_000)
-    }
-    metricsByGroup.set(group, {
-      cpu_pct: latest.cpu_pct,
-      mem_used: latest.mem_used,
-      mem_limit: latest.mem_limit,
-      net_rx_rate: rate('net_rx'),
-      net_tx_rate: rate('net_tx'),
-      disk_read_rate: rate('blk_read'),
-      disk_write_rate: rate('blk_write'),
-    })
-  }
-  return containers.value.map((container) => ({
+const rows = computed<ContainerRow[]>(() =>
+  containers.value.map((container) => ({
     ...container,
-    metrics: metricsByGroup.get(container.log_group),
+    metrics: snapshot.value.containers[container.id],
   }))
-})
+)
 
 const showOnlyRunning = ref(false)
 const containerSearch = ref('')
@@ -104,8 +66,8 @@ const visibleContainers = computed(() => {
 onMounted(() => {
   const storedOnlyRunning = window.localStorage.getItem(showOnlyRunningStorageKey)
   showOnlyRunning.value = storedOnlyRunning === null ? false : storedOnlyRunning === 'true'
-  loadMetricsHistory()
-  metricsPollTimer = window.setInterval(loadMetricsHistory, metricsPollIntervalMs.value)
+  loadSnapshot()
+  metricsPollTimer = window.setInterval(loadSnapshot, metricsPollIntervalMs.value)
 })
 
 onBeforeUnmount(() => {
@@ -117,7 +79,7 @@ watch(showOnlyRunning, (value) =>
 )
 
 async function handleActionComplete() {
-  await Promise.all([reload(), loadMetricsHistory()])
+  await Promise.all([reload(), loadSnapshot()])
 }
 </script>
 

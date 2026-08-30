@@ -26,6 +26,7 @@ pub fn router() -> Router<AppState> {
         .route("/containers/{id}/stop", post(containers::stop))
         .route("/containers/{id}/restart", post(containers::restart))
         .route("/metrics/host", get(metrics::host))
+        .route("/metrics/current", get(metrics::current))
         .route("/metrics/containers/{log_group}", get(metrics::container))
         .route("/metrics/containers", get(metrics::containers_history))
         .route("/logs", get(logs::list_groups))

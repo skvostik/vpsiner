@@ -60,18 +60,52 @@ export interface ContainerGroupMetrics {
 
 export type ContainerMetricsByLogGroup = Record<string, ContainerGroupSample[]>
 
-export interface ContainerRow extends ContainerSummary {
-  metrics?: ContainerOverviewMetrics
+export interface HostSnapshot {
+  ts: number
+  cpu_pct: number
+  mem_used: number
+  mem_total: number
+  storage_used: number
+  storage_total: number
+  metrics_size: number
+  logs_size: number
+  net_rx_rate: number
+  net_tx_rate: number
+  disk_read_rate: number
+  disk_write_rate: number
 }
 
-export interface ContainerOverviewMetrics {
+export interface ContainerSnapshot {
+  ts: number
+  log_group: string
   cpu_pct: number
   mem_used: number
   mem_limit: number
   net_rx_rate: number
   net_tx_rate: number
-  disk_read_rate: number
-  disk_write_rate: number
+  blk_read_rate: number
+  blk_write_rate: number
+}
+
+export interface GroupSnapshot {
+  ts: number
+  cpu_pct: number
+  mem_used: number
+  mem_limit: number
+  net_rx_rate: number
+  net_tx_rate: number
+  blk_read_rate: number
+  blk_write_rate: number
+}
+
+export interface MetricsSnapshot {
+  host: HostSnapshot | null
+  containers: Record<string, ContainerSnapshot>
+  log_groups: Record<string, GroupSnapshot>
+}
+
+export interface ContainerRow extends ContainerSummary {
+  metrics?: ContainerSnapshot
 }
 export type LogStream = 'stdout' | 'stderr'
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error'

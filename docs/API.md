@@ -11,7 +11,7 @@ General conventions:
 
 ### Metrics bucket semantics
 
-Applies to all three metrics endpoints (`/api/metrics/host`, `/api/metrics/containers/{log_group}`, `/api/metrics/containers`):
+Applies to the three time-series metrics endpoints (`/api/metrics/host`, `/api/metrics/containers/{log_group}`, `/api/metrics/containers`). It does **not** apply to `/api/metrics/current`, which returns latest values rather than buckets.
 
 - `resolution` is a **required** query parameter; allowed values are `10s`, `1m`, `5m`, and `1h`. There is no un-downsampled/"raw" mode — `10s` is simply the finest fixed bucket size and follows the same rules as the others. Missing or invalid `resolution` returns `400 Bad Request`.
 - Samples are grouped into half-open, epoch-aligned buckets: `(bucket_end - resolution, bucket_end]`, where `bucket_end = ceil(ts_ms / bucket_size_ms) * bucket_size_ms`. Bucket boundaries are anchored to the Unix epoch, not to the request's `from`. For example, `10s` buckets end on `:00, :10, :20, :30, :40`, or `:50` seconds of each minute; `1m` buckets end on each minute; `1h` buckets end on each hour.
@@ -205,7 +205,113 @@ Example response:
 
 ---
 
-## 5) Metrics for a specific log group
+## 5) Current metrics snapshot
+
+### GET `/api/metrics/current`
+
+Returns the latest known value for the host, for every currently sampled container, and for every `log_group`. This is the endpoint to use for list and overview UIs that need one current number per entity; it is not a time series and cannot be used to plot history.
+
+Parameters: none. This endpoint takes no `from`, `to`, or `resolution`, and is not subject to the bucket semantics described above — values reflect the most recent raw sample.
+
+Rate semantics:
+- fields ending in `_rate` are **bytes per second**, computed by the server from two consecutive samples
+- no cumulative counters are returned by this endpoint
+- a rate is `0` when only one sample is known so far, or when the underlying counter decreased (for example after a container restart)
+
+Gauge fields (`cpu_pct`, `mem_used`, `mem_total`, `mem_limit`, `storage_used`, `storage_total`, `metrics_size`, `logs_size`) carry the raw value of the latest sample and use the same units and scales as `HostSample` and `ContainerSample`.
+
+Timestamps:
+- every record carries its own `ts`, the timestamp of the sample it was derived from
+- there is no response-level timestamp; host and container samples are collected independently and their `ts` values are not synchronized
+
+Staleness:
+- records whose `ts` is older than three times `sample_interval_ms` (see `GET /api/health`) are omitted
+- `host` is `null` when no recent host sample exists, including before the first sample after startup
+- `containers` and `log_groups` are empty objects when no container has been sampled recently, for example when no containers are running
+- clients MUST treat `null` `host` and empty objects as valid successful responses
+- a container that stops disappears from `containers` within the staleness window
+
+Aggregation:
+- keys under `containers` are container IDs
+- `log_groups` is derived by summing the entries in `containers` that share a `log_group`, using the same summing rules as `/api/metrics/containers`
+- a `log_groups` entry's `ts` is the greatest `ts` among its containers
+
+Polling:
+- clients SHOULD NOT poll more often than `sample_interval_ms` from `GET /api/health`
+
+Example:
+```http
+GET /api/metrics/current
+```
+
+Example response:
+```json
+{
+  "host": {
+    "ts": 1720003600000,
+    "cpu_pct": 21.4,
+    "mem_used": 2147483648,
+    "mem_total": 8589934592,
+    "storage_used": 104857600,
+    "storage_total": 536870912,
+    "metrics_size": 5242880,
+    "logs_size": 73400320,
+    "net_rx_rate": 15432.0,
+    "net_tx_rate": 9650.0,
+    "disk_read_rate": 2000.0,
+    "disk_write_rate": 1500.0
+  },
+  "containers": {
+    "8af7d6c1273d": {
+      "ts": 1720003600000,
+      "log_group": "project-web",
+      "cpu_pct": 12.8,
+      "mem_used": 402653184,
+      "mem_limit": 1073741824,
+      "net_rx_rate": 10500.0,
+      "net_tx_rate": 7300.0,
+      "blk_read_rate": 5200.0,
+      "blk_write_rate": 4100.0
+    },
+    "91bc832df407": {
+      "ts": 1720003600000,
+      "log_group": "project-web",
+      "cpu_pct": 7.6,
+      "mem_used": 301989888,
+      "mem_limit": 1073741824,
+      "net_rx_rate": 7300.0,
+      "net_tx_rate": 5300.0,
+      "blk_read_rate": 3600.0,
+      "blk_write_rate": 3300.0
+    }
+  },
+  "log_groups": {
+    "project-web": {
+      "ts": 1720003600000,
+      "cpu_pct": 20.4,
+      "mem_used": 704643072,
+      "mem_limit": 2147483648,
+      "net_rx_rate": 17800.0,
+      "net_tx_rate": 12600.0,
+      "blk_read_rate": 8800.0,
+      "blk_write_rate": 7400.0
+    }
+  }
+}
+```
+
+Empty response example, valid when nothing has been sampled recently:
+```json
+{
+  "host": null,
+  "containers": {},
+  "log_groups": {}
+}
+```
+
+---
+
+## 6) Metrics for a specific log group
 
 ### GET `/api/metrics/containers/{log_group}?from={ts}&to={ts}&resolution={r}`
 
@@ -307,7 +413,7 @@ Notes:
 
 ---
 
-## 6) Aggregate metrics for all container log groups
+## 7) Aggregate metrics for all container log groups
 
 ### GET `/api/metrics/containers?from={ts}&to={ts}&resolution={r}`
 
@@ -379,7 +485,7 @@ Example response:
 
 ---
 
-## 7) List log groups
+## 8) List log groups
 
 ### GET `/api/logs`
 
@@ -406,7 +512,7 @@ Example response:
 
 ---
 
-## 8) Query logs
+## 9) Query logs
 
 ### GET `/api/logs/{log_group}?from={ts}&to={ts}&q={text}&level={lvl}&stream={s}&limit={n}&before={token}&after={token}`
 
@@ -495,7 +601,7 @@ Notes:
 
 ---
 
-## 9) Types and contracts
+## 10) Types and contracts
 
 ### `HealthResponse`
 ```json
@@ -628,6 +734,62 @@ Notes:
 }
 ```
 
+### `HostSnapshot`
+```json
+{
+  "ts": 1234567890123,
+  "cpu_pct": 12.5,
+  "mem_used": 123456789,
+  "mem_total": 456789123,
+  "storage_used": 123456789,
+  "storage_total": 456789123,
+  "metrics_size": 5242880,
+  "logs_size": 73400320,
+  "net_rx_rate": 1000.0,
+  "net_tx_rate": 2000.0,
+  "disk_read_rate": 3000.0,
+  "disk_write_rate": 4000.0
+}
+```
+
+### `ContainerSnapshot`
+```json
+{
+  "ts": 1234567890123,
+  "log_group": "string",
+  "cpu_pct": 12.5,
+  "mem_used": 123456789,
+  "mem_limit": 456789123,
+  "net_rx_rate": 1000.0,
+  "net_tx_rate": 2000.0,
+  "blk_read_rate": 3000.0,
+  "blk_write_rate": 4000.0
+}
+```
+
+### `GroupSnapshot`
+```json
+{
+  "ts": 1234567890123,
+  "cpu_pct": 12.5,
+  "mem_used": 123456789,
+  "mem_limit": 456789123,
+  "net_rx_rate": 1000.0,
+  "net_tx_rate": 2000.0,
+  "blk_read_rate": 3000.0,
+  "blk_write_rate": 4000.0
+}
+```
+
+### `MetricsSnapshot`
+```json
+{
+  "host": "HostSnapshot | null",
+  "containers": { "container_id": "ContainerSnapshot" },
+  "log_groups": { "log_group": "GroupSnapshot" }
+}
+```
+
 ### `LogLine`
 ```json
 {
@@ -662,7 +824,7 @@ Notes:
 
 ---
 
-## 10) Route summary
+## 11) Route summary
 
 | Endpoint | Method | Description |
 | --- | --- | --- |
@@ -672,6 +834,7 @@ Notes:
 | `/api/containers/{id}/stop` | POST | Stop container |
 | `/api/containers/{id}/restart` | POST | Restart container |
 | `/api/metrics/host` | GET | Host metrics |
+| `/api/metrics/current` | GET | Latest host, per container and per log_group values with rates |
 | `/api/metrics/containers/{log_group}` | GET | Container metrics (sum + per container id) |
 | `/api/metrics/containers` | GET | Aggregate container metrics (sum per log_group) |
 | `/api/logs` | GET | List log groups |
