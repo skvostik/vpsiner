@@ -34,7 +34,9 @@ pub fn router() -> Router<AppState> {
         .route("/logs/{log_group}", get(logs::query))
         .nest(
             "/stream",
-            Router::new().route("/metrics/current", get(stream::current)),
+            Router::new()
+                .route("/metrics/current", get(stream::current))
+                .route("/containers", get(stream::containers)),
         )
 }
 

@@ -13,6 +13,13 @@ export interface ContainerSummary {
   started_at: number | null
 }
 
+/** Incremental update pushed by GET /api/stream/containers, relative to what the client has already seen. */
+export interface ContainerDiff {
+  added: ContainerSummary[]
+  updated: ContainerSummary[]
+  removed: string[]
+}
+
 export interface HostPoint {
   ts: number
   cpu_pct: number

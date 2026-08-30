@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, ChevronDown, ChevronRight, Logs, Play, RotateCcw, Square } from '@lucide/vue'
 import { NButton, NCard, NEmpty, NSpin, NStatistic, NTooltip } from 'naive-ui'
@@ -11,26 +11,25 @@ import { api } from '../api'
 import { colorForKey } from '../colors'
 import { formatBytes, formatUptime } from '../format'
 import { backendOnline, dockerControlsAvailable } from '../composables/useBackendHealth'
+import { useContainersStream } from '../composables/useContainersStream'
 import { useMetricsSnapshotStream } from '../composables/useMetricsSnapshotStream'
 import { useMetricsWindow } from '../composables/useMetricsWindow'
 import { usePageTitle } from '../composables/usePageTitle'
-import type { ContainerPoint, ContainerSummary, MetricsResolution, TimeRange } from '../types'
+import type { ContainerPoint, MetricsResolution, TimeRange } from '../types'
 
 const route = useRoute()
 const router = useRouter()
 const containerId = computed(() => (typeof route.params.id === 'string' ? route.params.id : ''))
 const logGroup = computed(() => container.value?.log_group ?? '')
 const containerSamples = ref<Record<string, ContainerPoint[]>>({})
-const container = ref<ContainerSummary>()
-const allContainers = ref<ContainerSummary[]>([])
-const loading = ref(true)
 const error = ref('')
 const labelsExpanded = ref(false)
 const actionKey = ref('')
-let infoPollTimer: number | undefined
 
 // Card headers always show current values, independently of the chart window below them.
 const { snapshot } = useMetricsSnapshotStream()
+const { containers: allContainers, loading } = useContainersStream()
+const container = computed(() => allContainers.value.find((item) => item.id === containerId.value))
 
 function containerNameFor(cid: string) {
   return allContainers.value.find((item) => item.id === cid)?.name ?? cid.slice(0, 12)
@@ -125,20 +124,6 @@ function formatRate(value: number) {
   return `${formatBytes(value)}/s`
 }
 
-async function loadContainerInfo() {
-  if (!containerId.value) return
-  try {
-    const containers = await api.containers.list()
-    allContainers.value = containers
-    container.value = containers.find((item) => item.id === containerId.value)
-    error.value = ''
-  } catch (loadError) {
-    error.value = loadError instanceof Error ? loadError.message : 'Unable to load container info'
-  } finally {
-    loading.value = false
-  }
-}
-
 async function loadMetrics(range: TimeRange, resolution: MetricsResolution) {
   if (!logGroup.value) return
   const next = await api.containers.metrics(logGroup.value, range, resolution)
@@ -173,7 +158,7 @@ async function runAction(action: 'start' | 'stop' | 'restart') {
   actionKey.value = action
   try {
     await api.containers.action(container.value.id, action)
-    await loadContainerInfo()
+    error.value = ''
   } catch (actionError) {
     error.value = actionError instanceof Error ? actionError.message : 'Container action failed'
   } finally {
@@ -181,16 +166,7 @@ async function runAction(action: 'start' | 'stop' | 'restart') {
   }
 }
 
-onMounted(() => {
-  loadContainerInfo()
-  infoPollTimer = window.setInterval(loadContainerInfo, 5_000)
-})
-
 usePageTitle(() => container.value?.name || logGroup.value || 'Container')
-
-onBeforeUnmount(() => {
-  if (infoPollTimer) window.clearInterval(infoPollTimer)
-})
 </script>
 
 <template>

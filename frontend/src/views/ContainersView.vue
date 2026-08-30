@@ -5,7 +5,7 @@ import { Search } from '@lucide/vue'
 
 import ContainerTable from '../components/ContainerTable.vue'
 import LiveStatusIcon from '../components/LiveStatusIcon.vue'
-import { useContainers } from '../composables/useContainers'
+import { useContainersStream } from '../composables/useContainersStream'
 import { useBackendHealth } from '../composables/useBackendHealth'
 import { useMetricsSnapshotStream } from '../composables/useMetricsSnapshotStream'
 import { usePageTitle } from '../composables/usePageTitle'
@@ -13,7 +13,7 @@ import type { ContainerRow } from '../types'
 
 usePageTitle('Containers')
 
-const { containers, loading, reload } = useContainers()
+const { containers, loading } = useContainersStream()
 const { backendOnline } = useBackendHealth()
 const { snapshot } = useMetricsSnapshotStream()
 const pageStatus = computed<'live' | 'history' | 'stopped'>(() => {
@@ -59,10 +59,6 @@ onMounted(() => {
 watch(showOnlyRunning, (value) =>
   window.localStorage.setItem(showOnlyRunningStorageKey, String(value))
 )
-
-async function handleActionComplete() {
-  await reload()
-}
 </script>
 
 <template>
@@ -81,10 +77,6 @@ async function handleActionComplete() {
     <n-input v-model:value="containerSearch" clearable placeholder="Search by name or image">
       <template #prefix><Search :size="16" /></template>
     </n-input>
-    <ContainerTable
-      :rows="visibleContainers"
-      :loading="loading"
-      @action-complete="handleActionComplete"
-    />
+    <ContainerTable :rows="visibleContainers" :loading="loading" />
   </div>
 </template>

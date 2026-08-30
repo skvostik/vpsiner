@@ -4,14 +4,14 @@ import { useRoute } from 'vue-router'
 import { NBadge } from 'naive-ui'
 import { Boxes, Gauge, Logs } from '@lucide/vue'
 
-import { useContainers } from '../composables/useContainers'
+import { useContainersStream } from '../composables/useContainersStream'
 import { backendVersion, retentionWeeks } from '../composables/useBackendHealth'
 
 const docsUrl = 'https://github.com/skvostik/vpsiner'
 
 const emit = defineEmits<{ navigate: [] }>()
 const route = useRoute()
-const { runningCount } = useContainers()
+const { runningCount } = useContainersStream()
 
 const navItems = computed(() => [
   { key: 'host', label: 'Host Metrics', icon: Gauge },

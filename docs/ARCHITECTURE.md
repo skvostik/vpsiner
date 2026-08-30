@@ -33,8 +33,10 @@ flowchart TB
         direction TB
         Health[GET /health]
         Containers[GET / POST /containers]
+        ContainersStream[GET /stream/containers]
         Logs[GET /logs*]
         Metrics[GET /metrics/*]
+        MetricsStream[GET /stream/metrics/current]
     end
 
     LogIngest -->|read| Docker
@@ -50,9 +52,11 @@ flowchart TB
 
     Docker --> Health
     Docker --- Containers
+    Docker --- ContainersStream
     LogStore --> Logs
     Metadata --> Logs
     MetricsStore --> Metrics
+    MetricsCollector -.->|push on change| MetricsStream
 
     MetricsCollector -->|read| Docker
     MetricsCollector -->|write| MetricsStore
@@ -65,7 +69,7 @@ flowchart TB
     class MetricsCollector,LogIngest,Retention worker;
     class Docker,Registry,LogBuffer service;
     class MetricsStore,LogStore,Metadata store;
-    class Health,Containers,Metrics,Logs api;
+    class Health,Containers,ContainersStream,Metrics,MetricsStream,Logs api;
 ```
 
 - Metrics collector: periodically reads host and container metrics and writes time-series samples to the metrics store.
@@ -78,6 +82,7 @@ flowchart TB
 - Log store: persists log entries and supports grouped log retrieval.
 - Metadata store: stores log checkpoints/positions and related indexing metadata used by ingestion and Docker resume logic.
 - API module: exposes the HTTP endpoints and composes responses from Docker state and persisted data.
+- `GET /stream/metrics/current` and `GET /stream/containers`: Server-Sent Events push equivalents of `GET /metrics/current` and `GET /containers`. Both are driven by a `tokio::sync::watch` revision counter bumped by the underlying in-memory cache (the metrics snapshot, and the ContainerRegistry's `containers_info` cache respectively) whenever it changes, instead of clients polling on a timer.
 
 This is the clean backend wiring: the API reads from Docker and the stores, the metrics collector reads from Sysinfo and Docker and writes metrics, and the log ingestion pipeline reads from Docker and writes logs/metadata.
 
@@ -165,6 +170,7 @@ flowchart TB
 - Maintains two views: a fast observed-running set and a broader containers-info cache.
 - Coalesces refresh requests with debounce workers to avoid redundant Docker calls.
 - Emits start/stop observe events consumed by DockerService log worker orchestration.
+- Bumps a `watch::Sender<u64>` revision counter whenever `containers_info` is refreshed; `GET /stream/containers` subscribes to it to know when to recompute and push a diff, instead of polling.
 
 ## LogBuffer
 

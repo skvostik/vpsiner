@@ -35,6 +35,14 @@ pub struct ContainerSummary {
     pub started_at: Option<TimestampMs>,
 }
 
+/// Incremental update for `/api/stream/containers`, relative to what a client has already seen.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContainerDiff {
+    pub added: Vec<ContainerSummary>,
+    pub updated: Vec<ContainerSummary>,
+    pub removed: Vec<String>,
+}
+
 pub fn container_short_id(container_id: &str) -> &str {
     container_id.get(..12).unwrap_or(container_id)
 }

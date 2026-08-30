@@ -117,6 +117,44 @@ Containers no longer available are not listed; there is no `removed` state.
 
 `started_at` is nullable. For running containers it is the best available Docker start timestamp in Unix milliseconds. Clients must tolerate `null` for any state.
 
+### GET `/api/stream/containers` (Server-Sent Events)
+
+Diff-based push equivalent of `GET /api/containers`. Opens a long-lived `text/event-stream` connection and emits two kinds of named events instead of repeatedly sending the full list:
+
+- `snapshot` — sent once, immediately on connect. Payload is the full array, identical in shape to `GET /api/containers`'s response.
+- `diff` — sent whenever the container list actually changes after that. Payload:
+  ```json
+  {
+    "added": [ /* ContainerSummary, container ids not seen before */ ],
+    "updated": [ /* ContainerSummary, whole record for any id whose fields changed */ ],
+    "removed": [ /* container id strings no longer present */ ]
+  }
+  ```
+
+Parameters: none.
+
+Behavior:
+- `updated` entries are whole replacement records, not per-field patches — clients should overwrite their local copy of that container id wholesale
+- no event is emitted at all when a periodic refresh detects no actual change; clients should not expect a steady heartbeat of data (aside from keep-alive comments) while nothing changes
+- each connection tracks its own diff baseline independently — on reconnect, the server always sends a fresh `snapshot` first before resuming `diff` events
+- clients SHOULD rely on the browser's native `EventSource` reconnect behavior rather than implementing their own retry loop
+
+Example:
+```http
+GET /api/stream/containers
+Accept: text/event-stream
+```
+
+Example events:
+```
+event: snapshot
+data: [{"id":"8af7d6c1273d","name":"web-1","log_group":"project-web","image":"nginx:latest","image_sha":"sha256:abcd...","ports":["80:80"],"labels":[],"state":"running","started_at":1720003600000}]
+
+event: diff
+data: {"added":[],"updated":[{"id":"8af7d6c1273d","name":"web-1","log_group":"project-web","image":"nginx:latest","image_sha":"sha256:abcd...","ports":["80:80"],"labels":[],"state":"exited","started_at":1720003600000}],"removed":[]}
+
+```
+
 ---
 
 ## 3) Container management
@@ -766,17 +804,18 @@ Notes:
 
 ## 11) Route summary
 
-| Endpoint                              | Method | Description                                                    |
-| ------------------------------------- | ------ | -------------------------------------------------------------- |
-| `/api/health`                         | GET    | Health check                                                   |
-| `/api/containers`                     | GET    | List containers and details                                    |
-| `/api/containers/{id}/start`          | POST   | Start container                                                |
-| `/api/containers/{id}/stop`           | POST   | Stop container                                                 |
-| `/api/containers/{id}/restart`        | POST   | Restart container                                              |
-| `/api/metrics/host`                   | GET    | Host metrics                                                   |
-| `/api/metrics/current`                | GET    | Latest host, per container and per log_group values with rates |
-| `/api/stream/metrics/current`         | GET    | Server-Sent Events push equivalent of `/api/metrics/current`   |
-| `/api/metrics/containers/{log_group}` | GET    | Container metrics (sum + per container id)                     |
-| `/api/metrics/containers`             | GET    | Aggregate container metrics (sum per log_group)                |
-| `/api/logs`                           | GET    | List log groups                                                |
-| `/api/logs/{log_group}`               | GET    | Query logs                                                     |
+| Endpoint                              | Method | Description                                                        |
+| ------------------------------------- | ------ | ------------------------------------------------------------------ |
+| `/api/health`                         | GET    | Health check                                                       |
+| `/api/containers`                     | GET    | List containers and details                                        |
+| `/api/stream/containers`              | GET    | Server-Sent Events diff-based push equivalent of `/api/containers` |
+| `/api/containers/{id}/start`          | POST   | Start container                                                    |
+| `/api/containers/{id}/stop`           | POST   | Stop container                                                     |
+| `/api/containers/{id}/restart`        | POST   | Restart container                                                  |
+| `/api/metrics/host`                   | GET    | Host metrics                                                       |
+| `/api/metrics/current`                | GET    | Latest host, per container and per log_group values with rates     |
+| `/api/stream/metrics/current`         | GET    | Server-Sent Events push equivalent of `/api/metrics/current`       |
+| `/api/metrics/containers/{log_group}` | GET    | Container metrics (sum + per container id)                         |
+| `/api/metrics/containers`             | GET    | Aggregate container metrics (sum per log_group)                    |
+| `/api/logs`                           | GET    | List log groups                                                    |
+| `/api/logs/{log_group}`               | GET    | Query logs                                                         |
