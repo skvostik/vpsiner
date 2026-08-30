@@ -15,6 +15,7 @@ import { useContainerMetricsStream } from '../composables/useContainerMetricsStr
 import { useContainersStream } from '../composables/useContainersStream'
 import { useMetricsSnapshotStream } from '../composables/useMetricsSnapshotStream'
 import { useMetricsWindow } from '../composables/useMetricsWindow'
+import { useNow } from '../composables/useNow'
 import { usePageTitle } from '../composables/usePageTitle'
 import type { ContainerPoint, MetricsResolution, TimeRange } from '../types'
 
@@ -26,6 +27,7 @@ const restContainerSamples = ref<Record<string, ContainerPoint[]>>({})
 const error = ref('')
 const labelsExpanded = ref(false)
 const actionKey = ref('')
+const now = useNow()
 
 // Card headers always show current values, independently of the chart window below them.
 const { snapshot } = useMetricsSnapshotStream()
@@ -263,7 +265,7 @@ usePageTitle(() => container.value?.name || logGroup.value || 'Container')
             <div v-if="container.state === 'running'">
               <p class="text-xs text-neutral-500 dark:text-neutral-400">Uptime</p>
               <p class="mt-1 text-sm font-medium text-neutral-900 dark:text-neutral-100">
-                {{ container.started_at ? formatUptime(container.started_at) : 'Unavailable' }}
+                {{ container.started_at ? formatUptime(container.started_at, now) : 'Unavailable' }}
               </p>
             </div>
             <div>

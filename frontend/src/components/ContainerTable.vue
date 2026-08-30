@@ -5,6 +5,7 @@ import { Play, RotateCcw, Square } from '@lucide/vue'
 
 import { api } from '../api'
 import { dockerControlsAvailable } from '../composables/useBackendHealth'
+import { useNow } from '../composables/useNow'
 import { formatBytes, formatUptime } from '../format'
 import type { ContainerRow, ContainerState } from '../types'
 
@@ -16,6 +17,7 @@ defineProps<{
 const emit = defineEmits<{ actionComplete: [] }>()
 const message = useMessage()
 const actionKey = ref('')
+const now = useNow()
 
 const canControl = computed(() => dockerControlsAvailable.value)
 
@@ -81,7 +83,9 @@ function stateType(state: ContainerState) {
                 v-if="row.state === 'running'"
                 class="mt-1 text-xs text-neutral-500 dark:text-neutral-400"
               >
-                {{ row.started_at ? `Up ${formatUptime(row.started_at)}` : 'Uptime unavailable' }}
+                {{
+                  row.started_at ? `Up ${formatUptime(row.started_at, now)}` : 'Uptime unavailable'
+                }}
               </p>
             </div>
             <n-tag :type="stateType(row.state)" size="small" class="shrink-0">{{
