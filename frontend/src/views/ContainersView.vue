@@ -45,7 +45,6 @@ const visibleContainers = computed(() => {
     })
     .sort(
       (left, right) =>
-        Number(right.state === 'running') - Number(left.state === 'running') ||
         left.name.localeCompare(right.name, undefined, { sensitivity: 'base', numeric: true }) ||
         left.id.localeCompare(right.id)
     )

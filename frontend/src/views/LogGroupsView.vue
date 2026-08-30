@@ -32,13 +32,11 @@ const sortedGroups = computed(() => {
       log_group,
       ...status,
     }))
-    .sort(
-      (left, right) =>
-        Number(right.live) - Number(left.live) ||
-        left.log_group.localeCompare(right.log_group, undefined, {
-          sensitivity: 'base',
-          numeric: true,
-        })
+    .sort((left, right) =>
+      left.log_group.localeCompare(right.log_group, undefined, {
+        sensitivity: 'base',
+        numeric: true,
+      })
     )
 })
 
