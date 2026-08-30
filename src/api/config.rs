@@ -1,7 +1,12 @@
 use axum::{Json, extract::State};
 use serde_json::{Value, json};
 
+use crate::config::SettingEntry;
 use crate::state::AppState;
+
+pub async fn settings(State(state): State<AppState>) -> Json<Vec<SettingEntry>> {
+    Json(state.config.describe())
+}
 
 pub async fn ui(State(state): State<AppState>) -> Json<Value> {
     let ui_path = state.config.config_path.join("ui.json");

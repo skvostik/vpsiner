@@ -7,6 +7,7 @@ import type {
   LogPage,
   LogQueryParams,
   MetricsResolution,
+  SettingEntry,
   TimeRange,
   UiConfig,
 } from './types'
@@ -65,6 +66,7 @@ export const api = {
   },
   config: {
     ui: () => request<UiConfig>('/api/config/ui'),
+    settings: () => request<SettingEntry[]>('/api/config/settings'),
   },
 }
 

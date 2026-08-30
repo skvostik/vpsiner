@@ -150,3 +150,15 @@ export interface UiConfig {
   eyebrow?: string
   links?: CustomLink[]
 }
+
+export type SettingCategory = 'common' | 'advanced'
+
+/** One environment variable exposed by GET /api/config/settings. */
+export interface SettingEntry {
+  name: string
+  value: string
+  default: string
+  description: string
+  category: SettingCategory
+  overridden: boolean
+}

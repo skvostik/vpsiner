@@ -23,5 +23,10 @@ export const router = createRouter({
       name: 'log-viewer',
       component: () => import('./views/LogsView.vue'),
     },
+    {
+      path: '/configuration',
+      name: 'configuration',
+      component: () => import('./views/ConfigurationView.vue'),
+    },
   ],
 })
