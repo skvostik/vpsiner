@@ -10,14 +10,19 @@ import MetricsWindowPicker from '../components/MetricsWindowPicker.vue'
 import { api } from '../api'
 import { colorForKey } from '../colors'
 import { formatBytes, formatUptime } from '../format'
-import { backendOnline, dockerControlsAvailable } from '../composables/useBackendHealth'
+import {
+  backendOnline,
+  dockerControlsAvailable,
+  metricsSampleIntervalMs,
+} from '../composables/useBackendHealth'
 import { useMetricsWindow } from '../composables/useMetricsWindow'
 import { usePageTitle } from '../composables/usePageTitle'
+import { computePollIntervalMs } from '../metricsFreshness'
 import type {
-  ContainerGroupSample,
   ContainerSample,
   ContainerSummary,
   MetricsResolution,
+  MetricsSnapshot,
   TimeRange,
 } from '../types'
 
@@ -25,7 +30,6 @@ const route = useRoute()
 const router = useRouter()
 const containerId = computed(() => (typeof route.params.id === 'string' ? route.params.id : ''))
 const logGroup = computed(() => container.value?.log_group ?? '')
-const samples = ref<ContainerGroupSample[]>([])
 const containerSamples = ref<Record<string, ContainerSample[]>>({})
 const container = ref<ContainerSummary>()
 const allContainers = ref<ContainerSummary[]>([])
@@ -34,6 +38,20 @@ const error = ref('')
 const labelsExpanded = ref(false)
 const actionKey = ref('')
 let infoPollTimer: number | undefined
+
+// Card headers always show current values, independently of the chart window below them.
+const snapshot = ref<MetricsSnapshot>({ host: null, containers: {}, log_groups: {} })
+const snapshotPollIntervalMs = computed(() => computePollIntervalMs(metricsSampleIntervalMs.value))
+let snapshotPollTimer: number | undefined
+
+async function loadSnapshot() {
+  if (document.visibilityState !== 'visible') return
+  try {
+    snapshot.value = await api.metrics.current()
+  } catch {
+    // Headline numbers are a nice-to-have; the charts below still render on failure.
+  }
+}
 
 function containerNameFor(cid: string) {
   return allContainers.value.find((item) => item.id === cid)?.name ?? cid.slice(0, 12)
@@ -107,36 +125,12 @@ const diskWriteSeries = computed<ChartSeries[]>(() =>
 )
 
 // Aggregate rates (log-group sum) power only the header stat numbers, not the per-container charts.
-function ratePoints(key: 'net_rx' | 'net_tx' | 'blk_read' | 'blk_write'): ChartPoint[] {
-  return samples.value.map((sample, index) => {
-    const previous = samples.value[index - 1]
-    if (!previous || sample.ts <= previous.ts || sample[key] < previous[key])
-      return { ts: sample.ts, value: 0 }
-    return {
-      ts: sample.ts,
-      value: (sample[key] - previous[key]) / ((sample.ts - previous.ts) / 1_000),
-    }
-  })
-}
+const latest = computed(() => snapshot.value.log_groups[logGroup.value])
+const latestNetworkIn = computed(() => latest.value?.net_rx_rate ?? 0)
+const latestNetworkOut = computed(() => latest.value?.net_tx_rate ?? 0)
+const latestDiskRead = computed(() => latest.value?.blk_read_rate ?? 0)
+const latestDiskWrite = computed(() => latest.value?.blk_write_rate ?? 0)
 
-const latestNetworkIn = computed(() => {
-  const points = ratePoints('net_rx')
-  return points[points.length - 1]?.value ?? 0
-})
-const latestNetworkOut = computed(() => {
-  const points = ratePoints('net_tx')
-  return points[points.length - 1]?.value ?? 0
-})
-const latestDiskRead = computed(() => {
-  const points = ratePoints('blk_read')
-  return points[points.length - 1]?.value ?? 0
-})
-const latestDiskWrite = computed(() => {
-  const points = ratePoints('blk_write')
-  return points[points.length - 1]?.value ?? 0
-})
-
-const latest = computed(() => samples.value[samples.value.length - 1])
 const canStart = computed(
   () =>
     dockerControlsAvailable.value &&
@@ -177,7 +171,6 @@ async function loadContainerInfo() {
 async function loadMetrics(range: TimeRange, resolution: MetricsResolution) {
   if (!logGroup.value) return
   const next = await api.containers.metrics(logGroup.value, range, resolution)
-  samples.value = next.sum
   containerSamples.value = next.containers
 }
 
@@ -220,12 +213,15 @@ async function runAction(action: 'start' | 'stop' | 'restart') {
 onMounted(() => {
   loadContainerInfo()
   infoPollTimer = window.setInterval(loadContainerInfo, 5_000)
+  loadSnapshot()
+  snapshotPollTimer = window.setInterval(loadSnapshot, snapshotPollIntervalMs.value)
 })
 
 usePageTitle(() => container.value?.name || logGroup.value || 'Container')
 
 onBeforeUnmount(() => {
   if (infoPollTimer) window.clearInterval(infoPollTimer)
+  if (snapshotPollTimer) window.clearInterval(snapshotPollTimer)
 })
 </script>
 
@@ -365,7 +361,7 @@ onBeforeUnmount(() => {
           @update:custom-from="updateCustomFrom"
           @update:custom-to="updateCustomTo"
         />
-        <n-empty v-if="!samples.length" description="No metrics found" />
+        <n-empty v-if="!containerSeriesEntries.length" description="No metrics found" />
         <div v-else class="grid min-w-0 gap-4 lg:grid-cols-2">
           <n-card
             size="small"
