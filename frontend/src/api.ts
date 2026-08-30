@@ -8,6 +8,7 @@ import type {
   LogQueryParams,
   MetricsResolution,
   TimeRange,
+  UiConfig,
 } from './types'
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -61,6 +62,9 @@ export const api = {
   logs: {
     query: (group: string, params: LogQueryParams) =>
       request<LogPage>(`/api/logs/${encodeURIComponent(group)}?${queryString(params)}`),
+  },
+  config: {
+    ui: () => request<UiConfig>('/api/config/ui'),
   },
 }
 

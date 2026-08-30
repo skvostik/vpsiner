@@ -21,6 +21,6 @@ WORKDIR /app
 COPY --from=backend /app/target/release/vpsiner /usr/local/bin/vpsiner
 COPY --from=backend /app/frontend/dist /usr/local/share/vpsiner/static
 EXPOSE 3000
-ENV VPSINER_PORT=3000 VPSINER_DATA_PATH=/data VPSINER_DOCKER_HOST=unix:///var/run/docker.sock VPSINER_STATIC_DIR=/usr/local/share/vpsiner/static
-VOLUME ["/data"]
+ENV VPSINER_PORT=3000 VPSINER_DATA_PATH=/data VPSINER_CONFIG_PATH=/config VPSINER_DOCKER_HOST=unix:///var/run/docker.sock VPSINER_STATIC_DIR=/usr/local/share/vpsiner/static
+VOLUME ["/data", "/config"]
 CMD ["/usr/local/bin/vpsiner"]

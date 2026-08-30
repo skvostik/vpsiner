@@ -138,3 +138,13 @@ export interface LogQueryParams {
   before?: string
   after?: string
 }
+
+export interface CustomLink {
+  icon: string
+  label: string
+  url: string
+}
+
+export interface UiConfig {
+  links?: CustomLink[]
+}

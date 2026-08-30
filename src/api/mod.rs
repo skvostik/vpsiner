@@ -1,3 +1,4 @@
+pub mod config;
 pub mod containers;
 pub mod logs;
 pub mod logs_stream;
@@ -24,6 +25,7 @@ pub struct HealthResponse {
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/health", get(health))
+        .route("/config/ui", get(config::ui))
         .route("/containers", get(containers::list))
         .route("/containers/{id}/start", post(containers::start))
         .route("/containers/{id}/stop", post(containers::stop))

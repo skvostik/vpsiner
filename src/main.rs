@@ -70,6 +70,7 @@ async fn async_main() {
         retention_weeks = config.retention_weeks,
         "configured data retention"
     );
+    tracing::info!("config directory: {}", config.config_path.display());
     if let Some(static_dir) = &config.static_dir {
         tracing::info!("static assets directory: {}", static_dir.display());
     } else {
@@ -187,6 +188,7 @@ mod tests {
             docker_timeout_secs: 60,
             docker_request_timeout_secs: 5,
             data_path: "/tmp/vpsiner-test".into(),
+            config_path: "/tmp/vpsiner-test/config".into(),
             static_dir: None,
             port: 3000,
             retention_weeks: 12,
@@ -322,5 +324,71 @@ mod tests {
         let health: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(health["version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(health["retention_weeks"], 12);
+    }
+
+    #[tokio::test]
+    async fn ui_config_returns_default_when_file_does_not_exist() {
+        let docker = MockDockerService::new();
+        let (state, config) = state_with_docker(docker);
+        let response = build_router(state, &config)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/config/ui")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let ui_config: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let links = ui_config.get("links").and_then(|l| l.as_array()).unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0]["icon"], "Github");
+        assert_eq!(links[0]["label"], "GitHub");
+        assert_eq!(links[0]["url"], "https://github.com/skvostik/vpsiner");
+    }
+
+    #[tokio::test]
+    async fn ui_config_serves_custom_file_when_present() {
+        let temp_dir = std::env::temp_dir().join(format!("vpsiner-test-{}", std::process::id()));
+        tokio::fs::create_dir_all(&temp_dir).await.unwrap();
+        let ui_json_path = temp_dir.join("ui.json");
+        let custom_json =
+            r#"{"links":[{"icon":"Server","label":"Custom Server","url":"https://example.com"}]}"#;
+        tokio::fs::write(&ui_json_path, custom_json).await.unwrap();
+
+        let mut config = test_config();
+        config.config_path = temp_dir.clone();
+        let state = AppState::new(
+            config.clone(),
+            Arc::new(MockDockerService::new()),
+            Arc::new(MockMetricsStore::new()),
+            Arc::new(MockLogStore::new()),
+            Arc::new(MockLogMetadataStore::new()),
+            Arc::new(MockHostMetricsSource::new()),
+        );
+
+        let response = build_router(state, &config)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/config/ui")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let ui_config: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let links = ui_config.get("links").and_then(|l| l.as_array()).unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0]["icon"], "Server");
+        assert_eq!(links[0]["label"], "Custom Server");
+        assert_eq!(links[0]["url"], "https://example.com");
+
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
     }
 }
