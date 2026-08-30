@@ -5,7 +5,7 @@ import { ArrowLeft, ChevronDown, ChevronRight, Logs, Play, RotateCcw, Square } f
 import { NButton, NCard, NEmpty, NSpin, NStatistic, NTooltip } from 'naive-ui'
 
 import MetricChart, { type ChartPoint, type ChartSeries } from '../components/MetricChart.vue'
-import LogGroupStatusIcon from '../components/logs/LogGroupStatusIcon.vue'
+import LiveStatusIcon from '../components/LiveStatusIcon.vue'
 import MetricsWindowPicker from '../components/MetricsWindowPicker.vue'
 import { api } from '../api'
 import { colorForKey } from '../colors'
@@ -194,7 +194,8 @@ const {
 } = useMetricsWindow(loadMetrics)
 const pageStatus = computed<'live' | 'history' | 'stopped'>(() => {
   if (!backendOnline.value) return 'stopped'
-  if (!container.value || !['running', 'restarting'].includes(container.value.state)) return 'stopped'
+  if (!container.value || !['running', 'restarting'].includes(container.value.state))
+    return 'stopped'
   return isLive.value ? 'live' : 'history'
 })
 
@@ -230,7 +231,7 @@ onBeforeUnmount(() => {
 
 <template>
   <Teleport to="#app-header-title-leading">
-    <LogGroupStatusIcon :status="pageStatus" :size="15" :pulse="pageStatus === 'live'" />
+    <LiveStatusIcon :status="pageStatus" :size="15" :pulse="pageStatus === 'live'" />
   </Teleport>
   <div>
     <div class="flex items-center gap-3">

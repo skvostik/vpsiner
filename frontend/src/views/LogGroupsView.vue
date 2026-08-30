@@ -4,7 +4,7 @@ import { useMessage, NEmpty, NInput, NSpin, NSwitch } from 'naive-ui'
 import { ChevronRight, Search } from '@lucide/vue'
 
 import { api } from '../api'
-import LogGroupStatusIcon from '../components/logs/LogGroupStatusIcon.vue'
+import LiveStatusIcon from '../components/LiveStatusIcon.vue'
 import { backendOnline } from '../composables/useBackendHealth'
 import { usePageTitle } from '../composables/usePageTitle'
 import type { LogGroups } from '../types'
@@ -82,7 +82,7 @@ onBeforeUnmount(() => {
 
 <template>
   <Teleport to="#app-header-title-leading">
-    <LogGroupStatusIcon :status="pageStatus" :size="15" :pulse="pageStatus === 'live'" />
+    <LiveStatusIcon :status="pageStatus" :size="15" :pulse="pageStatus === 'live'" />
   </Teleport>
   <div class="space-y-5">
     <div class="flex flex-wrap items-center justify-end gap-4">
@@ -117,7 +117,7 @@ onBeforeUnmount(() => {
           class="flex items-center justify-between gap-4 px-4 py-3 hover:bg-neutral-50 dark:hover:bg-neutral-900"
         >
           <span class="flex min-w-0 items-center gap-3">
-            <LogGroupStatusIcon :live="group.live" />
+            <LiveStatusIcon :live="group.live" />
             <span class="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{{
               group.log_group
             }}</span>

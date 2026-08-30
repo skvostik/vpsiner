@@ -4,7 +4,7 @@ import { NInput, NSpin, NSwitch } from 'naive-ui'
 import { Search } from '@lucide/vue'
 
 import ContainerTable from '../components/ContainerTable.vue'
-import LogGroupStatusIcon from '../components/logs/LogGroupStatusIcon.vue'
+import LiveStatusIcon from '../components/LiveStatusIcon.vue'
 import { containerMetricsHistory } from '../api'
 import { useContainers } from '../composables/useContainers'
 import { metricsSampleIntervalMs, useBackendHealth } from '../composables/useBackendHealth'
@@ -123,7 +123,7 @@ async function handleActionComplete() {
 
 <template>
   <Teleport to="#app-header-title-leading">
-    <LogGroupStatusIcon :status="pageStatus" :size="15" :pulse="pageStatus === 'live'" />
+    <LiveStatusIcon :status="pageStatus" :size="15" :pulse="pageStatus === 'live'" />
   </Teleport>
   <div class="space-y-5">
     <div class="flex items-center justify-end gap-4">

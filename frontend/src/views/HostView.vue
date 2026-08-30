@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 
 import HostOverview from '../components/HostOverview.vue'
-import LogGroupStatusIcon from '../components/logs/LogGroupStatusIcon.vue'
+import LiveStatusIcon from '../components/LiveStatusIcon.vue'
 import MetricsWindowPicker from '../components/MetricsWindowPicker.vue'
 import { api, containerMetricsHistory } from '../api'
 import { useBackendHealth } from '../composables/useBackendHealth'
@@ -44,7 +44,7 @@ usePageTitle('Host Metrics')
 
 <template>
   <Teleport to="#app-header-title-leading">
-    <LogGroupStatusIcon :status="pageStatus" :size="15" :pulse="pageStatus === 'live'" />
+    <LiveStatusIcon :status="pageStatus" :size="15" :pulse="pageStatus === 'live'" />
   </Teleport>
   <div class="space-y-6">
     <MetricsWindowPicker

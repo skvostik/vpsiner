@@ -5,7 +5,7 @@ import { ListFilter, RefreshCw } from '@lucide/vue'
 import { NButton, NEmpty, NTooltip } from 'naive-ui'
 
 import LogFilterBar from '../components/logs/LogFilterBar.vue'
-import LogGroupStatusIcon from '../components/logs/LogGroupStatusIcon.vue'
+import LiveStatusIcon from '../components/LiveStatusIcon.vue'
 import LogViewer from '../components/logs/LogViewer.vue'
 import { backendOnline } from '../composables/useBackendHealth'
 import { useLogs } from '../composables/useLogs'
@@ -104,7 +104,7 @@ onMounted(() => {
 
 <template>
   <Teleport to="#app-header-title-leading">
-    <LogGroupStatusIcon :status="pageStatus" :size="15" :pulse="pageStatus === 'live'" />
+    <LiveStatusIcon :status="pageStatus" :size="15" :pulse="pageStatus === 'live'" />
   </Teleport>
   <Teleport to="#app-header-title-subtext">
     <template v-if="selectedGroupSummary">
