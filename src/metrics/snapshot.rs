@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use tokio::sync::watch;
+
 use crate::metrics::rate::rate;
 use crate::model::{
     ContainerPoint, ContainerSample, GroupPoint, HostPoint, HostSample, MetricsSnapshot,
@@ -32,14 +34,22 @@ struct Inner {
 pub struct MetricsSnapshotState {
     inner: Mutex<Inner>,
     stale_after_ms: i64,
+    /// Bumped on every record_* call so SSE subscribers know to re-read `current()`.
+    revision_tx: watch::Sender<u64>,
 }
 
 impl MetricsSnapshotState {
     pub fn new(collect_interval: Duration) -> Self {
+        let (revision_tx, _) = watch::channel(0);
         Self {
             inner: Mutex::new(Inner::default()),
             stale_after_ms: (collect_interval.as_millis() as i64) * i64::from(STALE_INTERVALS),
+            revision_tx,
         }
+    }
+
+    pub fn subscribe(&self) -> watch::Receiver<u64> {
+        self.revision_tx.subscribe()
     }
 
     pub fn record_host(&self, sample: &HostSample) {
@@ -73,6 +83,8 @@ impl MetricsSnapshotState {
             disk_write_rate,
         });
         inner.previous_host = Some(*sample);
+        drop(inner);
+        self.revision_tx.send_modify(|revision| *revision += 1);
     }
 
     /// Each batch carries the full set of sampled containers, so the map is replaced wholesale.
@@ -115,6 +127,8 @@ impl MetricsSnapshotState {
 
         inner.containers = containers;
         inner.previous_containers = previous_containers;
+        drop(inner);
+        self.revision_tx.send_modify(|revision| *revision += 1);
     }
 
     pub fn current(&self) -> MetricsSnapshot {

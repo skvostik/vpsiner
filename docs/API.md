@@ -317,6 +317,30 @@ Empty response example, valid when nothing has been sampled recently:
 }
 ```
 
+### GET `/api/stream/metrics/current` (Server-Sent Events)
+
+Push equivalent of `GET /api/metrics/current` for clients that want live updates without polling. Opens a long-lived `text/event-stream` connection; the server emits one event per message, each carrying a full `MetricsSnapshot` payload with the same shape and staleness rules as the plain GET endpoint above (no diffing — every event is a complete, self-contained snapshot).
+
+Parameters: none.
+
+Behavior:
+- on connect, the server immediately emits the current snapshot, then emits again whenever the underlying host or container data changes
+- host and container updates are collected independently server-side; updates that land within a short window of each other are coalesced into a single emitted event
+- the connection sends periodic keep-alive comments to detect dead connections and avoid idle timeouts
+- clients SHOULD rely on the browser's native `EventSource` reconnect behavior rather than implementing their own retry loop
+
+Example:
+```http
+GET /api/stream/metrics/current
+Accept: text/event-stream
+```
+
+Example event (identical payload shape to `GET /api/metrics/current`):
+```
+data: {"host":{"ts":1720003600000,"cpu_pct":21.4,"mem_used":2147483648,"mem_total":8589934592,"storage_used":104857600,"storage_total":536870912,"metrics_size":5242880,"logs_size":73400320,"net_rx_rate":15432.0,"net_tx_rate":9650.0,"disk_read_rate":2000.0,"disk_write_rate":1500.0},"containers":{},"log_groups":{}}
+
+```
+
 ---
 
 ## 6) Metrics for a specific log group
@@ -742,16 +766,17 @@ Notes:
 
 ## 11) Route summary
 
-| Endpoint | Method | Description |
-| --- | --- | --- |
-| `/api/health` | GET | Health check |
-| `/api/containers` | GET | List containers and details |
-| `/api/containers/{id}/start` | POST | Start container |
-| `/api/containers/{id}/stop` | POST | Stop container |
-| `/api/containers/{id}/restart` | POST | Restart container |
-| `/api/metrics/host` | GET | Host metrics |
-| `/api/metrics/current` | GET | Latest host, per container and per log_group values with rates |
-| `/api/metrics/containers/{log_group}` | GET | Container metrics (sum + per container id) |
-| `/api/metrics/containers` | GET | Aggregate container metrics (sum per log_group) |
-| `/api/logs` | GET | List log groups |
-| `/api/logs/{log_group}` | GET | Query logs |
+| Endpoint                              | Method | Description                                                    |
+| ------------------------------------- | ------ | -------------------------------------------------------------- |
+| `/api/health`                         | GET    | Health check                                                   |
+| `/api/containers`                     | GET    | List containers and details                                    |
+| `/api/containers/{id}/start`          | POST   | Start container                                                |
+| `/api/containers/{id}/stop`           | POST   | Stop container                                                 |
+| `/api/containers/{id}/restart`        | POST   | Restart container                                              |
+| `/api/metrics/host`                   | GET    | Host metrics                                                   |
+| `/api/metrics/current`                | GET    | Latest host, per container and per log_group values with rates |
+| `/api/stream/metrics/current`         | GET    | Server-Sent Events push equivalent of `/api/metrics/current`   |
+| `/api/metrics/containers/{log_group}` | GET    | Container metrics (sum + per container id)                     |
+| `/api/metrics/containers`             | GET    | Aggregate container metrics (sum per log_group)                |
+| `/api/logs`                           | GET    | List log groups                                                |
+| `/api/logs/{log_group}`               | GET    | Query logs                                                     |

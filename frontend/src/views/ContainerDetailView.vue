@@ -10,21 +10,11 @@ import MetricsWindowPicker from '../components/MetricsWindowPicker.vue'
 import { api } from '../api'
 import { colorForKey } from '../colors'
 import { formatBytes, formatUptime } from '../format'
-import {
-  backendOnline,
-  dockerControlsAvailable,
-  metricsSampleIntervalMs,
-} from '../composables/useBackendHealth'
+import { backendOnline, dockerControlsAvailable } from '../composables/useBackendHealth'
+import { useMetricsSnapshotStream } from '../composables/useMetricsSnapshotStream'
 import { useMetricsWindow } from '../composables/useMetricsWindow'
 import { usePageTitle } from '../composables/usePageTitle'
-import { computePollIntervalMs } from '../metricsFreshness'
-import type {
-  ContainerPoint,
-  ContainerSummary,
-  MetricsResolution,
-  MetricsSnapshot,
-  TimeRange,
-} from '../types'
+import type { ContainerPoint, ContainerSummary, MetricsResolution, TimeRange } from '../types'
 
 const route = useRoute()
 const router = useRouter()
@@ -40,18 +30,7 @@ const actionKey = ref('')
 let infoPollTimer: number | undefined
 
 // Card headers always show current values, independently of the chart window below them.
-const snapshot = ref<MetricsSnapshot>({ host: null, containers: {}, log_groups: {} })
-const snapshotPollIntervalMs = computed(() => computePollIntervalMs(metricsSampleIntervalMs.value))
-let snapshotPollTimer: number | undefined
-
-async function loadSnapshot() {
-  if (document.visibilityState !== 'visible') return
-  try {
-    snapshot.value = await api.metrics.current()
-  } catch {
-    // Headline numbers are a nice-to-have; the charts below still render on failure.
-  }
-}
+const { snapshot } = useMetricsSnapshotStream()
 
 function containerNameFor(cid: string) {
   return allContainers.value.find((item) => item.id === cid)?.name ?? cid.slice(0, 12)
@@ -205,15 +184,12 @@ async function runAction(action: 'start' | 'stop' | 'restart') {
 onMounted(() => {
   loadContainerInfo()
   infoPollTimer = window.setInterval(loadContainerInfo, 5_000)
-  loadSnapshot()
-  snapshotPollTimer = window.setInterval(loadSnapshot, snapshotPollIntervalMs.value)
 })
 
 usePageTitle(() => container.value?.name || logGroup.value || 'Container')
 
 onBeforeUnmount(() => {
   if (infoPollTimer) window.clearInterval(infoPollTimer)
-  if (snapshotPollTimer) window.clearInterval(snapshotPollTimer)
 })
 </script>
 

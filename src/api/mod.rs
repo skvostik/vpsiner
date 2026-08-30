@@ -1,6 +1,7 @@
 pub mod containers;
 pub mod logs;
 pub mod metrics;
+pub mod stream;
 
 use axum::{Json, Router, extract::State, routing::get, routing::post};
 use serde::Serialize;
@@ -31,6 +32,10 @@ pub fn router() -> Router<AppState> {
         .route("/metrics/containers", get(metrics::containers_history))
         .route("/logs", get(logs::list_groups))
         .route("/logs/{log_group}", get(logs::query))
+        .nest(
+            "/stream",
+            Router::new().route("/metrics/current", get(stream::current)),
+        )
 }
 
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {

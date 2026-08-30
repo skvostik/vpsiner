@@ -1,37 +1,25 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { NInput, NSpin, NSwitch } from 'naive-ui'
 import { Search } from '@lucide/vue'
 
 import ContainerTable from '../components/ContainerTable.vue'
 import LiveStatusIcon from '../components/LiveStatusIcon.vue'
-import { api } from '../api'
 import { useContainers } from '../composables/useContainers'
-import { metricsSampleIntervalMs, useBackendHealth } from '../composables/useBackendHealth'
+import { useBackendHealth } from '../composables/useBackendHealth'
+import { useMetricsSnapshotStream } from '../composables/useMetricsSnapshotStream'
 import { usePageTitle } from '../composables/usePageTitle'
-import { computePollIntervalMs } from '../metricsFreshness'
-import type { ContainerRow, MetricsSnapshot } from '../types'
+import type { ContainerRow } from '../types'
 
 usePageTitle('Containers')
 
 const { containers, loading, reload } = useContainers()
 const { backendOnline } = useBackendHealth()
-const snapshot = ref<MetricsSnapshot>({ host: null, containers: {}, log_groups: {} })
-const metricsPollIntervalMs = computed(() => computePollIntervalMs(metricsSampleIntervalMs.value))
+const { snapshot } = useMetricsSnapshotStream()
 const pageStatus = computed<'live' | 'history' | 'stopped'>(() => {
   if (!backendOnline.value) return 'stopped'
   return document.visibilityState === 'visible' ? 'live' : 'history'
 })
-let metricsPollTimer: number | undefined
-
-async function loadSnapshot() {
-  if (document.visibilityState !== 'visible') return
-  try {
-    snapshot.value = await api.metrics.current()
-  } catch {
-    // Row-level metrics are a nice-to-have; the container list itself still renders on failure.
-  }
-}
 
 const rows = computed<ContainerRow[]>(() =>
   containers.value.map((container) => ({
@@ -66,12 +54,6 @@ const visibleContainers = computed(() => {
 onMounted(() => {
   const storedOnlyRunning = window.localStorage.getItem(showOnlyRunningStorageKey)
   showOnlyRunning.value = storedOnlyRunning === null ? false : storedOnlyRunning === 'true'
-  loadSnapshot()
-  metricsPollTimer = window.setInterval(loadSnapshot, metricsPollIntervalMs.value)
-})
-
-onBeforeUnmount(() => {
-  if (metricsPollTimer) window.clearInterval(metricsPollTimer)
 })
 
 watch(showOnlyRunning, (value) =>
@@ -79,7 +61,7 @@ watch(showOnlyRunning, (value) =>
 )
 
 async function handleActionComplete() {
-  await Promise.all([reload(), loadSnapshot()])
+  await reload()
 }
 </script>
 
