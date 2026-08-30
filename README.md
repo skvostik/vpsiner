@@ -35,6 +35,7 @@ under 50 MB. Actual usage depends on the number of containers and log volume.
 - Optional start, stop, and restart controls
 - SQLite storage with configurable retention
 - Responsive web interface included in the image
+- UI customization with custom sidebar links and branding
 
 ### Planned features
 
@@ -46,8 +47,6 @@ The following improvements are planned:
   container instance, and visualizing log volumes
 - Dead-simple alerting and alert history, starting with alerts when a container
   crashes
-- UI customization, including custom links in the menu so VPSiner can serve as
-  a main server dashboard with convenient links to other running services
 
 ### Not planned
 
