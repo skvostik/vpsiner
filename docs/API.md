@@ -1127,6 +1127,7 @@ data: {"items":[{"ts":1720003600000,"log_group":"project-web","cid":"8af7d6c1273
 | `/api/health`                                | GET    | Health check                                                              |
 | `/api/config/ui`                             | GET    | UI configuration and custom links                                         |
 | `/api/config/settings`                       | GET    | Supported environment variables with effective and default values         |
+| `/api/config/computed`                       | GET    | Runtime-computed backend values                                           |
 | `/api/containers`                            | GET    | List containers and details                                               |
 | `/api/containers/{id}/start`                 | POST   | Start container                                                           |
 | `/api/containers/{id}/stop`                  | POST   | Stop container                                                            |
