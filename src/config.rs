@@ -344,7 +344,7 @@ impl Config {
                 env_or(ENV_RUST_LOG, DEFAULT_RUST_LOG),
                 DEFAULT_RUST_LOG.to_string(),
                 "Backend log filter, such as debug or vpsiner=debug",
-                "advanced",
+                "common",
             ),
         ]
     }

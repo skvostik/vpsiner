@@ -43,7 +43,7 @@ onMounted(async () => {
   <div class="space-y-6">
     <p class="text-sm text-neutral-500 dark:text-neutral-400">
       Read-only view of the environment variables VPSiner supports and the values this instance is
-      running with. Change them by restarting the container with a different environment.
+      running with. Restart the backend with a different environment to change them.
     </p>
 
     <n-spin v-if="loading" size="small" />
@@ -65,7 +65,7 @@ onMounted(async () => {
             >
               <tr>
                 <th class="px-4 py-2 font-medium">Setting</th>
-                <th class="px-4 py-2 font-medium">Value</th>
+                <th class="px-4 py-2 font-medium text-right">Value</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-neutral-200 dark:divide-neutral-800">
@@ -83,7 +83,7 @@ onMounted(async () => {
                     {{ entry.description }}
                   </p>
                 </td>
-                <td class="px-4 py-3 align-top">
+                <td class="px-4 py-3 align-top text-right">
                   <span
                     v-if="entry.value"
                     class="break-all font-mono text-xs text-neutral-900 dark:text-neutral-100"

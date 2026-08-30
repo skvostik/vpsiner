@@ -17,7 +17,6 @@ under 50 MB. Actual usage depends on the number of containers and log volume.
     - [Add some test logs](#add-some-test-logs)
   - [Configuration](#configuration)
     - [Common settings](#common-settings)
-    - [Advanced settings](#advanced-settings)
     - [Log groups](#log-groups)
     - [Container controls](#container-controls)
     - [UI customization and custom links](#ui-customization-and-custom-links)
@@ -118,42 +117,19 @@ docker compose -f examples/test-load/docker-compose.yml up -d
 Configuration is read from environment variables when VPSiner starts. The
 defaults work for the quick-start command above.
 
-The **Configuration** page in the UI lists every variable below together with the
-value the running instance actually resolved, so you can check what is in effect
-without inspecting the container environment.
-
 ### Common settings
 
-| Variable                  | Default in the image          | Description                                                                    |
-| ------------------------- | ----------------------------- | ------------------------------------------------------------------------------ |
-| `VPSINER_DOCKER_HOST`     | `unix:///var/run/docker.sock` | Docker socket or socket-proxy endpoint, for example `http://docker-proxy:2375` |
-| `VPSINER_RETENTION_WEEKS` | `4`                           | Number of weeks of metrics and logs to retain                                  |
-| `VPSINER_DOCKER_CONTROLS` | `auto`                        | Container controls mode: `auto`, `enabled`, or `disabled`                      |
+| Variable                  | Default in the image          | Description                                                                                  |
+| ------------------------- | ----------------------------- | -------------------------------------------------------------------------------------------- |
+| `VPSINER_DOCKER_HOST`     | `unix:///var/run/docker.sock` | Docker socket or socket-proxy endpoint, for example `http://docker-proxy:2375`               |
+| `VPSINER_RETENTION_WEEKS` | `4`                           | Number of weeks of metrics and logs to retain                                                |
+| `VPSINER_DOCKER_CONTROLS` | `auto`                        | Container controls mode: `auto`, `enabled`, or `disabled`                                    |
 | `VPSINER_WORKER_THREADS`  | unset                         | Overrides Tokio runtime worker-thread count; by default Tokio uses available CPU parallelism |
+| `RUST_LOG`                | `info`                        | Backend log filter, such as `debug` or `vpsiner=debug`                                       |
 
-### Advanced settings
-
-These normally do not need to be changed.
-
-| Variable                                 | Default         | Description                                                                                                      |
-| ---------------------------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `VPSINER_DATA_PATH`                      | `/data`         | Directory containing metrics and log databases                                                                   |
-| `VPSINER_CONFIG_PATH`                    | `/config`       | Directory containing UI configuration (`ui.json`)                                                                |
-| `VPSINER_PORT`                           | `3000`          | HTTP listen port inside the container                                                                            |
-| `VPSINER_COLLECT_INTERVAL_SECS`          | `10`            | Host and container metrics collection interval                                                                   |
-| `VPSINER_LOG_FLUSH_DEBOUNCE_MS`          | `500`           | Delay used to coalesce buffered log lines per log group before writing them to storage                           |
-| `VPSINER_LOG_FLUSH_KEEP_ALIVE_SECS`      | `60`            | How long an idle per-group log flush worker stays alive before exiting                                            |
-| `VPSINER_LOG_CHANNEL_CAPACITY`           | `10000`         | Maximum number of log lines buffered before backpressure                                                         |
-| `VPSINER_SAMPLES_CHANNEL_CAPACITY`       | `32`            | Maximum number of container sample batches buffered before backpressure                                          |
-| `VPSINER_DOCKER_PROBE_INTERVAL_SECS`     | `60`            | Interval for Docker write-capability probing, log observer fallback reconciliation, and registry refresh workers |
-| `VPSINER_DOCKER_RETRY_SECS`              | `5`             | Delay before retrying the Docker container event observer after its stream ends or fails                         |
-| `VPSINER_DOCKER_REQUEST_CONCURRENCY`     | `8`             | Maximum number of concurrent Docker inspect and stats requests                                                   |
-| `VPSINER_DOCKER_EVENTS_CHANNEL_CAPACITY` | `256`           | Maximum number of container observe events buffered before new events are dropped                                |
-| `VPSINER_DOCKER_DEBOUNCE_MS`             | `1000`          | Delay used to coalesce container observation and container info refresh requests                                 |
-| `VPSINER_DOCKER_TIMEOUT_SECS`            | `60`            | Internal timeout for Docker API requests                                                                         |
-| `VPSINER_DOCKER_REQUEST_TIMEOUT_SECS`    | `5`             | Timeout for fetch requests                                                                                       |
-| `VPSINER_STATIC_DIR`                     | Bundled UI path | Directory from which the backend serves the frontend                                                             |
-| `RUST_LOG`                               | `info`          | Backend log filter, such as `debug` or `vpsiner=debug`                                                           |
+There are further advanced variables for tuning intervals, buffer sizes and
+timeouts. The **Configuration** page in the app lists every supported variable
+with its description, default, and the value the running instance resolved.
 
 ### Log groups
 
