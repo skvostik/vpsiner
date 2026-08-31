@@ -116,7 +116,12 @@ async fn async_main() {
             config.retention_weeks,
         )),
         metrics,
-        Arc::new(SqliteLogStore::new(config.data_path.join("logs"))),
+        Arc::new(SqliteLogStore::new(
+            config.data_path.join("logs"),
+            config.sqlite_cache_size_kb,
+            config.sqlite_busy_timeout,
+            config.sqlite_keep_alive,
+        )),
         metadata,
         Arc::new(SysinfoHost::default()),
     );
@@ -158,6 +163,7 @@ async fn async_main() {
 
     let metadata_store = state.metadata.clone();
     let metrics_store = state.metrics.clone();
+    let logs_store = state.logs.clone();
     let app = build_router(state, &config);
 
     let listener = tokio::net::TcpListener::bind(addr)
@@ -169,6 +175,7 @@ async fn async_main() {
         .await
         .expect("server failed to start");
 
+    logs_store.close().await;
     metrics_store.close().await;
     metadata_store.close().await;
 }
@@ -252,6 +259,7 @@ mod tests {
             docker_events_channel_capacity: 256,
             sqlite_cache_size_kb: 1_024,
             sqlite_busy_timeout: std::time::Duration::from_secs(5),
+            sqlite_keep_alive: std::time::Duration::from_secs(300),
         }
     }
 

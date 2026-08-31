@@ -1,6 +1,6 @@
-use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use async_trait::async_trait;
 use sqlx::{
@@ -46,6 +46,7 @@ pub trait LogMetadataStore: Send + Sync + 'static {
 }
 
 pub struct SqliteLogMetadataStore {
+    db_path: PathBuf,
     pool: SqlitePool,
 }
 
@@ -56,7 +57,7 @@ impl SqliteLogMetadataStore {
         cache_size_kb: u64,
         busy_timeout: Duration,
     ) -> AppResult<Self> {
-        let db_path = db_path.as_ref();
+        let db_path = db_path.as_ref().to_path_buf();
         if let Some(parent) = db_path.parent() {
             tokio::fs::create_dir_all(parent).await.map_err(storage)?;
         }
@@ -64,7 +65,7 @@ impl SqliteLogMetadataStore {
         tracing::info!(database = %db_path.display(), "opening metadata database connection");
 
         let options = SqliteConnectOptions::new()
-            .filename(db_path)
+            .filename(&db_path)
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Delete)
             .synchronous(SqliteSynchronous::Full)
@@ -97,7 +98,7 @@ impl SqliteLogMetadataStore {
         .await
         .map_err(storage)?;
 
-        Ok(Self { pool })
+        Ok(Self { db_path, pool })
     }
 }
 
@@ -187,7 +188,7 @@ impl LogMetadataStore for SqliteLogMetadataStore {
     }
 
     async fn close(&self) {
-        tracing::info!("closing metadata database connection");
+        tracing::info!(database = %self.db_path.display(), "closing metadata database connection");
         self.pool.close().await;
     }
 }
