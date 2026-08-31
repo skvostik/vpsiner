@@ -152,15 +152,20 @@ impl SqliteMetricsStore {
         .await
         .map_err(storage)?;
 
+        // Used by host-level range queries that read a time window in order (for example, the
+        // dashboard's host CPU/memory/network charts).
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_host_ts ON host_metrics(ts)")
             .execute(&self.pool)
             .await
             .map_err(storage)?;
+        // Used by per-log-group container metrics queries: filter by log_group, then walk the
+        // matching samples in timestamp order for a time range.
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_ctr_ts ON container_metrics(log_group, ts)")
             .execute(&self.pool)
             .await
             .map_err(storage)?;
-        // Serves retention deletes and range queries that span every log group.
+        // Used by retention deletes and by aggregate container queries that span all log groups
+        // without a log_group filter; the timestamp-only index keeps those scans narrow.
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_ctr_ts_only ON container_metrics(ts)")
             .execute(&self.pool)
             .await
