@@ -636,9 +636,8 @@ Pagination:
 - `has_older` indicates whether there are more matching logs older than `older_cursor` at response time
 - `has_newer` indicates whether there are more matching logs newer than `newer_cursor` at response time
 - if an `after` request returns no new items, `newer_cursor` repeats the submitted `after` cursor so clients can continue polling with the response cursor; `older_cursor` is `null`, `has_older` is `false`, and `has_newer` is `false`
-- cursors do not encode filter values; the same cursor may be used with different `from`, `to`, `q`, `level`, and `stream` filters, and those filters are applied to records before or after the cursor boundary
-- clients SHOULD discard cursors when changing filters if they want to restart pagination for the new result set
-- cursors are intended for the same `log_group`; clients SHOULD NOT reuse a cursor from one `log_group` with another `log_group`
+- cursors do not encode filter values, but `has_older`/`has_newer` are only accurate when the filter (`from`, `to`, `q`, `level`, `stream`) matches the request that produced the cursor; clients MUST discard `before`/`after` cursors and issue a fresh unpaginated request when changing filters
+- cursors are intended for the same `log_group`; clients MUST NOT reuse a cursor from one `log_group` with another `log_group`
 
 Default values for this endpoint:
 - `level`: no filtering

@@ -63,38 +63,6 @@ impl SqliteLogStore {
             pools,
         }
     }
-
-    /// Whether any row beyond `anchor` in `direction` still matches `filter`.
-    async fn exists_beyond(
-        &self,
-        group_dir: &Path,
-        log_group: &str,
-        weeks: &[(String, i64)],
-        filter: &LogFilter,
-        anchor: &LogCursor,
-        direction: Direction,
-    ) -> AppResult<bool> {
-        for week in ordered_candidates(weeks, filter, Some(anchor), direction) {
-            let pool = self
-                .pools
-                .pool(&group_dir.join(&week), log_group, &week)
-                .await?;
-            let mut builder = QueryBuilder::<Sqlite>::new("SELECT 1 FROM logs WHERE 1 = 1");
-            push_filters(&mut builder, filter);
-            push_cursor(&mut builder, anchor, &week, direction);
-            builder.push(" LIMIT 1");
-            if !builder
-                .build()
-                .fetch_all(&pool)
-                .await
-                .map_err(storage)?
-                .is_empty()
-            {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
 }
 
 struct StoredLog {
@@ -381,32 +349,12 @@ impl LogStore for SqliteLogStore {
 
         let older_anchor = cursor_of(page.first().expect("non-empty page"));
         let newer_anchor = cursor_of(page.last().expect("non-empty page"));
-        // Only the side the scan did not cover still needs probing.
+        // The untouched side is only known via the cursor itself: its presence proves a
+        // matching row existed there under the same filter (API contract requires clients to
+        // discard cursors on filter change), so no extra probing query is needed.
         let (has_older, has_newer) = match direction {
-            Direction::Backward => (
-                has_beyond,
-                self.exists_beyond(
-                    &group_dir,
-                    log_group,
-                    &weeks,
-                    &filter,
-                    &newer_anchor,
-                    Direction::Forward,
-                )
-                .await?,
-            ),
-            Direction::Forward => (
-                self.exists_beyond(
-                    &group_dir,
-                    log_group,
-                    &weeks,
-                    &filter,
-                    &older_anchor,
-                    Direction::Backward,
-                )
-                .await?,
-                has_beyond,
-            ),
+            Direction::Backward => (has_beyond, filter.before.is_some()),
+            Direction::Forward => (filter.after.is_some(), has_beyond),
         };
 
         Ok(LogPage {
