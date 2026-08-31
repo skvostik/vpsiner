@@ -55,6 +55,7 @@ async fn async_main() {
     tracing_subscriber::fmt()
         .with_env_filter(log_filter)
         .with_target(false)
+        .without_time()
         .init();
 
     tracing::info!(
