@@ -636,43 +636,27 @@ async fn open_database(
 }
 
 async fn migrate(pool: &SqlitePool) -> AppResult<()> {
-    sqlx::query("CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY, ts INTEGER NOT NULL, cid TEXT NOT NULL DEFAULT '', stream TEXT NOT NULL, level TEXT, line TEXT NOT NULL)")
-        .execute(pool)
-        .await
-        .map_err(storage)?;
-    for statement in [
-        "ALTER TABLE logs ADD COLUMN cid TEXT NOT NULL DEFAULT ''",
-        "ALTER TABLE logs ADD COLUMN line TEXT",
-    ] {
-        if let Err(err) = sqlx::query(statement).execute(pool).await
-            && !err.to_string().contains("duplicate column name")
-        {
-            return Err(storage(err));
-        }
-    }
-    sqlx::query("UPDATE logs SET line = COALESCE(line, '')")
-        .execute(pool)
-        .await
-        .map_err(storage)?;
-    if let Err(err) = sqlx::query("UPDATE logs SET line = COALESCE(line, sanitized)")
-        .execute(pool)
-        .await
-        && !err.to_string().contains("no such column: sanitized")
-    {
-        return Err(storage(err));
-    }
-    if let Err(err) = sqlx::query("UPDATE logs SET line = COALESCE(line, raw)")
-        .execute(pool)
-        .await
-        && !err.to_string().contains("no such column: raw")
-    {
-        return Err(storage(err));
-    }
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS logs (
+            id INTEGER PRIMARY KEY,
+            ts INTEGER NOT NULL,
+            cid TEXT NOT NULL DEFAULT '',
+            stream TEXT NOT NULL,
+            level TEXT,
+            line TEXT NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(storage)?;
+    // Used for the default timeline queries: newest/oldest-first paging, time range filters,
+    // and ordering by timestamp across a week database.
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_ts ON logs(ts)")
         .execute(pool)
         .await
         .map_err(storage)?;
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_cid_ts ON logs(cid, ts)")
+    // Used when the frontend filters by level and then reads the matching rows in time order.
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_level_ts ON logs(level, ts)")
         .execute(pool)
         .await
         .map_err(storage)?;
