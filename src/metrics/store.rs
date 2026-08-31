@@ -80,6 +80,8 @@ impl SqliteMetricsStore {
             tokio::fs::create_dir_all(parent).await.map_err(storage)?;
         }
 
+        tracing::info!(database = %db_path.display(), "opening metrics database connection");
+
         let connect_options = SqliteConnectOptions::new()
             .filename(&db_path)
             .create_if_missing(true)
@@ -576,6 +578,7 @@ impl MetricsStore for SqliteMetricsStore {
     }
 
     async fn close(&self) {
+        tracing::info!(database = %self.db_path.display(), "closing metrics database connection");
         self.pool.close().await;
     }
 }

@@ -1,8 +1,12 @@
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::time::Duration;
 
 use async_trait::async_trait;
-use sqlx::{Row, SqlitePool, sqlite::SqliteConnectOptions, sqlite::SqlitePoolOptions};
+use sqlx::{
+    Row, SqlitePool,
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
+};
 
 use crate::error::{AppError, AppResult};
 
@@ -36,29 +40,46 @@ pub trait LogMetadataStore: Send + Sync + 'static {
 
     /// Every known (log_group, container_id) checkpoint — used to preload dedup state on startup.
     async fn list_checkpoints(&self) -> AppResult<Vec<(String, String, LogCheckpoint)>>;
+
+    /// Releases the persistent database connection.
+    async fn close(&self);
 }
 
 pub struct SqliteLogMetadataStore {
-    db_path: PathBuf,
+    pool: SqlitePool,
 }
 
 impl SqliteLogMetadataStore {
-    pub fn new(db_path: impl AsRef<Path>) -> Self {
-        Self {
-            db_path: db_path.as_ref().to_path_buf(),
-        }
-    }
-
-    async fn pool(&self) -> AppResult<SqlitePool> {
-        if let Some(parent) = self.db_path.parent() {
+    /// Opens the single long-lived connection used for the lifetime of the process.
+    pub async fn connect(
+        db_path: impl AsRef<Path>,
+        cache_size_kb: u64,
+        busy_timeout: Duration,
+    ) -> AppResult<Self> {
+        let db_path = db_path.as_ref();
+        if let Some(parent) = db_path.parent() {
             tokio::fs::create_dir_all(parent).await.map_err(storage)?;
         }
 
+        tracing::info!(database = %db_path.display(), "opening metadata database connection");
+
         let options = SqliteConnectOptions::new()
-            .filename(&self.db_path)
-            .create_if_missing(true);
+            .filename(db_path)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Delete)
+            .synchronous(SqliteSynchronous::Full)
+            .busy_timeout(busy_timeout)
+            .foreign_keys(false)
+            .statement_cache_capacity(32)
+            .analysis_limit(400)
+            .optimize_on_close(true, 400)
+            // Negative values are interpreted as KiB rather than pages.
+            .pragma("cache_size", format!("-{cache_size_kb}"));
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
+            .min_connections(1)
+            .idle_timeout(None)
+            .max_lifetime(None)
             .connect_with(options)
             .await
             .map_err(storage)?;
@@ -76,7 +97,7 @@ impl SqliteLogMetadataStore {
         .await
         .map_err(storage)?;
 
-        Ok(pool)
+        Ok(Self { pool })
     }
 }
 
@@ -89,7 +110,6 @@ impl LogMetadataStore for SqliteLogMetadataStore {
         ts: i64,
         line_hash: u64,
     ) -> AppResult<()> {
-        let pool = self.pool().await?;
         // last_line_hash is only ever paired with the ts it belongs to.
         sqlx::query(
             "INSERT INTO container_last_received (log_group, container_id, last_received, last_line_hash)
@@ -102,7 +122,7 @@ impl LogMetadataStore for SqliteLogMetadataStore {
         .bind(container_id)
         .bind(ts)
         .bind(line_hash as i64)
-        .execute(&pool)
+        .execute(&self.pool)
         .await
         .map_err(storage)?;
         Ok(())
@@ -113,14 +133,13 @@ impl LogMetadataStore for SqliteLogMetadataStore {
         log_group: &str,
         container_id: &str,
     ) -> AppResult<Option<LogCheckpoint>> {
-        let pool = self.pool().await?;
         let row = sqlx::query(
             "SELECT last_received, last_line_hash FROM container_last_received
              WHERE log_group = ? AND container_id = ?",
         )
         .bind(log_group)
         .bind(container_id)
-        .fetch_optional(&pool)
+        .fetch_optional(&self.pool)
         .await
         .map_err(storage)?;
         Ok(row.map(|row| LogCheckpoint {
@@ -130,13 +149,12 @@ impl LogMetadataStore for SqliteLogMetadataStore {
     }
 
     async fn list_last_received(&self) -> AppResult<BTreeMap<String, i64>> {
-        let pool = self.pool().await?;
         let rows = sqlx::query(
             "SELECT log_group, MAX(last_received) AS last_received
              FROM container_last_received
              GROUP BY log_group",
         )
-        .fetch_all(&pool)
+        .fetch_all(&self.pool)
         .await
         .map_err(storage)?;
         Ok(rows
@@ -146,12 +164,11 @@ impl LogMetadataStore for SqliteLogMetadataStore {
     }
 
     async fn list_checkpoints(&self) -> AppResult<Vec<(String, String, LogCheckpoint)>> {
-        let pool = self.pool().await?;
         let rows = sqlx::query(
             "SELECT log_group, container_id, last_received, last_line_hash
              FROM container_last_received",
         )
-        .fetch_all(&pool)
+        .fetch_all(&self.pool)
         .await
         .map_err(storage)?;
         Ok(rows
@@ -168,6 +185,11 @@ impl LogMetadataStore for SqliteLogMetadataStore {
             })
             .collect())
     }
+
+    async fn close(&self) {
+        tracing::info!("closing metadata database connection");
+        self.pool.close().await;
+    }
 }
 
 fn storage(error: impl std::fmt::Display) -> AppError {
@@ -177,6 +199,7 @@ fn storage(error: impl std::fmt::Display) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn test_db(name: &str) -> PathBuf {
@@ -187,9 +210,32 @@ mod tests {
         std::env::temp_dir().join(format!("vpsiner-metadata-{name}-{suffix}.db"))
     }
 
+    async fn test_store(name: &str) -> SqliteLogMetadataStore {
+        SqliteLogMetadataStore::connect(test_db(name), 1_024, Duration::from_secs(5))
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn uses_rollback_journal_and_full_synchronous_mode() {
+        let store = test_store("settings").await;
+
+        let journal_mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        let synchronous: i64 = sqlx::query_scalar("PRAGMA synchronous")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+
+        assert_eq!(journal_mode, "delete");
+        assert_eq!(synchronous, 2);
+    }
+
     #[tokio::test]
     async fn records_and_reads_back_a_checkpoint() {
-        let store = SqliteLogMetadataStore::new(test_db("record"));
+        let store = test_store("record").await;
 
         assert_eq!(store.checkpoint("group", "abc123").await.unwrap(), None);
 
@@ -209,7 +255,7 @@ mod tests {
 
     #[tokio::test]
     async fn upsert_keeps_the_max_ts_and_its_paired_hash() {
-        let store = SqliteLogMetadataStore::new(test_db("upsert-max"));
+        let store = test_store("upsert-max").await;
 
         store
             .record_received("group", "abc123", 1_700_000_000_000, 1)
@@ -245,7 +291,7 @@ mod tests {
 
     #[tokio::test]
     async fn lists_the_max_last_received_per_group_across_containers() {
-        let store = SqliteLogMetadataStore::new(test_db("list"));
+        let store = test_store("list").await;
 
         store
             .record_received("shop-web", "abc123", 1_700_000_000_000, 1)

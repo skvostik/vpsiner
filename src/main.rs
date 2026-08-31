@@ -78,9 +78,15 @@ async fn async_main() {
     }
 
     // Composition root: concrete implementations are chosen here and nowhere else.
-    let metadata = Arc::new(SqliteLogMetadataStore::new(
-        config.data_path.join("metadata.db"),
-    ));
+    let metadata = Arc::new(
+        SqliteLogMetadataStore::connect(
+            config.data_path.join("metadata.db"),
+            config.sqlite_cache_size_kb,
+            config.sqlite_busy_timeout,
+        )
+        .await
+        .expect("failed to open metadata database"),
+    );
     let metrics = Arc::new(
         SqliteMetricsStore::connect(
             config.data_path.join("metrics.db"),
@@ -149,6 +155,7 @@ async fn async_main() {
         config.log_flush_keep_alive,
     ));
 
+    let metadata_store = state.metadata.clone();
     let metrics_store = state.metrics.clone();
     let app = build_router(state, &config);
 
@@ -162,6 +169,7 @@ async fn async_main() {
         .expect("server failed to start");
 
     metrics_store.close().await;
+    metadata_store.close().await;
 }
 
 async fn shutdown_signal() {
