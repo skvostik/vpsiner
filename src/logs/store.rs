@@ -337,9 +337,11 @@ impl LogStore for SqliteLogStore {
         };
 
         let limit = filter.limit.unwrap_or(DEFAULT_PAGE_LIMIT).clamp(1, 100) as usize;
+        // The row past the page answers `has_more` in the scan direction without a second scan.
+        let target = limit + 1;
         let mut page: Vec<StoredLog> = Vec::new();
         for week in ordered_candidates(&weeks, &filter, cursor, direction) {
-            if page.len() >= limit {
+            if page.len() >= target {
                 break;
             }
             let pool = self
@@ -357,13 +359,17 @@ impl LogStore for SqliteLogStore {
                 Direction::Backward => " ORDER BY ts DESC, id DESC LIMIT ",
                 Direction::Forward => " ORDER BY ts ASC, id ASC LIMIT ",
             });
-            builder.push_bind((limit - page.len()) as i64);
+            builder.push_bind((target - page.len()) as i64);
             for row in builder.build().fetch_all(&pool).await.map_err(storage)? {
                 if let Some(entry) = decode_row(&row, log_group, &week) {
                     page.push(entry);
                 }
             }
         }
+
+        let has_beyond = page.len() > limit;
+        // The surplus row is last in scan order, so it has to go before the page is reordered.
+        page.truncate(limit);
         if direction == Direction::Backward {
             page.reverse();
         }
@@ -375,26 +381,33 @@ impl LogStore for SqliteLogStore {
 
         let older_anchor = cursor_of(page.first().expect("non-empty page"));
         let newer_anchor = cursor_of(page.last().expect("non-empty page"));
-        let has_older = self
-            .exists_beyond(
-                &group_dir,
-                log_group,
-                &weeks,
-                &filter,
-                &older_anchor,
-                Direction::Backward,
-            )
-            .await?;
-        let has_newer = self
-            .exists_beyond(
-                &group_dir,
-                log_group,
-                &weeks,
-                &filter,
-                &newer_anchor,
-                Direction::Forward,
-            )
-            .await?;
+        // Only the side the scan did not cover still needs probing.
+        let (has_older, has_newer) = match direction {
+            Direction::Backward => (
+                has_beyond,
+                self.exists_beyond(
+                    &group_dir,
+                    log_group,
+                    &weeks,
+                    &filter,
+                    &newer_anchor,
+                    Direction::Forward,
+                )
+                .await?,
+            ),
+            Direction::Forward => (
+                self.exists_beyond(
+                    &group_dir,
+                    log_group,
+                    &weeks,
+                    &filter,
+                    &older_anchor,
+                    Direction::Backward,
+                )
+                .await?,
+                has_beyond,
+            ),
+        };
 
         Ok(LogPage {
             items: page.into_iter().map(|value| value.line).collect(),
