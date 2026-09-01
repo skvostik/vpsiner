@@ -8,7 +8,7 @@ use sqlx::{
     QueryBuilder, Row, Sqlite, SqlitePool,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteRow},
 };
-use tokio::sync::{Mutex, OnceCell};
+use tokio::sync::{Mutex, OnceCell, OwnedMutexGuard};
 
 use super::{
     database_week_start_ms, decode_cursor, detect_level, encode_cursor, safe_group_path,
@@ -56,6 +56,7 @@ impl SqliteLogStore {
             busy_timeout,
             keep_alive,
             entries: Mutex::new(HashMap::new()),
+            operation_locks: Mutex::new(HashMap::new()),
         });
         spawn_janitor(&pools);
         Self {
@@ -93,9 +94,26 @@ struct PoolCache {
     busy_timeout: Duration,
     keep_alive: Duration,
     entries: Mutex<HashMap<PathBuf, CachedPool>>,
+    /// Kept independently from cached pools so eviction cannot race a new open for the path.
+    operation_locks: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
 }
 
 impl PoolCache {
+    async fn lock_path(&self, path: &Path) -> OwnedMutexGuard<()> {
+        let lock = {
+            let mut locks = self.operation_locks.lock().await;
+            locks
+                .entry(path.to_path_buf())
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+        lock.lock_owned().await
+    }
+
+    async fn forget_path(&self, path: &Path) {
+        self.operation_locks.lock().await.remove(path);
+    }
+
     async fn pool(&self, path: &Path, log_group: &str, week: &str) -> AppResult<SqlitePool> {
         let cell = {
             let mut entries = self.entries.lock().await;
@@ -224,8 +242,10 @@ impl LogStore for SqliteLogStore {
                 {
                     continue;
                 }
+                let _operation = self.pools.lock_path(&path).await;
                 self.pools.evict(&path).await;
                 tokio::fs::remove_file(&path).await.map_err(storage)?;
+                self.pools.forget_path(&path).await;
                 removed.push(format!("{group_name}/{file_name}"));
             }
         }
@@ -251,10 +271,9 @@ impl LogStore for SqliteLogStore {
             .map_err(storage)?;
 
         for (week, lines) in by_week {
-            let pool = self
-                .pools
-                .pool(&group_dir.join(&week), log_group, &week)
-                .await?;
+            let path = group_dir.join(&week);
+            let _operation = self.pools.lock_path(&path).await;
+            let pool = self.pools.pool(&path, log_group, &week).await?;
             let mut tx = pool.begin().await.map_err(storage)?;
             for line in lines {
                 let level = detect_level(&line.line).map(level_name);
@@ -313,10 +332,9 @@ impl LogStore for SqliteLogStore {
             if page.len() >= target {
                 break;
             }
-            let pool = self
-                .pools
-                .pool(&group_dir.join(&week), log_group, &week)
-                .await?;
+            let path = group_dir.join(&week);
+            let _operation = self.pools.lock_path(&path).await;
+            let pool = self.pools.pool(&path, log_group, &week).await?;
             let mut builder = if sanitized_query.is_some() {
                 QueryBuilder::<Sqlite>::new(
                     "SELECT logs.id, logs.ts, logs.cid, logs.stream, logs.level, logs.line \
@@ -644,7 +662,7 @@ async fn migrate(pool: &SqlitePool) -> AppResult<()> {
 async fn initialize_fts(pool: &SqlitePool) -> AppResult<()> {
     let mut tx = pool.begin().await.map_err(storage)?;
     sqlx::query(
-        "CREATE VIRTUAL TABLE logs_fts USING fts5(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS logs_fts USING fts5(
             line,
             content='logs',
             content_rowid='id',
@@ -655,7 +673,7 @@ async fn initialize_fts(pool: &SqlitePool) -> AppResult<()> {
     .await
     .map_err(storage)?;
     sqlx::query(
-        "CREATE TRIGGER logs_fts_ai AFTER INSERT ON logs BEGIN
+        "CREATE TRIGGER IF NOT EXISTS logs_fts_ai AFTER INSERT ON logs BEGIN
             INSERT INTO logs_fts(rowid, line) VALUES (new.id, new.line);
         END",
     )
@@ -663,7 +681,7 @@ async fn initialize_fts(pool: &SqlitePool) -> AppResult<()> {
     .await
     .map_err(storage)?;
     sqlx::query(
-        "CREATE TRIGGER logs_fts_bd BEFORE DELETE ON logs BEGIN
+        "CREATE TRIGGER IF NOT EXISTS logs_fts_bd BEFORE DELETE ON logs BEGIN
             INSERT INTO logs_fts(logs_fts, rowid, line) VALUES ('delete', old.id, old.line);
         END",
     )
@@ -995,5 +1013,58 @@ mod tests {
                 .items
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn delete_before_waits_for_an_active_week_operation() {
+        let store = Arc::new(test_store("retention-lock"));
+        let ts = 1_700_000_000_000;
+        store
+            .append("group", vec![line(ts, "doomed")])
+            .await
+            .unwrap();
+        let path = store
+            .root
+            .join(safe_group_path("group"))
+            .join(week_database_name(ts).unwrap());
+
+        let operation = store.pools.lock_path(&path).await;
+        let deletion_store = store.clone();
+        let mut deletion =
+            tokio::spawn(async move { deletion_store.delete_before(ts + WEEK_MS).await });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut deletion)
+                .await
+                .is_err()
+        );
+        assert!(path.exists());
+
+        drop(operation);
+        assert_eq!(deletion.await.unwrap().unwrap().len(), 1);
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn concurrent_stores_initialize_fts_idempotently() {
+        let root = std::env::temp_dir().join(format!(
+            "vpsiner-logs-fts-concurrent-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let first = SqliteLogStore::new(&root, 1_024, Duration::from_secs(5), Duration::ZERO);
+        let second = SqliteLogStore::new(&root, 1_024, Duration::from_secs(5), Duration::ZERO);
+        let ts = 1_700_000_000_000;
+
+        let (first_result, second_result) = tokio::join!(
+            first.append("group", vec![line(ts, "first")]),
+            second.append("group", vec![line(ts + 1, "second")]),
+        );
+
+        first_result.unwrap();
+        second_result.unwrap();
+        let page = first.query("group", LogFilter::default()).await.unwrap();
+        assert_eq!(page.items.len(), 2);
     }
 }
