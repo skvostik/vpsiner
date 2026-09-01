@@ -196,20 +196,25 @@ pub(super) fn map_container_stats(
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or_default();
 
+    let memory_stats = response.memory_stats.as_ref();
+    let mem_usage = memory_stats.and_then(|stats| stats.usage).unwrap_or(0);
+    // Page cache counted in cgroup usage isn't "used" memory; match `docker stats` by subtracting it.
+    let mem_cache = memory_stats
+        .and_then(|stats| stats.stats.as_ref())
+        .and_then(|stats| {
+            stats
+                .get("inactive_file")
+                .or_else(|| stats.get("total_inactive_file"))
+        })
+        .copied()
+        .unwrap_or(0);
+
     ContainerStats {
         ts,
         cid: response.id.unwrap_or_else(|| fallback_id.to_string()),
         cpu_pct,
-        mem_used: response
-            .memory_stats
-            .as_ref()
-            .and_then(|stats| stats.usage)
-            .unwrap_or(0),
-        mem_limit: response
-            .memory_stats
-            .as_ref()
-            .and_then(|stats| stats.limit)
-            .unwrap_or(0),
+        mem_used: mem_usage.saturating_sub(mem_cache),
+        mem_limit: memory_stats.and_then(|stats| stats.limit).unwrap_or(0),
         net_rx,
         net_tx,
         blk_read,
