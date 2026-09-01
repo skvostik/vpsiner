@@ -82,7 +82,7 @@ Mounting the Docker socket is the simplest way to get started, but it gives the
 container powerful access to Docker. For a long-running setup, use a Docker
 socket proxy and set `VPSINER_DOCKER_HOST` to its HTTP endpoint.
 
-See the [Docker socket Compose example](examples/docker-socket/docker-compose.yml)
+See the [Docker Compose example](examples/vpsiner/docker-compose.yml)
 for a sample setup.
 
 VPSiner has no authentication or authorization, and none is planned. Do not
@@ -238,6 +238,18 @@ npm run dev
 Open [http://localhost:5100](http://localhost:5100). The Vite development server
 forwards `/api` requests to the backend on port `3000`. The backend needs access
 to Docker through the local socket or `VPSINER_DOCKER_HOST`.
+
+For a quick production-like local smoke test (including Docker socket proxy), run:
+
+```bash
+docker compose -f examples/vpsiner/docker-compose.yml up --build -d
+```
+
+Then open [http://localhost:3000](http://localhost:3000). Stop it with:
+
+```bash
+docker compose -f examples/vpsiner/docker-compose.yml down
+```
 
 To build the same complete image used for releases:
 

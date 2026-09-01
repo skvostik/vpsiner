@@ -282,7 +282,7 @@ fn spawn_flush_worker(
 
                     if handle.state.lock().unwrap().lines.is_empty() {
                         handle.flush_tx = None;
-                        tracing::info!(log_group=%log_group, keep_alive=?keep_alive, "stopping idle log flush worker");
+                        tracing::debug!(log_group=%log_group, keep_alive=?keep_alive, "stopping idle log flush worker");
                         return;
                     }
                 }

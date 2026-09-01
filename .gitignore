@@ -5,3 +5,4 @@ frontend/dist/
 .env
 .DS_Store
 tmp/
+*.zst
