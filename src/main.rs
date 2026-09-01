@@ -10,6 +10,7 @@ mod state;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use tower_http::services::{ServeDir, ServeFile};
@@ -136,13 +137,13 @@ async fn async_main() {
         "retention cleanup worker started"
     );
     retention::cleanup_once(&state.metrics, &state.logs, config.retention_weeks).await;
-    tokio::spawn(retention::run(
+    let retention_task = tokio::spawn(retention::run(
         state.metrics.clone(),
         state.logs.clone(),
         config.retention_weeks,
     ));
 
-    tokio::spawn(metrics::collector::run(
+    let host_metrics_task = tokio::spawn(metrics::collector::run(
         state.host.clone(),
         state.metrics.clone(),
         state.logs.clone(),
@@ -150,14 +151,14 @@ async fn async_main() {
         state.bucket_watcher.clone(),
         config.collect_interval,
     ));
-    tokio::spawn(metrics::collector::run_containers(
+    let container_metrics_task = tokio::spawn(metrics::collector::run_containers(
         state.docker.clone(),
         state.metrics.clone(),
         state.snapshot.clone(),
         state.bucket_watcher.clone(),
         config.collect_interval,
     ));
-    tokio::spawn(logs::run_ingestion(
+    let log_ingestion_task = tokio::spawn(logs::run_ingestion(
         state.docker.clone(),
         state.logs.clone(),
         state.metadata.clone(),
@@ -180,9 +181,41 @@ async fn async_main() {
         .await
         .expect("server failed to start");
 
-    logs_store.close().await;
-    metrics_store.close().await;
-    metadata_store.close().await;
+    tracing::info!("stopping background workers");
+    retention_task.abort();
+    host_metrics_task.abort();
+    container_metrics_task.abort();
+    log_ingestion_task.abort();
+
+    for (name, task) in [
+        ("retention", retention_task),
+        ("host metrics", host_metrics_task),
+        ("container metrics", container_metrics_task),
+        ("log ingestion", log_ingestion_task),
+    ] {
+        match task.await {
+            Ok(_) => tracing::info!(task = name, "background worker stopped"),
+            Err(err) if err.is_cancelled() => {
+                tracing::debug!(task = name, "background worker cancelled")
+            }
+            Err(err) => {
+                tracing::warn!(task = name, error = %err, "background worker exited with error")
+            }
+        }
+    }
+
+    close_with_timeout("logs store", logs_store.close()).await;
+    close_with_timeout("metrics store", metrics_store.close()).await;
+    close_with_timeout("metadata store", metadata_store.close()).await;
+    tracing::info!("shutdown complete");
+}
+
+async fn close_with_timeout(name: &str, close_future: impl std::future::Future<Output = ()>) {
+    const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
+    match tokio::time::timeout(CLOSE_TIMEOUT, close_future).await {
+        Ok(()) => tracing::info!(target = name, "store closed"),
+        Err(_) => tracing::warn!(target = name, timeout = ?CLOSE_TIMEOUT, "store close timed out"),
+    }
 }
 
 async fn shutdown_signal() {
