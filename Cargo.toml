@@ -25,6 +25,7 @@ bollard = "0.21.1"
 sqlx = { version = "0.9.0", default-features = false, features = ["sqlite", "runtime-tokio"] }
 sysinfo = "0.39.6"
 time = { version = "0.3.55", features = ["formatting", "parsing", "macros"] }
+mimalloc = { version = "0.1", default-features = false }
 
 [dev-dependencies]
 mockall = "0.15.0"

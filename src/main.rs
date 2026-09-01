@@ -22,6 +22,9 @@ use crate::metrics::host::SysinfoHost;
 use crate::metrics::store::SqliteMetricsStore;
 use crate::state::AppState;
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() {
     let mut runtime = tokio::runtime::Builder::new_multi_thread();
     runtime.enable_all();
