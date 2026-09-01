@@ -619,7 +619,9 @@ Example response:
 
 Returns paginated logs for the given group.
 
-Each log line includes its `log_group`, source container ID, and a single text field (`line`) with ANSI/VT100 color escape sequences removed. `q` text search matches against `line`. The backend does not parse any other structured fields out of the text — that is left up to clients.
+Each log line includes its `log_group`, source container ID, and a single text field (`line`) with ANSI/VT100 color escape sequences removed. `q` is sanitized on the backend and matched case-insensitively against `line`. The backend does not parse any other structured fields out of the text — that is left up to clients.
+
+`q` matches arbitrary substrings, including across punctuation, but only substrings of 3 or more characters can match; shorter tokens never match any row. Search queries in `q` are parsed into whitespace-separated tokens or quoted phrases (e.g. `"some=value with spaces"`), treated as literal substrings, and combined with `OR`. Missing trailing quotes are automatically closed.
 
 Ordering:
 - results MUST be returned in ascending time order: oldest entries first
@@ -650,7 +652,7 @@ Parameters:
 - `log_group` (path): log group
 - `from` (optional): start filter time in ms; default: none (no lower bound)
 - `to` (optional): end filter time in ms; default: none (no upper bound)
-- `q` (optional): text search query; default: none
+- `q` (optional): text search filter against `line`; whitespace-separated tokens or quoted phrases matched with `OR`; default: none
 - `level` (optional): comma-separated log levels; allowed values: `debug`, `info`, `warn`, `error`; default: no filtering
 - `stream` (optional): comma-separated streams; allowed values: `stdout`, `stderr`; default: no filtering
 - `limit` (optional): maximum number of items in the response; default: `100` (bounded to `1..100`)
@@ -907,7 +909,7 @@ Behavior:
 
 Parameters:
 - `log_group` (path): log group
-- `q` (optional): text search query; default: none
+- `q` (optional): text search filter against `line`; default: none
 - `level` (optional): comma-separated log levels; default: no filtering
 - `stream` (optional): comma-separated streams; default: no filtering
 - `after` (optional): opaque cursor to resume from; default: none (tail-only from connect time)

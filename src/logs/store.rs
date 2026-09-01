@@ -12,7 +12,7 @@ use tokio::sync::{Mutex, OnceCell};
 
 use super::{
     database_week_start_ms, decode_cursor, detect_level, encode_cursor, safe_group_path,
-    week_database_name,
+    sanitize_fts_query, week_database_name,
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{LogCursor, LogFilter, LogLevel, LogLine, LogPage, LogStream};
@@ -304,6 +304,7 @@ impl LogStore for SqliteLogStore {
             return Ok(empty_page(None));
         };
 
+        let sanitized_query = filter.query.as_deref().and_then(sanitize_fts_query);
         let limit = filter.limit.unwrap_or(DEFAULT_PAGE_LIMIT).clamp(1, 100) as usize;
         // The row past the page answers `has_more` in the scan direction without a second scan.
         let target = limit + 1;
@@ -316,9 +317,20 @@ impl LogStore for SqliteLogStore {
                 .pools
                 .pool(&group_dir.join(&week), log_group, &week)
                 .await?;
-            let mut builder = QueryBuilder::<Sqlite>::new(
-                "SELECT id, ts, cid, stream, level, line FROM logs WHERE 1 = 1",
-            );
+            let mut builder = if sanitized_query.is_some() {
+                QueryBuilder::<Sqlite>::new(
+                    "SELECT logs.id, logs.ts, logs.cid, logs.stream, logs.level, logs.line \
+                     FROM logs JOIN logs_fts ON logs_fts.rowid = logs.id WHERE logs_fts MATCH ",
+                )
+            } else {
+                QueryBuilder::<Sqlite>::new(
+                    "SELECT logs.id, logs.ts, logs.cid, logs.stream, logs.level, logs.line \
+                     FROM logs WHERE 1 = 1",
+                )
+            };
+            if let Some(query) = &sanitized_query {
+                builder.push_bind(query);
+            }
             push_filters(&mut builder, &filter);
             if let Some(cursor) = cursor {
                 push_cursor(&mut builder, cursor, &week, direction);
@@ -465,18 +477,13 @@ fn week_matches(
 
 fn push_filters(builder: &mut QueryBuilder<Sqlite>, filter: &LogFilter) {
     if let Some(from) = filter.from {
-        builder.push(" AND ts >= ").push_bind(from);
+        builder.push(" AND logs.ts >= ").push_bind(from);
     }
     if let Some(to) = filter.to {
-        builder.push(" AND ts <= ").push_bind(to);
-    }
-    if let Some(text) = &filter.query {
-        builder
-            .push(" AND line LIKE ")
-            .push_bind(format!("%{text}%"));
+        builder.push(" AND logs.ts <= ").push_bind(to);
     }
     if !filter.levels.is_empty() {
-        builder.push(" AND level IN (");
+        builder.push(" AND logs.level IN (");
         for (index, level) in filter.levels.iter().enumerate() {
             if index > 0 {
                 builder.push(", ");
@@ -486,7 +493,7 @@ fn push_filters(builder: &mut QueryBuilder<Sqlite>, filter: &LogFilter) {
         builder.push(")");
     }
     if !filter.streams.is_empty() {
-        builder.push(" AND stream IN (");
+        builder.push(" AND logs.stream IN (");
         for (index, stream) in filter.streams.iter().enumerate() {
             if index > 0 {
                 builder.push(", ");
@@ -506,8 +513,8 @@ fn push_cursor(
 ) {
     if week != cursor.week {
         match direction {
-            Direction::Backward => builder.push(" AND ts <= ").push_bind(cursor.ts),
-            Direction::Forward => builder.push(" AND ts >= ").push_bind(cursor.ts),
+            Direction::Backward => builder.push(" AND logs.ts <= ").push_bind(cursor.ts),
+            Direction::Forward => builder.push(" AND logs.ts >= ").push_bind(cursor.ts),
         };
         return;
     }
@@ -516,13 +523,13 @@ fn push_cursor(
         Direction::Forward => ">",
     };
     builder
-        .push(" AND (ts ")
+        .push(" AND (logs.ts ")
         .push(comparison)
         .push(" ")
         .push_bind(cursor.ts)
-        .push(" OR (ts = ")
+        .push(" OR (logs.ts = ")
         .push_bind(cursor.ts)
-        .push(" AND id ")
+        .push(" AND logs.id ")
         .push(comparison)
         .push(" ")
         .push_bind(cursor.id)
@@ -621,7 +628,53 @@ async fn migrate(pool: &SqlitePool) -> AppResult<()> {
         .execute(pool)
         .await
         .map_err(storage)?;
+    let fts_exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'logs_fts')",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(storage)?;
+    if !fts_exists {
+        initialize_fts(pool).await?;
+    }
     Ok(())
+}
+
+/// The trigram tokenizer supports substring search but only matches phrases of 3+ characters.
+async fn initialize_fts(pool: &SqlitePool) -> AppResult<()> {
+    let mut tx = pool.begin().await.map_err(storage)?;
+    sqlx::query(
+        "CREATE VIRTUAL TABLE logs_fts USING fts5(
+            line,
+            content='logs',
+            content_rowid='id',
+            tokenize='trigram'
+        )",
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(storage)?;
+    sqlx::query(
+        "CREATE TRIGGER logs_fts_ai AFTER INSERT ON logs BEGIN
+            INSERT INTO logs_fts(rowid, line) VALUES (new.id, new.line);
+        END",
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(storage)?;
+    sqlx::query(
+        "CREATE TRIGGER logs_fts_bd BEFORE DELETE ON logs BEGIN
+            INSERT INTO logs_fts(logs_fts, rowid, line) VALUES ('delete', old.id, old.line);
+        END",
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(storage)?;
+    sqlx::query("INSERT INTO logs_fts(logs_fts) VALUES ('rebuild')")
+        .execute(&mut *tx)
+        .await
+        .map_err(storage)?;
+    tx.commit().await.map_err(storage)
 }
 
 #[cfg(test)]
@@ -684,6 +737,103 @@ mod tests {
             ..Default::default()
         };
         let page = store.query("group", filter).await.unwrap();
+
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].line, "duration_ms=42");
+    }
+
+    #[tokio::test]
+    async fn text_search_supports_or_tokens_and_phrases() {
+        let store = test_store("fts-operators");
+        store
+            .append(
+                "group",
+                vec![
+                    line(1_700_000_000_000, "connection timeout"),
+                    line(1_700_000_000_001, "connection refused"),
+                    line(1_700_000_000_002, "healthy response"),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let page = store
+            .query(
+                "group",
+                LogFilter {
+                    query: Some(r#""connection timeout" refused"#.to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(page.items.len(), 2);
+        assert_eq!(page.items[0].line, "connection timeout");
+        assert_eq!(page.items[1].line, "connection refused");
+    }
+
+    #[tokio::test]
+    async fn text_search_auto_closes_unclosed_quotes_and_sanitizes_syntax() {
+        let store = test_store("fts-syntax");
+        store
+            .append("group", vec![line(1_700_000_000_000, "connection timeout")])
+            .await
+            .unwrap();
+
+        let page = store
+            .query(
+                "group",
+                LogFilter {
+                    query: Some(r#""connection timeout"#.to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].line, "connection timeout");
+
+        let page_or = store
+            .query(
+                "group",
+                LogFilter {
+                    query: Some("timeout OR".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(page_or.items.len(), 1);
+        assert_eq!(page_or.items[0].line, "connection timeout");
+    }
+
+    #[tokio::test]
+    async fn trigram_matches_substring_across_punctuation() {
+        let store = test_store("fts-trigram-substring");
+        store
+            .append(
+                "group",
+                vec![
+                    line(1_700_000_000_000, "duration_ms=42"),
+                    line(1_700_000_000_001, "duration ms=42"),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let page = store
+            .query(
+                "group",
+                LogFilter {
+                    query: Some("\"duration_ms\"".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
 
         assert_eq!(page.items.len(), 1);
         assert_eq!(page.items[0].line, "duration_ms=42");

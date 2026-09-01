@@ -11,6 +11,7 @@ defineProps<{
   expanded: boolean
   customFrom?: number
   customTo?: number
+  queryTooShort?: boolean
 }>()
 
 defineEmits<{
@@ -39,15 +40,20 @@ function toggleValue<T extends string>(values: T[], value: T) {
 
 <template>
   <div class="grid min-w-0 gap-3 sm:items-center">
-    <n-input
-      class="min-w-0 w-full"
-      :value="query"
-      placeholder="Search log text"
-      clearable
-      @update:value="$emit('update:query', $event)"
-    >
-      <template #prefix><Search :size="16" /></template>
-    </n-input>
+    <div class="min-w-0">
+      <n-input
+        class="min-w-0 w-full"
+        :value="query"
+        placeholder="Search logs"
+        clearable
+        @update:value="$emit('update:query', $event)"
+      >
+        <template #prefix><Search :size="16" /></template>
+      </n-input>
+      <p v-if="queryTooShort" class="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+        Type at least 3 characters to search
+      </p>
+    </div>
     <div v-if="expanded" class="grid min-w-0 gap-3 sm:grid-cols-2">
       <n-date-picker
         class="min-w-0 w-full"

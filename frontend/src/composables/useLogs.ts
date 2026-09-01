@@ -14,6 +14,8 @@ import type {
 } from '../types'
 
 const storageKey = 'vpsiner.logs.preferences.v1'
+// The backend's trigram FTS index cannot match substrings shorter than this.
+const minQueryLength = 3
 const pageSize = 20
 // SSE batches are variable-sized, so the retention cap must count lines rather than pages.
 const maxLoadedLines = 1000
@@ -46,6 +48,7 @@ type UseLogsState = {
   tailing: ComputedRef<boolean>
   freshKeys: ReturnType<typeof ref<Set<string>>>
   error: ReturnType<typeof ref<string>>
+  queryTooShort: ReturnType<typeof ref<boolean>>
   loadLogs: () => Promise<void>
   loadMore: () => Promise<void>
   loadNewer: () => Promise<void>
@@ -85,6 +88,8 @@ export function useLogs(initialGroup?: string): UseLogsState {
   )
   const freshKeys = ref(new Set<string>())
   const error = ref('')
+  // Set only after the search debounce fires, so it doesn't flash while the user is still typing.
+  const queryTooShort = ref(false)
   let searchTimer: number | undefined
   let requestVersion = 0
   let freshTimer: number | undefined
@@ -94,6 +99,11 @@ export function useLogs(initialGroup?: string): UseLogsState {
 
   function totalLines() {
     return pages.value.reduce((sum, page) => sum + page.items.length, 0)
+  }
+
+  function searchQuery() {
+    const trimmed = query.value.trim()
+    return trimmed.length >= minQueryLength ? trimmed : undefined
   }
 
   function fmtTs(ts: number | undefined) {
@@ -176,7 +186,7 @@ export function useLogs(initialGroup?: string): UseLogsState {
       from: customFrom.value,
       // Tailing's catch-up fetch always extends to whatever exists now, ignoring any upper bound.
       to: mode === 'newer' ? undefined : customTo.value,
-      q: query.value || undefined,
+      q: searchQuery(),
       level: level.value,
       stream: stream.value,
       limit: pageSize,
@@ -313,7 +323,8 @@ export function useLogs(initialGroup?: string): UseLogsState {
     const cursor = pages.value[pages.value.length - 1]?.newerCursor
     const params = new URLSearchParams()
     if (cursor) params.set('after', cursor)
-    if (query.value) params.set('q', query.value)
+    const q = searchQuery()
+    if (q) params.set('q', q)
     if (level.value.length) params.set('level', level.value.join(','))
     if (stream.value.length) params.set('stream', stream.value.join(','))
     tailSource = new EventSource(
@@ -348,10 +359,20 @@ export function useLogs(initialGroup?: string): UseLogsState {
   }
 
   function updateQuery(value: string) {
+    requestVersion++
     query.value = value
     persist()
+    const trimmed = value.trim()
+    // Only ever clear eagerly, once we already know it won't be too short; otherwise wait for the
+    // debounce below so the hint doesn't flicker off and back on between keystrokes.
+    if (trimmed.length === 0 || trimmed.length >= minQueryLength) queryTooShort.value = false
     if (searchTimer) window.clearTimeout(searchTimer)
-    searchTimer = window.setTimeout(loadLogs, 350)
+    searchTimer = window.setTimeout(() => {
+      const tooShort = trimmed.length > 0 && trimmed.length < minQueryLength
+      queryTooShort.value = tooShort
+      // Too-short queries can't match anything server-side, so don't bother issuing a request.
+      if (!tooShort) loadLogs()
+    }, 350)
   }
 
   function updateLevel(value: LogLevel[]) {
@@ -446,6 +467,7 @@ export function useLogs(initialGroup?: string): UseLogsState {
     tailing,
     freshKeys,
     error,
+    queryTooShort,
     loadLogs,
     loadMore,
     loadNewer,

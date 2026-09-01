@@ -38,6 +38,8 @@ pub type AppResult<T> = Result<T, AppError>;
 #[derive(Serialize)]
 struct ErrorBody {
     error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<&'static str>,
 }
 
 impl IntoResponse for AppError {
@@ -60,6 +62,7 @@ impl IntoResponse for AppError {
             status,
             Json(ErrorBody {
                 error: self.to_string(),
+                code: None,
             }),
         )
             .into_response()

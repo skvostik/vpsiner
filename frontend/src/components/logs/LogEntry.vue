@@ -36,26 +36,76 @@ const levelIconClass = computed(() => {
   }
 })
 
+// Mirrors the backend search: `sanitize_fts_query` splits the query on whitespace (double quotes
+// group a phrase) and ORs the terms, and SQLite's `trigram` FTS5 tokenizer matches any
+// case-insensitive substring, regardless of token boundaries.
+// The backend's trigram FTS index cannot match substrings shorter than this.
+const minQueryLength = 3
+
+function foldCase(value: string) {
+  return value.toLocaleLowerCase()
+}
+
+/** Splits the raw query into phrases the same way `sanitize_fts_query` does. */
+function queryPhrases(raw: string) {
+  const terms: string[] = []
+  let current = ''
+  let inQuotes = false
+
+  for (const ch of raw) {
+    if (ch === '"') {
+      if (current) terms.push(current)
+      current = ''
+      inQuotes = !inQuotes
+    } else if (/\s/u.test(ch) && !inQuotes) {
+      if (current) terms.push(current)
+      current = ''
+    } else {
+      current += ch
+    }
+  }
+  if (current) terms.push(current)
+
+  return terms.filter((term) => term.length >= minQueryLength).map(foldCase)
+}
+
 const highlightedParts = computed(() => {
-  const query = props.query
-  if (!query.trim()) return [{ text: props.line.line, match: false }]
-
-  const parts: Array<{ text: string; match: boolean }> = []
   const source = props.line.line
-  const sourceLower = source.toLocaleLowerCase()
-  const queryLower = query.toLocaleLowerCase()
-  let cursor = 0
-  let matchStart = sourceLower.indexOf(queryLower, cursor)
+  const phrases = queryPhrases(props.query)
+  if (!phrases.length) return [{ text: source, match: false }]
 
-  while (matchStart !== -1) {
-    if (matchStart > cursor) parts.push({ text: source.slice(cursor, matchStart), match: false })
-    parts.push({ text: source.slice(matchStart, matchStart + query.length), match: true })
-    cursor = matchStart + query.length
-    matchStart = sourceLower.indexOf(queryLower, cursor)
+  const folded = foldCase(source)
+  const matches: Array<{ start: number; end: number }> = []
+  for (const phrase of phrases) {
+    let fromIndex = 0
+    let index = folded.indexOf(phrase, fromIndex)
+    while (index !== -1) {
+      matches.push({ start: index, end: index + phrase.length })
+      fromIndex = index + 1
+      index = folded.indexOf(phrase, fromIndex)
+    }
+  }
+  matches.sort((left, right) => left.start - right.start)
+
+  const ranges: Array<{ start: number; end: number }> = []
+  for (const match of matches) {
+    const previous = ranges[ranges.length - 1]
+    // Terms can overlap, so keep a single merged span per region.
+    if (previous && match.start <= previous.end) previous.end = Math.max(previous.end, match.end)
+    else ranges.push({ ...match })
   }
 
+  if (!ranges.length) return [{ text: source, match: false }]
+
+  const parts: Array<{ text: string; match: boolean }> = []
+  let cursor = 0
+  for (const range of ranges) {
+    if (range.start > cursor) parts.push({ text: source.slice(cursor, range.start), match: false })
+    parts.push({ text: source.slice(range.start, range.end), match: true })
+    cursor = range.end
+  }
   if (cursor < source.length) parts.push({ text: source.slice(cursor), match: false })
-  return parts.length ? parts : [{ text: source, match: false }]
+  return parts
 })
 </script>
 
