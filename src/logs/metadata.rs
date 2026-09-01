@@ -23,7 +23,7 @@ pub struct LogCheckpoint {
 pub trait LogMetadataStore: Send + Sync + 'static {
     async fn record_received(
         &self,
-        log_group: &str,
+        service: &str,
         container_id: &str,
         ts: i64,
         line_hash: u64,
@@ -31,14 +31,14 @@ pub trait LogMetadataStore: Send + Sync + 'static {
 
     async fn checkpoint(
         &self,
-        log_group: &str,
+        service: &str,
         container_id: &str,
     ) -> AppResult<Option<LogCheckpoint>>;
 
-    /// MAX(last_received) per log_group, across its containers — backs the groups listing.
+    /// MAX(last_received) per service, across its containers — backs the services listing.
     async fn list_last_received(&self) -> AppResult<BTreeMap<String, i64>>;
 
-    /// Every known (log_group, container_id) checkpoint — used to preload dedup state on startup.
+    /// Every known (service, container_id) checkpoint — used to preload dedup state on startup.
     async fn list_checkpoints(&self) -> AppResult<Vec<(String, String, LogCheckpoint)>>;
 
     /// Releases the persistent database connection.
@@ -87,11 +87,11 @@ impl SqliteLogMetadataStore {
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS container_last_received (
-                log_group TEXT NOT NULL,
+                service TEXT NOT NULL,
                 container_id TEXT NOT NULL,
                 last_received INTEGER NOT NULL,
                 last_line_hash INTEGER NOT NULL,
-                PRIMARY KEY (log_group, container_id)
+                PRIMARY KEY (service, container_id)
             )",
         )
         .execute(&pool)
@@ -106,20 +106,20 @@ impl SqliteLogMetadataStore {
 impl LogMetadataStore for SqliteLogMetadataStore {
     async fn record_received(
         &self,
-        log_group: &str,
+        service: &str,
         container_id: &str,
         ts: i64,
         line_hash: u64,
     ) -> AppResult<()> {
         // last_line_hash is only ever paired with the ts it belongs to.
         sqlx::query(
-            "INSERT INTO container_last_received (log_group, container_id, last_received, last_line_hash)
+            "INSERT INTO container_last_received (service, container_id, last_received, last_line_hash)
              VALUES (?, ?, ?, ?)
-             ON CONFLICT(log_group, container_id) DO UPDATE SET
+             ON CONFLICT(service, container_id) DO UPDATE SET
                 last_line_hash = CASE WHEN excluded.last_received >= last_received THEN excluded.last_line_hash ELSE last_line_hash END,
                 last_received = MAX(last_received, excluded.last_received)",
         )
-        .bind(log_group)
+        .bind(service)
         .bind(container_id)
         .bind(ts)
         .bind(line_hash as i64)
@@ -131,14 +131,14 @@ impl LogMetadataStore for SqliteLogMetadataStore {
 
     async fn checkpoint(
         &self,
-        log_group: &str,
+        service: &str,
         container_id: &str,
     ) -> AppResult<Option<LogCheckpoint>> {
         let row = sqlx::query(
             "SELECT last_received, last_line_hash FROM container_last_received
-             WHERE log_group = ? AND container_id = ?",
+             WHERE service = ? AND container_id = ?",
         )
-        .bind(log_group)
+        .bind(service)
         .bind(container_id)
         .fetch_optional(&self.pool)
         .await
@@ -151,22 +151,22 @@ impl LogMetadataStore for SqliteLogMetadataStore {
 
     async fn list_last_received(&self) -> AppResult<BTreeMap<String, i64>> {
         let rows = sqlx::query(
-            "SELECT log_group, MAX(last_received) AS last_received
+            "SELECT service, MAX(last_received) AS last_received
              FROM container_last_received
-             GROUP BY log_group",
+             GROUP BY service",
         )
         .fetch_all(&self.pool)
         .await
         .map_err(storage)?;
         Ok(rows
             .into_iter()
-            .map(|row| (row.get("log_group"), row.get("last_received")))
+            .map(|row| (row.get("service"), row.get("last_received")))
             .collect())
     }
 
     async fn list_checkpoints(&self) -> AppResult<Vec<(String, String, LogCheckpoint)>> {
         let rows = sqlx::query(
-            "SELECT log_group, container_id, last_received, last_line_hash
+            "SELECT service, container_id, last_received, last_line_hash
              FROM container_last_received",
         )
         .fetch_all(&self.pool)
@@ -176,7 +176,7 @@ impl LogMetadataStore for SqliteLogMetadataStore {
             .into_iter()
             .map(|row| {
                 (
-                    row.get("log_group"),
+                    row.get("service"),
                     row.get("container_id"),
                     LogCheckpoint {
                         ts: row.get("last_received"),

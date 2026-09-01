@@ -4,7 +4,7 @@ export type ContainerState =
 export interface ContainerSummary {
   id: string
   name: string
-  log_group: string
+  service: string
   image: string
   image_sha: string
   ports: string[]
@@ -37,7 +37,7 @@ export interface HostPoint {
 
 export interface ContainerPoint {
   ts: number
-  log_group: string
+  service: string
   cpu_pct: number
   mem_used: number
   mem_limit: number
@@ -63,9 +63,9 @@ export interface ContainerGroupMetrics {
   containers: Record<string, ContainerPoint[]>
 }
 
-export type ContainerMetricsByLogGroup = Record<string, GroupPoint[]>
+export type ContainerMetricsByService = Record<string, GroupPoint[]>
 
-/** One newly-completed bucket's cross-section, pushed by GET /api/stream/metrics/containers/{log_group}. */
+/** One newly-completed bucket's cross-section, pushed by GET /api/stream/metrics/containers/{service}. */
 export interface ContainerGroupMetricsAppend {
   sum: GroupPoint | null
   containers: Record<string, ContainerPoint>
@@ -74,7 +74,7 @@ export interface ContainerGroupMetricsAppend {
 export interface MetricsSnapshot {
   host: HostPoint | null
   containers: Record<string, ContainerPoint>
-  log_groups: Record<string, GroupPoint>
+  services: Record<string, GroupPoint>
 }
 
 export interface ContainerRow extends ContainerSummary {
@@ -93,7 +93,7 @@ export interface TimeRange {
 
 export interface LogLine {
   ts: number
-  log_group: string
+  service: string
   cid: string
   stream: LogStream
   level: LogLevel | null
@@ -108,21 +108,21 @@ export interface LogPage {
   has_newer: boolean
 }
 
-export interface LogGroupStatus {
+export interface ServiceStatus {
   last_received: number | null
   live: boolean
 }
 
-export type LogGroups = Record<string, LogGroupStatus>
+export type Services = Record<string, ServiceStatus>
 
 /** Incremental update pushed by GET /api/stream/logs, relative to what the client has already seen. */
-export interface LogGroupDiff {
-  added: LogGroups
-  updated: LogGroups
+export interface ServiceDiff {
+  added: Services
+  updated: Services
   removed: string[]
 }
 
-/** One batch of newly-flushed lines pushed by GET /api/stream/logs/{log_group}. */
+/** One batch of newly-flushed lines pushed by GET /api/stream/logs/{service}. */
 export interface LogTailAppend {
   items: LogLine[]
   newer_cursor: string | null

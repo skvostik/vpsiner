@@ -8,7 +8,7 @@ use crate::model::{ContainerState, ContainerStats, ContainerSummary, TimestampMs
 use crate::{
     docker::{
         container_registry::ObservedContainer,
-        mapping::{get_container_log_group, get_container_name},
+        mapping::{get_container_name, get_container_service},
     },
     error::{AppError, AppResult},
 };
@@ -30,7 +30,7 @@ pub(super) async fn list_running_containers(
         .map(|response| ObservedContainer {
             id: response.id.clone().unwrap_or_default(),
             name: get_container_name(&response),
-            log_group: get_container_log_group(&response),
+            service: get_container_service(&response),
         })
         .collect::<Vec<_>>();
 
@@ -64,7 +64,7 @@ pub(super) async fn list_all_containers_details(
             Some(ContainerSummary {
                 id: summary.id,
                 name: summary.name,
-                log_group: summary.log_group,
+                service: summary.service,
                 image: summary.image,
                 image_sha: summary.image_sha,
                 ports: summary.ports,

@@ -5,12 +5,12 @@ import { NCard, NStatistic } from 'naive-ui'
 import MetricChart, { type ChartSeries } from './MetricChart.vue'
 import { colorForKey } from '../colors'
 import { formatBytes } from '../format'
-import type { ContainerMetricsByLogGroup, HostPoint, MetricsSnapshot } from '../types'
+import type { ContainerMetricsByService, HostPoint, MetricsSnapshot } from '../types'
 
 const props = defineProps<{
   snapshot: MetricsSnapshot
   history: HostPoint[]
-  containerHistory: ContainerMetricsByLogGroup
+  containerHistory: ContainerMetricsByService
 }>()
 
 const host = computed(() => props.snapshot.host)
@@ -54,9 +54,9 @@ const diskSeries = computed<ChartSeries[]>(() => [
   { name: 'Write', points: diskWritePoints.value, color: '#f59e0b' },
 ])
 const containerSeries = computed(() =>
-  Object.entries(props.containerHistory).map(([logGroup, samples]) => ({
-    logGroup,
-    color: colorForKey(logGroup),
+  Object.entries(props.containerHistory).map(([service, samples]) => ({
+    service,
+    color: colorForKey(service),
     cpu: samples.map((sample) => ({
       ts: Math.floor(sample.ts / 10_000) * 10_000,
       value: sample.cpu_pct,
@@ -69,23 +69,23 @@ const containerSeries = computed(() =>
 )
 const containerCpuSeries = computed<ChartSeries[]>(() =>
   containerSeries.value.map((series) => ({
-    name: series.logGroup,
+    name: series.service,
     color: series.color,
     points: series.cpu,
   }))
 )
 const containerMemorySeries = computed<ChartSeries[]>(() =>
   containerSeries.value.map((series) => ({
-    name: series.logGroup,
+    name: series.service,
     color: series.color,
     points: series.memory,
   }))
 )
 
-const latestContainerSamples = computed(() => Object.values(props.snapshot.log_groups))
+const latestContainerSamples = computed(() => Object.values(props.snapshot.services))
 const containerCpuSummary = computed(
   () =>
-    `${latestContainerSamples.value.reduce((total, group) => total + group.cpu_pct, 0).toFixed(1)}%`
+    `${latestContainerSamples.value.reduce((total, service) => total + service.cpu_pct, 0).toFixed(1)}%`
 )
 const containerMemorySummary = computed(() => {
   const used = latestContainerSamples.value.reduce((total, group) => total + group.mem_used, 0)

@@ -79,7 +79,7 @@ flowchart TB
 - Cleanup worker: periodically removes data older than the configured retention window.
 - DockerService: the Docker-facing abstraction that provides container lists/details, log streams, samples, and control actions.
 - ContainerRegistry: maintains discovered containers and their observed runtime state for DockerService.
-- LogBuffer: batches/debounces log lines before persistence, then writes log rows and metadata updates; also bumps a `LogFlushWatcher` signal per group (plus a global one) on every successful flush, driving `GET /stream/logs` and `GET /stream/logs/{log_group}` instead of polling.
+- LogBuffer: batches/debounces log lines before persistence, then writes log rows and metadata updates; also bumps a `LogFlushWatcher` signal per service (plus a global one) on every successful flush, driving `GET /stream/logs` and `GET /stream/logs/{service}` instead of polling.
 - Metrics store: persists host and container metrics for dashboards and historical queries.
 - Log store: persists log entries and supports grouped log retrieval.
 - Metadata store: stores log checkpoints/positions and related indexing metadata used by ingestion and Docker resume logic.
@@ -176,7 +176,7 @@ flowchart TB
 
 ## LogBuffer
 
-This section explains LogBuffer's two primary responsibilities. First, it debounces and batches log writes per group so write load stays stable. Second, it uses checkpoint metadata to drive deduplication and safe backfilling behavior across restarts.
+This section explains LogBuffer's two primary responsibilities. First, it debounces and batches log writes per service so write load stays stable. Second, it uses checkpoint metadata to drive deduplication and safe backfilling behavior across restarts.
 
 ```mermaid
 flowchart TB
@@ -187,31 +187,31 @@ flowchart TB
     subgraph BufferCore[LogBuffer]
         direction TB
         Seed[startup checkpoint preload]
-        Groups[group map by log_group]
+        Services[service map by service]
         Dedup[per-container checkpoint dedup]
     end
 
-    subgraph PerGroup[Per log_group]
+    subgraph PerService[Per service]
         direction TB
         Queue[buffered lines]
         Flush[debounced flush worker]
     end
 
-    In -->|push| Groups
+    In -->|push| Services
     Seed ---|list checkpoints| Metadata
-    Seed -->|seed state| Groups
-    Groups -->|route by group| Dedup
+    Seed -->|seed state| Services
+    Services -->|route by service| Dedup
     Dedup -->|accept| Queue
     Queue -->|schedule| Flush
     Flush -->|record received checkpoint| Metadata
     Flush -->|append| LogStore
 ```
 
-- One flush worker exists per log group, so bursts in one group do not block other groups.
+- One flush worker exists per service, so bursts in one service do not block other services.
 - Startup preloads checkpoints from metadata so dedup and backfill resume logic survive restarts.
 - Dedup drops strictly older lines and exact boundary duplicates per container.
 - Checkpoint writes are the mechanism that enables safe backfilling without duplicating already persisted lines.
 - Flush is debounced and coalesces repeated flush requests before writing.
-- On a successful flush, `LogFlushWatcher::notify(log_group)` bumps that group's `watch` channel and a global one; `GET /stream/logs/{log_group}` subscribes per-group to push newly-flushed lines forward, and `GET /stream/logs` subscribes to the global signal (plus `DockerService::subscribe_containers_info()`, since a group's `live` flag depends on container state, not flushes) to push a diff of the groups list.
+- On a successful flush, `LogFlushWatcher::notify(service)` bumps that service's `watch` channel and a global one; `GET /stream/logs/{service}` subscribes per-service to push newly-flushed lines forward, and `GET /stream/logs` subscribes to the global signal (plus `DockerService::subscribe_containers_info()`, since a service's `live` flag depends on container state, not flushes) to push a diff of the services list.
 
 

@@ -190,7 +190,7 @@ onMounted(async () => {
     :description="
       hasStoredLogs
         ? 'No logs match the current filters'
-        : 'No logs have been received from this log group yet'
+        : 'No logs have been received from this service yet'
     "
   >
     <template v-if="hasStoredLogs" #extra>

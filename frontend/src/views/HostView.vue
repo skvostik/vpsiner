@@ -11,10 +11,10 @@ import { useHostMetricsStream } from '../composables/useHostMetricsStream'
 import { useMetricsSnapshotStream } from '../composables/useMetricsSnapshotStream'
 import { useMetricsWindow } from '../composables/useMetricsWindow'
 import { usePageTitle } from '../composables/usePageTitle'
-import type { ContainerMetricsByLogGroup, HostPoint, MetricsResolution, TimeRange } from '../types'
+import type { ContainerMetricsByService, HostPoint, MetricsResolution, TimeRange } from '../types'
 
 const restHostSamples = ref<HostPoint[]>([])
-const restContainerMetricHistory = ref<ContainerMetricsByLogGroup>({})
+const restContainerMetricHistory = ref<ContainerMetricsByService>({})
 
 // Card headers always show current values, independently of the chart window below them.
 const { snapshot } = useMetricsSnapshotStream()

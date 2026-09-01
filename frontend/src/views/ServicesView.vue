@@ -5,35 +5,35 @@ import { ChevronRight, Search } from '@lucide/vue'
 
 import LiveStatusIcon from '../components/LiveStatusIcon.vue'
 import { backendOnline } from '../composables/useBackendHealth'
-import { useLogGroupsStream } from '../composables/useLogGroupsStream'
+import { useServicesStream } from '../composables/useServicesStream'
 import { usePageTitle } from '../composables/usePageTitle'
 
 usePageTitle('Explore Logs')
 
-const { groups, loading } = useLogGroupsStream()
+const { services, loading } = useServicesStream()
 const onlyRunning = ref(false)
-const groupSearch = ref('')
-const onlyRunningStorageKey = 'vpsiner.log-groups.only-running.v2'
+const serviceSearch = ref('')
+const onlyRunningStorageKey = 'vpsiner.services.only-running.v1'
 
 const pageStatus = computed<'live' | 'history' | 'stopped'>(() => {
   if (!backendOnline.value) return 'stopped'
   return document.visibilityState === 'visible' ? 'live' : 'history'
 })
 
-const sortedGroups = computed(() => {
-  const search = groupSearch.value.trim().toLocaleLowerCase()
-  return Object.entries(groups.value)
+const sortedServices = computed(() => {
+  const search = serviceSearch.value.trim().toLocaleLowerCase()
+  return Object.entries(services.value)
     .filter(
-      ([logGroup, status]) =>
+      ([service, status]) =>
         (!onlyRunning.value || status.live) &&
-        (!search || logGroup.toLocaleLowerCase().includes(search))
+        (!search || service.toLocaleLowerCase().includes(search))
     )
-    .map(([log_group, status]) => ({
-      log_group,
+    .map(([service, status]) => ({
+      service,
       ...status,
     }))
     .sort((left, right) =>
-      left.log_group.localeCompare(right.log_group, undefined, {
+      left.service.localeCompare(right.service, undefined, {
         sensitivity: 'base',
         numeric: true,
       })
@@ -66,39 +66,39 @@ onlyRunning.value = storedOnlyRunning === null ? true : storedOnlyRunning === 't
         <n-switch :value="onlyRunning" size="small" @update:value="updateOnlyRunning" />
       </label>
     </div>
-    <n-input v-model:value="groupSearch" clearable placeholder="Search by name">
+    <n-input v-model:value="serviceSearch" clearable placeholder="Search by name">
       <template #prefix><Search :size="16" /></template>
     </n-input>
     <n-spin v-if="loading" size="small" />
     <n-empty
-      v-else-if="!sortedGroups.length"
+      v-else-if="!sortedServices.length"
       :description="
-        groupSearch.trim()
-          ? 'No matching log groups'
+        serviceSearch.trim()
+          ? 'No matching services'
           : onlyRunning
-            ? 'No running log groups'
-            : 'No log groups found'
+            ? 'No running services'
+            : 'No services found'
       "
     />
     <ul
       v-else
       class="divide-y divide-neutral-200 rounded border border-neutral-200 dark:divide-neutral-800 dark:border-neutral-800"
     >
-      <li v-for="group in sortedGroups" :key="group.log_group">
+      <li v-for="item in sortedServices" :key="item.service">
         <router-link
-          :to="{ name: 'log-viewer', params: { logGroup: group.log_group } }"
+          :to="{ name: 'log-viewer', params: { service: item.service } }"
           class="flex items-center justify-between gap-4 px-4 py-3 hover:bg-neutral-50 dark:hover:bg-neutral-900"
         >
           <span class="flex min-w-0 items-center gap-3">
-            <LiveStatusIcon :live="group.live" />
+            <LiveStatusIcon :live="item.live" />
             <span class="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{{
-              group.log_group
+              item.service
             }}</span>
           </span>
           <span
             class="flex shrink-0 items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400"
           >
-            {{ formatLastReceived(group.last_received) }}
+            {{ formatLastReceived(item.last_received) }}
             <ChevronRight :size="16" />
           </span>
         </router-link>

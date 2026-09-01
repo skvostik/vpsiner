@@ -5,7 +5,7 @@ import type { MetricsSnapshot } from '../types'
 
 /** Pushes MetricsSnapshot updates over SSE instead of polling /api/metrics/current. */
 export function useMetricsSnapshotStream() {
-  const snapshot = ref<MetricsSnapshot>({ host: null, containers: {}, log_groups: {} })
+  const snapshot = ref<MetricsSnapshot>({ host: null, containers: {}, services: {} })
   let source: EventSource | undefined
 
   onMounted(() => {

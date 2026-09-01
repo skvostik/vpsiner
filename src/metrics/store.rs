@@ -11,7 +11,7 @@ use sqlx::{QueryBuilder, Row, SqlitePool};
 use crate::error::{AppError, AppResult};
 use crate::metrics::downsampling::{downsample_container, downsample_host, sum_by_bucket};
 use crate::model::{
-    ContainerGroupMetrics, ContainerMetricsByLogGroup, ContainerPoint, ContainerSample, HostPoint,
+    ContainerGroupMetrics, ContainerMetricsByService, ContainerPoint, ContainerSample, HostPoint,
     HostSample, MetricsResolution, TimeRange,
 };
 
@@ -35,7 +35,7 @@ pub trait MetricsStore: Send + Sync + 'static {
 
     async fn query_container(
         &self,
-        log_group: &str,
+        service: &str,
         range: TimeRange,
         resolution: MetricsResolution,
     ) -> AppResult<ContainerGroupMetrics>;
@@ -44,7 +44,7 @@ pub trait MetricsStore: Send + Sync + 'static {
         &self,
         range: TimeRange,
         resolution: MetricsResolution,
-    ) -> AppResult<ContainerMetricsByLogGroup>;
+    ) -> AppResult<ContainerMetricsByService>;
 
     /// Checkpoints the write-ahead log and releases the connection.
     async fn close(&self);
@@ -137,7 +137,7 @@ impl SqliteMetricsStore {
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS container_metrics (
                 ts INTEGER NOT NULL,
-                log_group TEXT NOT NULL,
+                service TEXT NOT NULL,
                 cid TEXT NOT NULL,
                 cpu_pct REAL NOT NULL,
                 mem_used INTEGER NOT NULL,
@@ -158,14 +158,14 @@ impl SqliteMetricsStore {
             .execute(&self.pool)
             .await
             .map_err(storage)?;
-        // Used by per-log-group container metrics queries: filter by log_group, then walk the
+        // Used by per-service container metrics queries: filter by service, then walk the
         // matching samples in timestamp order for a time range.
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_ctr_ts ON container_metrics(log_group, ts)")
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_ctr_ts ON container_metrics(service, ts)")
             .execute(&self.pool)
             .await
             .map_err(storage)?;
-        // Used by retention deletes and by aggregate container queries that span all log groups
-        // without a log_group filter; the timestamp-only index keeps those scans narrow.
+        // Used by retention deletes and by aggregate container queries that span all services
+        // without a service filter; the timestamp-only index keeps those scans narrow.
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_ctr_ts_only ON container_metrics(ts)")
             .execute(&self.pool)
             .await
@@ -303,11 +303,11 @@ impl MetricsStore for SqliteMetricsStore {
         for chunk in samples.chunks(INSERT_CHUNK_ROWS) {
             let mut builder = QueryBuilder::new(
                 "INSERT INTO container_metrics
-                    (ts, log_group, cid, cpu_pct, mem_used, mem_limit, net_rx, net_tx, blk_read, blk_write) ",
+                    (ts, service, cid, cpu_pct, mem_used, mem_limit, net_rx, net_tx, blk_read, blk_write) ",
             );
             builder.push_values(chunk, |mut row, sample| {
                 row.push_bind(sample.ts)
-                    .push_bind(sample.log_group.clone())
+                    .push_bind(sample.service.clone())
                     .push_bind(sample.cid.clone())
                     .push_bind(sample.cpu_pct)
                     .push_bind(sample.mem_used as i64)
@@ -407,21 +407,21 @@ impl MetricsStore for SqliteMetricsStore {
 
     async fn query_container(
         &self,
-        log_group: &str,
+        service: &str,
         range: TimeRange,
         resolution: MetricsResolution,
     ) -> AppResult<ContainerGroupMetrics> {
         // Reach one sample before `from` so the first in-range bucket has a rate.
         let rows = sqlx::query(
-            "SELECT ts, log_group, cid, cpu_pct, mem_used, mem_limit, net_rx, net_tx, blk_read, blk_write
+            "SELECT ts, service, cid, cpu_pct, mem_used, mem_limit, net_rx, net_tx, blk_read, blk_write
              FROM container_metrics
-             WHERE log_group = ?
-               AND ts >= COALESCE((SELECT MAX(ts) FROM container_metrics WHERE log_group = ? AND ts < ?), ?)
+             WHERE service = ?
+               AND ts >= COALESCE((SELECT MAX(ts) FROM container_metrics WHERE service = ? AND ts < ?), ?)
                AND ts <= ?
              ORDER BY ts ASC",
         )
-        .bind(log_group)
-        .bind(log_group)
+        .bind(service)
+        .bind(service)
         .bind(range.from)
         .bind(range.from)
         .bind(range.to)
@@ -436,8 +436,8 @@ impl MetricsStore for SqliteMetricsStore {
                     ts: row
                         .try_get("ts")
                         .map_err(|err| AppError::Storage(err.to_string()))?,
-                    log_group: row
-                        .try_get("log_group")
+                    service: row
+                        .try_get("service")
                         .map_err(|err| AppError::Storage(err.to_string()))?,
                     cid: row
                         .try_get("cid")
@@ -496,10 +496,10 @@ impl MetricsStore for SqliteMetricsStore {
         &self,
         range: TimeRange,
         resolution: MetricsResolution,
-    ) -> AppResult<ContainerMetricsByLogGroup> {
+    ) -> AppResult<ContainerMetricsByService> {
         // Reach one sample before `from` so the first in-range bucket has a rate.
         let rows = sqlx::query(
-            "SELECT ts, log_group, cid, cpu_pct, mem_used, mem_limit, net_rx, net_tx, blk_read, blk_write
+            "SELECT ts, service, cid, cpu_pct, mem_used, mem_limit, net_rx, net_tx, blk_read, blk_write
              FROM container_metrics
              WHERE ts >= COALESCE((SELECT MAX(ts) FROM container_metrics WHERE ts < ?), ?) AND ts <= ?
              ORDER BY ts ASC",
@@ -518,8 +518,8 @@ impl MetricsStore for SqliteMetricsStore {
                     ts: row
                         .try_get("ts")
                         .map_err(|err| AppError::Storage(err.to_string()))?,
-                    log_group: row
-                        .try_get("log_group")
+                    service: row
+                        .try_get("service")
                         .map_err(|err| AppError::Storage(err.to_string()))?,
                     cid: row
                         .try_get("cid")
@@ -555,19 +555,19 @@ impl MetricsStore for SqliteMetricsStore {
             })
             .collect::<AppResult<Vec<_>>>()?;
 
-        let mut by_group_and_container: HashMap<String, HashMap<String, Vec<ContainerSample>>> =
+        let mut by_service_and_container: HashMap<String, HashMap<String, Vec<ContainerSample>>> =
             HashMap::new();
         for sample in raw_samples {
-            by_group_and_container
-                .entry(sample.log_group.clone())
+            by_service_and_container
+                .entry(sample.service.clone())
                 .or_default()
                 .entry(sample.cid.clone())
                 .or_default()
                 .push(sample);
         }
 
-        let mut by_group: ContainerMetricsByLogGroup = HashMap::new();
-        for (log_group, by_container) in by_group_and_container {
+        let mut by_service: ContainerMetricsByService = HashMap::new();
+        for (service, by_container) in by_service_and_container {
             let containers: Vec<Vec<ContainerPoint>> = by_container
                 .into_values()
                 .map(|samples| {
@@ -576,10 +576,10 @@ impl MetricsStore for SqliteMetricsStore {
                     points
                 })
                 .collect();
-            by_group.insert(log_group, sum_by_bucket(containers.iter()));
+            by_service.insert(service, sum_by_bucket(containers.iter()));
         }
 
-        Ok(by_group)
+        Ok(by_service)
     }
 
     async fn close(&self) {
@@ -624,10 +624,10 @@ mod tests {
         }
     }
 
-    fn container_sample(ts: i64, log_group: &str) -> ContainerSample {
+    fn container_sample(ts: i64, service: &str) -> ContainerSample {
         ContainerSample {
             ts,
-            log_group: log_group.into(),
+            service: service.into(),
             cid: "abc123".into(),
             cpu_pct: 25.0,
             mem_used: 1_000,
@@ -681,7 +681,7 @@ mod tests {
         assert_eq!(containers.sum[0].cpu_pct, 25.0);
         assert_eq!(containers.containers.len(), 1);
         assert_eq!(containers.containers["abc123"][0].ts, 10_000);
-        assert_eq!(containers.containers["abc123"][0].log_group, "web");
+        assert_eq!(containers.containers["abc123"][0].service, "web");
         assert_eq!(containers.containers["abc123"][0].mem_used, 1_000);
 
         let _ = tokio::fs::remove_dir_all(directory).await;

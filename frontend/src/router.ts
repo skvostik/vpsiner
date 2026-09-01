@@ -17,9 +17,9 @@ export const router = createRouter({
       name: 'container-detail',
       component: () => import('./views/ContainerDetailView.vue'),
     },
-    { path: '/logs', name: 'logs', component: () => import('./views/LogGroupsView.vue') },
+    { path: '/logs', name: 'logs', component: () => import('./views/ServicesView.vue') },
     {
-      path: '/logs/:logGroup',
+      path: '/logs/:service',
       name: 'log-viewer',
       component: () => import('./views/LogsView.vue'),
     },

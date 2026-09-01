@@ -1,7 +1,7 @@
 import { reportBackendUnreachable } from './composables/useBackendHealth'
 import type {
   ContainerGroupMetrics,
-  ContainerMetricsByLogGroup,
+  ContainerMetricsByService,
   ContainerSummary,
   ComputedEntry,
   HostPoint,
@@ -72,9 +72,9 @@ function queryString(params: LogQueryParams) {
 export const api = {
   containers: {
     list: () => request<ContainerSummary[]>('/api/containers'),
-    metrics: (logGroup: string, range: TimeRange, resolution: MetricsResolution) =>
+    metrics: (service: string, range: TimeRange, resolution: MetricsResolution) =>
       request<ContainerGroupMetrics>(
-        `/api/metrics/containers/${encodeURIComponent(logGroup)}?${metricsRange(range, resolution)}`
+        `/api/metrics/containers/${encodeURIComponent(service)}?${metricsRange(range, resolution)}`
       ),
     action: (id: string, action: 'start' | 'stop' | 'restart') =>
       request<void>(`/api/containers/${encodeURIComponent(id)}/${action}`, { method: 'POST' }),
@@ -84,8 +84,8 @@ export const api = {
       request<HostPoint[]>(`/api/metrics/host?${metricsRange(range, resolution)}`),
   },
   logs: {
-    query: (group: string, params: LogQueryParams) =>
-      request<LogPage>(`/api/logs/${encodeURIComponent(group)}?${queryString(params)}`),
+    query: (service: string, params: LogQueryParams) =>
+      request<LogPage>(`/api/logs/${encodeURIComponent(service)}?${queryString(params)}`),
   },
   config: {
     ui: () => request<UiConfig>('/api/config/ui'),
@@ -95,7 +95,7 @@ export const api = {
 }
 
 export function containerMetricsHistory(range: TimeRange, resolution: MetricsResolution) {
-  return request<ContainerMetricsByLogGroup>(
+  return request<ContainerMetricsByService>(
     `/api/metrics/containers?${metricsRange(range, resolution)}`
   )
 }

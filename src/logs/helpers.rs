@@ -247,8 +247,8 @@ pub fn sanitize_fts_query(raw: &str) -> Option<String> {
     Some(query)
 }
 
-pub fn safe_group_path(log_group: &str) -> String {
-    log_group
+pub fn safe_service_path(service: &str) -> String {
+    service
         .split(['/', '\\'])
         .filter(|part| !part.is_empty() && *part != "." && *part != "..")
         .collect::<Vec<_>>()
@@ -305,9 +305,9 @@ mod tests {
     }
 
     #[test]
-    fn sanitizes_log_group_path() {
-        assert_eq!(safe_group_path("shop/web"), "shop_web");
-        assert_eq!(safe_group_path("../shop"), "shop");
+    fn sanitizes_service_path() {
+        assert_eq!(safe_service_path("shop/web"), "shop_web");
+        assert_eq!(safe_service_path("../shop"), "shop");
     }
 
     #[test]

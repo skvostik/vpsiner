@@ -3,10 +3,10 @@ import { useMessage } from 'naive-ui'
 
 import { api } from '../api'
 import { reportSseIssue } from './useBackendHealth'
-import { useLogGroupsStream } from './useLogGroupsStream'
+import { useServicesStream } from './useServicesStream'
 import type {
   LogLevel,
-  LogGroups,
+  Services,
   LogLine,
   LogQueryParams,
   LogStream,
@@ -33,15 +33,15 @@ type LogPageEntry = {
 }
 
 type UseLogsState = {
-  groups: ReturnType<typeof ref<LogGroups>>
-  selectedGroup: ReturnType<typeof ref<string>>
+  services: ReturnType<typeof ref<Services>>
+  selectedService: ReturnType<typeof ref<string>>
   logs: ComputedRef<LogLine[]>
   query: ReturnType<typeof ref<string>>
   level: ReturnType<typeof ref<LogLevel[]>>
   stream: ReturnType<typeof ref<LogStream[]>>
   customFrom: ReturnType<typeof ref<number | undefined>>
   customTo: ReturnType<typeof ref<number | undefined>>
-  loadingGroups: ReturnType<typeof ref<boolean>>
+  loadingServices: ReturnType<typeof ref<boolean>>
   loadingLogs: ReturnType<typeof ref<boolean>>
   hasMore: ReturnType<typeof ref<boolean>>
   hasNewer: ReturnType<typeof ref<boolean>>
@@ -60,10 +60,10 @@ type UseLogsState = {
   updateCustomTo: (value: number | null) => void
 }
 
-export function useLogs(initialGroup?: string): UseLogsState {
+export function useLogs(initialService?: string): UseLogsState {
   const message = useMessage()
-  const { groups, loading: loadingGroups } = useLogGroupsStream()
-  const selectedGroup = ref(initialGroup ?? '')
+  const { services, loading: loadingServices } = useServicesStream()
+  const selectedService = ref(initialService ?? '')
   const pages = ref<LogPageEntry[]>([])
   const logs = computed(() => pages.value.flatMap((page) => page.items))
   const query = ref('')
@@ -82,9 +82,9 @@ export function useLogs(initialGroup?: string): UseLogsState {
   // False the instant tailing stops; only re-armed once we prove we've caught back up (a forward
   // fetch reports no more newer data while the user is at the bottom).
   const isTailingAvailable = ref(true)
-  const selectedGroupIsLive = computed(() => groups.value[selectedGroup.value]?.live ?? false)
+  const selectedServiceIsLive = computed(() => services.value[selectedService.value]?.live ?? false)
   const tailing = computed(
-    () => couldTail.value && isTailingAvailable.value && selectedGroupIsLive.value
+    () => couldTail.value && isTailingAvailable.value && selectedServiceIsLive.value
   )
   const freshKeys = ref(new Set<string>())
   const error = ref('')
@@ -120,7 +120,7 @@ export function useLogs(initialGroup?: string): UseLogsState {
   }
 
   function logEvent(event: string, details: Record<string, unknown> = {}) {
-    console.debug(`[logs:${selectedGroup.value || '-'}] ${event}`, details)
+    console.debug(`[logs:${selectedService.value || '-'}] ${event}`, details)
   }
 
   /** Drops pages from the edge opposite the edge that just grew. */
@@ -202,14 +202,14 @@ export function useLogs(initialGroup?: string): UseLogsState {
     hasNewer.value = false
     stopTailStream()
     freshKeys.value = new Set()
-    if (!selectedGroup.value) {
+    if (!selectedService.value) {
       loadingLogs.value = false
       return
     }
     loadingLogs.value = true
     fetching = true
     try {
-      const page = await api.logs.query(selectedGroup.value, currentParams())
+      const page = await api.logs.query(selectedService.value, currentParams())
       if (version !== requestVersion) return
       pages.value = [
         {
@@ -239,12 +239,12 @@ export function useLogs(initialGroup?: string): UseLogsState {
 
   async function loadMore() {
     const cursor = pages.value[0]?.olderCursor
-    if (!selectedGroup.value || !hasMore.value || loadingLogs.value || fetching || !cursor) return
+    if (!selectedService.value || !hasMore.value || loadingLogs.value || fetching || !cursor) return
     const version = requestVersion
     fetching = true
     loadingLogs.value = true
     try {
-      const page = await api.logs.query(selectedGroup.value, {
+      const page = await api.logs.query(selectedService.value, {
         ...currentParams('older'),
         before: cursor,
       })
@@ -268,7 +268,7 @@ export function useLogs(initialGroup?: string): UseLogsState {
 
   async function loadNewer() {
     const cursor = pages.value[pages.value.length - 1]?.newerCursor
-    if (!selectedGroup.value || loadingLogs.value || fetching) return
+    if (!selectedService.value || loadingLogs.value || fetching) return
     if (!cursor) {
       // No known tail cursor means we have nothing to ask for; only re-verify once the user
       // is at the bottom and the stream has been interrupted.
@@ -284,7 +284,7 @@ export function useLogs(initialGroup?: string): UseLogsState {
     fetching = true
     loadingLogs.value = true
     try {
-      const page = await api.logs.query(selectedGroup.value, {
+      const page = await api.logs.query(selectedService.value, {
         ...currentParams('newer'),
         after: cursor,
       })
@@ -316,10 +316,10 @@ export function useLogs(initialGroup?: string): UseLogsState {
     tailSource = undefined
   }
 
-  /** Opens (or reopens) the live tail for the current group/filters, resuming from the last cursor. */
+  /** Opens (or reopens) the live tail for the current service/filters, resuming from the last cursor. */
   function startTailStream() {
     stopTailStream()
-    if (!selectedGroup.value) return
+    if (!selectedService.value) return
     const cursor = pages.value[pages.value.length - 1]?.newerCursor
     const params = new URLSearchParams()
     if (cursor) params.set('after', cursor)
@@ -328,7 +328,7 @@ export function useLogs(initialGroup?: string): UseLogsState {
     if (level.value.length) params.set('level', level.value.join(','))
     if (stream.value.length) params.set('stream', stream.value.join(','))
     tailSource = new EventSource(
-      `/api/stream/logs/${encodeURIComponent(selectedGroup.value)}?${params}`
+      `/api/stream/logs/${encodeURIComponent(selectedService.value)}?${params}`
     )
     tailSource.addEventListener('append', (event) => {
       const append = JSON.parse((event as MessageEvent).data) as LogTailAppend
@@ -348,7 +348,7 @@ export function useLogs(initialGroup?: string): UseLogsState {
     localStorage.setItem(
       storageKey,
       JSON.stringify({
-        group: selectedGroup.value,
+        service: selectedService.value,
         query: query.value,
         level: level.value,
         stream: stream.value,
@@ -399,7 +399,7 @@ export function useLogs(initialGroup?: string): UseLogsState {
     loadLogs()
   }
 
-  watch(selectedGroup, () => {
+  watch(selectedService, () => {
     persist()
     loadLogs()
   })
@@ -407,14 +407,14 @@ export function useLogs(initialGroup?: string): UseLogsState {
   onMounted(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(storageKey) ?? '{}') as Partial<{
-        group: string
+        service: string
         query: string
         level: LogLevel[]
         stream: LogStream[]
         customFrom: number
         customTo: number
       }>
-      if (!initialGroup && saved.group) selectedGroup.value = saved.group
+      if (!initialService && saved.service) selectedService.value = saved.service
       query.value = saved.query ?? ''
       level.value = saved.level ?? []
       stream.value = saved.stream ?? []
@@ -454,13 +454,13 @@ export function useLogs(initialGroup?: string): UseLogsState {
   })
 
   return {
-    groups,
-    selectedGroup,
+    services,
+    selectedService,
     logs,
     query,
     level,
     stream,
-    loadingGroups,
+    loadingServices,
     loadingLogs,
     hasMore,
     hasNewer,

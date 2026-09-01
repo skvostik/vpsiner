@@ -6,7 +6,7 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 
 use crate::error::{AppError, AppResult};
-use crate::model::{LogFilter, LogGroupStatus, LogLevel, LogPage, LogStream};
+use crate::model::{LogFilter, LogLevel, LogPage, LogStream, ServiceStatus};
 use crate::state::AppState;
 
 #[derive(Debug, Default, Deserialize)]
@@ -86,22 +86,22 @@ pub(crate) fn parse_streams(value: Option<String>) -> AppResult<Vec<LogStream>> 
 
 pub async fn list_groups(
     State(state): State<AppState>,
-) -> AppResult<Json<BTreeMap<String, LogGroupStatus>>> {
+) -> AppResult<Json<BTreeMap<String, ServiceStatus>>> {
     let stored = state.metadata.list_last_received().await?;
     let containers = state.docker.containers_info()?;
-    Ok(Json(merge_log_groups(stored, containers)))
+    Ok(Json(merge_services(stored, containers)))
 }
 
-pub(crate) fn merge_log_groups(
+pub(crate) fn merge_services(
     stored: BTreeMap<String, i64>,
     containers: Vec<crate::model::ContainerSummary>,
-) -> BTreeMap<String, LogGroupStatus> {
-    let mut groups = stored
+) -> BTreeMap<String, ServiceStatus> {
+    let mut services = stored
         .into_iter()
-        .map(|(log_group, last_received)| {
+        .map(|(service, last_received)| {
             (
-                log_group,
-                LogGroupStatus {
+                service,
+                ServiceStatus {
                     last_received: Some(last_received),
                     live: false,
                 },
@@ -109,15 +109,15 @@ pub(crate) fn merge_log_groups(
         })
         .collect::<BTreeMap<_, _>>();
     for container in containers {
-        let group = groups
-            .entry(container.log_group.clone())
-            .or_insert_with(|| LogGroupStatus {
+        let service = services
+            .entry(container.service.clone())
+            .or_insert_with(|| ServiceStatus {
                 last_received: None,
                 live: false,
             });
-        group.live |= container.state == Some(crate::model::ContainerState::Running);
+        service.live |= container.state == Some(crate::model::ContainerState::Running);
     }
-    groups
+    services
 }
 
 #[cfg(test)]
@@ -125,11 +125,11 @@ mod tests {
     use super::*;
     use crate::model::{ContainerState, ContainerSummary};
 
-    fn container(log_group: &str, state: ContainerState) -> ContainerSummary {
+    fn container(service: &str, state: ContainerState) -> ContainerSummary {
         ContainerSummary {
-            id: format!("{log_group}-{state:?}"),
-            name: log_group.into(),
-            log_group: log_group.into(),
+            id: format!("{service}-{state:?}"),
+            name: service.into(),
+            service: service.into(),
             image: String::new(),
             image_sha: String::new(),
             ports: Vec::new(),
@@ -141,7 +141,7 @@ mod tests {
 
     #[test]
     fn merges_container_liveness_into_stored_groups() {
-        let groups = merge_log_groups(
+        let groups = merge_services(
             BTreeMap::from([("api".to_string(), 42)]),
             vec![
                 container("api", ContainerState::Exited),
@@ -155,14 +155,14 @@ mod tests {
             BTreeMap::from([
                 (
                     "api".into(),
-                    LogGroupStatus {
+                    ServiceStatus {
                         last_received: Some(42),
                         live: true,
                     },
                 ),
                 (
                     "worker".into(),
-                    LogGroupStatus {
+                    ServiceStatus {
                         last_received: None,
                         live: false,
                     },
@@ -174,8 +174,8 @@ mod tests {
 
 pub async fn query(
     State(state): State<AppState>,
-    Path(log_group): Path<String>,
+    Path(service): Path<String>,
     Query(query): Query<LogQuery>,
 ) -> AppResult<Json<LogPage>> {
-    Ok(Json(state.logs.query(&log_group, query.filter()?).await?))
+    Ok(Json(state.logs.query(&service, query.filter()?).await?))
 }

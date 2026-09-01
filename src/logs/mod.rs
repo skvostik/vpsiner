@@ -16,7 +16,7 @@ use crate::logs::store::LogStore;
 
 pub use helpers::{
     database_week_start_ms, decode_cursor, detect_level, encode_cursor, format_timestamp_ms,
-    parse_docker_timestamp, safe_group_path, sanitize_fts_query, strip_ansi_escape_codes,
+    parse_docker_timestamp, safe_service_path, sanitize_fts_query, strip_ansi_escape_codes,
     week_database_name,
 };
 
