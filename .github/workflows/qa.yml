@@ -5,6 +5,14 @@ on:
     types:
       - opened
       - synchronize
+    paths:
+      - frontend/**
+      - src/**
+      - Dockerfile
+      - .dockerignore
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/publish.yml
 
 permissions:
   contents: read
