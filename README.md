@@ -82,7 +82,7 @@ Mounting the Docker socket is the simplest way to get started, but it gives the
 container powerful access to Docker. For a long-running setup, use a Docker
 socket proxy and set `VPSINER_DOCKER_HOST` to its HTTP endpoint.
 
-See the [Docker socket Compose example](examples/docker-socket/docker-compose.yml)
+See the [Docker Compose example](examples/vpsiner/docker-compose.yml)
 for a sample setup.
 
 VPSiner has no authentication or authorization, and none is planned. Do not
