@@ -239,6 +239,18 @@ Open [http://localhost:5100](http://localhost:5100). The Vite development server
 forwards `/api` requests to the backend on port `3000`. The backend needs access
 to Docker through the local socket or `VPSINER_DOCKER_HOST`.
 
+For a quick production-like local smoke test (including Docker socket proxy), run:
+
+```bash
+docker compose -f examples/vpsiner/docker-compose.yml up --build -d
+```
+
+Then open [http://localhost:3000](http://localhost:3000). Stop it with:
+
+```bash
+docker compose -f examples/vpsiner/docker-compose.yml down
+```
+
 To build the same complete image used for releases:
 
 ```bash

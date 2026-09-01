@@ -1,10 +1,28 @@
 services:
-  proxy:
+
+  vpsiner:
+    build:
+      context: ../..
+    image: vpsiner:local
+    restart: unless-stopped
+    environment:
+      VPSINER_DOCKER_HOST: "http://docker-proxy:2375"
+      MIMALLOC_SHOW_STATS: "1" # Print mimalloc allocator stats when vpsiner exits (for example on docker compose stop)
+    depends_on:
+      - docker-proxy
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./../../data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: 2
+
+  docker-proxy:
     image: lscr.io/linuxserver/socket-proxy:latest
     restart: unless-stopped
-    network_mode: bridge
-    ports:
-      - "127.0.0.1:2375:2375"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
