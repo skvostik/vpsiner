@@ -58,6 +58,8 @@ async fn async_main() {
         .without_time()
         .init();
 
+    tracing::info!(pid = std::process::id(), "vpsiner process started");
+
     tracing::info!(
         num_workers = tokio::runtime::Handle::current().metrics().num_workers(),
         "tokio runtime worker-thread allocation"

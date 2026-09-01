@@ -3,6 +3,11 @@ name = "vpsiner"
 version = "0.0.1"
 edition = "2024"
 
+[profile.profiling]
+inherits = "release" # Copies optimization settings from release
+debug = true         # Keeps full debug symbols
+strip = false        # Prevents removing symbols
+
 [dependencies]
 axum = { version = "0.8", features = ["macros"] }
 tokio = { version = "1.47", features = ["full"] }
