@@ -1,10 +1,18 @@
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use sysinfo::{Disks, Networks, System};
+use sysinfo::{CpuRefreshKind, Disks, MemoryRefreshKind, Networks, RefreshKind, System};
 
 use crate::error::{AppError, AppResult};
 use crate::model::HostSample;
+
+/// Only CPU usage and memory are read from `System`, so the (expensive) process list is
+/// never collected.
+fn host_refresh_kind() -> RefreshKind {
+    RefreshKind::nothing()
+        .with_cpu(CpuRefreshKind::everything())
+        .with_memory(MemoryRefreshKind::everything())
+}
 
 /// Host-level metrics source (sysinfo in production).
 #[cfg_attr(test, mockall::automock)]
@@ -16,12 +24,16 @@ pub trait HostMetricsSource: Send + Sync + 'static {
 /// sysinfo-backed implementation.
 pub struct SysinfoHost {
     system: Arc<Mutex<System>>,
+    networks: Arc<Mutex<Networks>>,
+    disks: Arc<Mutex<Disks>>,
 }
 
 impl Default for SysinfoHost {
     fn default() -> Self {
         Self {
-            system: Arc::new(Mutex::new(System::new_all())),
+            system: Arc::new(Mutex::new(System::new_with_specifics(host_refresh_kind()))),
+            networks: Arc::new(Mutex::new(Networks::new())),
+            disks: Arc::new(Mutex::new(Disks::new())),
         }
     }
 }
@@ -30,13 +42,18 @@ impl Default for SysinfoHost {
 impl HostMetricsSource for SysinfoHost {
     async fn sample(&self) -> AppResult<HostSample> {
         let system = self.system.clone();
+        let networks = self.networks.clone();
+        let disks = self.disks.clone();
         tokio::task::spawn_blocking(move || {
             let mut system = system
                 .lock()
                 .map_err(|err| AppError::Host(format!("sysinfo lock poisoned: {err}")))?;
-            system.refresh_all();
+            system.refresh_specifics(host_refresh_kind());
 
-            let networks = Networks::new_with_refreshed_list();
+            let mut networks = networks
+                .lock()
+                .map_err(|err| AppError::Host(format!("sysinfo networks lock poisoned: {err}")))?;
+            networks.refresh(true);
             let (net_rx, net_tx) = networks.values().fold((0_u64, 0_u64), |totals, network| {
                 (
                     totals.0.saturating_add(network.total_received()),
@@ -44,7 +61,10 @@ impl HostMetricsSource for SysinfoHost {
                 )
             });
 
-            let disks = Disks::new_with_refreshed_list();
+            let mut disks = disks
+                .lock()
+                .map_err(|err| AppError::Host(format!("sysinfo disks lock poisoned: {err}")))?;
+            disks.refresh(true);
             let (storage_used, storage_total) = disks
                 .list()
                 .iter()
