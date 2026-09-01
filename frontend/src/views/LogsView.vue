@@ -28,6 +28,7 @@ type LogsState = {
   tailing: ComputedRef<boolean>
   freshKeys: Ref<Set<string>>
   error: Ref<string>
+  queryTooShort: Ref<boolean>
   loadLogs: () => Promise<void>
   loadMore: () => Promise<void>
   loadNewer: () => Promise<void>
@@ -63,6 +64,7 @@ const {
   tailing,
   freshKeys,
   error,
+  queryTooShort,
   loadLogs,
   loadMore,
   loadNewer,
@@ -147,6 +149,7 @@ onMounted(() => {
       :expanded="filtersExpanded"
       :custom-from="customFrom"
       :custom-to="customTo"
+      :query-too-short="queryTooShort"
       @update:query="updateQuery"
       @update:level="updateLevel"
       @update:stream="updateStream"

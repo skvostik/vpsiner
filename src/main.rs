@@ -55,6 +55,7 @@ async fn async_main() {
     tracing_subscriber::fmt()
         .with_env_filter(log_filter)
         .with_target(false)
+        .without_time()
         .init();
 
     tracing::info!(
@@ -78,9 +79,24 @@ async fn async_main() {
     }
 
     // Composition root: concrete implementations are chosen here and nowhere else.
-    let metadata = Arc::new(SqliteLogMetadataStore::new(
-        config.data_path.join("metadata.db"),
-    ));
+    let metadata = Arc::new(
+        SqliteLogMetadataStore::connect(
+            config.data_path.join("metadata.db"),
+            config.sqlite_cache_size_kb,
+            config.sqlite_busy_timeout,
+        )
+        .await
+        .expect("failed to open metadata database"),
+    );
+    let metrics = Arc::new(
+        SqliteMetricsStore::connect(
+            config.data_path.join("metrics.db"),
+            config.sqlite_cache_size_kb,
+            config.sqlite_busy_timeout,
+        )
+        .await
+        .expect("failed to open metrics database"),
+    );
     let state = AppState::new(
         config.clone(),
         Arc::new(BollardDocker::new(
@@ -99,8 +115,13 @@ async fn async_main() {
             metadata.clone(),
             config.retention_weeks,
         )),
-        Arc::new(SqliteMetricsStore::new(config.data_path.join("metrics.db"))),
-        Arc::new(SqliteLogStore::new(config.data_path.join("logs"))),
+        metrics,
+        Arc::new(SqliteLogStore::new(
+            config.data_path.join("logs"),
+            config.sqlite_cache_size_kb,
+            config.sqlite_busy_timeout,
+            config.sqlite_keep_alive,
+        )),
         metadata,
         Arc::new(SysinfoHost::default()),
     );
@@ -140,6 +161,9 @@ async fn async_main() {
         config.log_flush_keep_alive,
     ));
 
+    let metadata_store = state.metadata.clone();
+    let metrics_store = state.metrics.clone();
+    let logs_store = state.logs.clone();
     let app = build_router(state, &config);
 
     let listener = tokio::net::TcpListener::bind(addr)
@@ -147,8 +171,38 @@ async fn async_main() {
         .expect("failed to bind TCP listener");
 
     axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
         .await
         .expect("server failed to start");
+
+    logs_store.close().await;
+    metrics_store.close().await;
+    metadata_store.close().await;
+}
+
+async fn shutdown_signal() {
+    let interrupt = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to listen for interrupt signal");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to listen for terminate signal")
+            .recv()
+            .await;
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = interrupt => {}
+        _ = terminate => {}
+    }
+
+    tracing::info!("shutdown signal received");
 }
 
 fn build_router(state: AppState, config: &Config) -> Router {
@@ -203,6 +257,9 @@ mod tests {
             log_channel_capacity: 10_000,
             samples_channel_capacity: 32,
             docker_events_channel_capacity: 256,
+            sqlite_cache_size_kb: 1_024,
+            sqlite_busy_timeout: std::time::Duration::from_secs(5),
+            sqlite_keep_alive: std::time::Duration::from_secs(300),
         }
     }
 

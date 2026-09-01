@@ -13,6 +13,22 @@ import type {
   UiConfig,
 } from './types'
 
+type ErrorResponse = {
+  error?: unknown
+  code?: unknown
+}
+
+export class ApiError extends Error {
+  constructor(
+    public readonly status: number,
+    message: string,
+    public readonly code?: string
+  ) {
+    super(message)
+    this.name = 'ApiError'
+  }
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   let response: Response
   try {
@@ -23,7 +39,13 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   }
   if (response.status === 502 || response.status === 503 || response.status === 504)
     reportBackendUnreachable()
-  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as ErrorResponse | null
+    const message =
+      typeof body?.error === 'string' ? body.error : `${response.status} ${response.statusText}`
+    const code = typeof body?.code === 'string' ? body.code : undefined
+    throw new ApiError(response.status, message, code)
+  }
   return response.status === 204 ? (undefined as T) : response.json()
 }
 

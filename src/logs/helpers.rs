@@ -199,6 +199,54 @@ pub fn format_timestamp_ms(ts_ms: i64) -> String {
         .unwrap_or_else(|_| "invalid timestamp".to_string())
 }
 
+pub fn sanitize_fts_query(raw: &str) -> Option<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+
+    for ch in raw.chars() {
+        match ch {
+            '"' => {
+                if in_quotes {
+                    in_quotes = false;
+                    if !current.is_empty() {
+                        tokens.push(std::mem::take(&mut current));
+                    }
+                } else {
+                    if !current.is_empty() {
+                        tokens.push(std::mem::take(&mut current));
+                    }
+                    in_quotes = true;
+                }
+            }
+            ch if ch.is_whitespace() && !in_quotes => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            ch => {
+                current.push(ch);
+            }
+        }
+    }
+
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+
+    if tokens.is_empty() {
+        return None;
+    }
+
+    let query = tokens
+        .into_iter()
+        .map(|token| format!("\"{}\"", token.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+
+    Some(query)
+}
+
 pub fn safe_group_path(log_group: &str) -> String {
     log_group
         .split(['/', '\\'])
@@ -321,6 +369,37 @@ mod tests {
             Some(LogLevel::Debug)
         );
         assert_eq!(detect_level("level=30 something"), Some(LogLevel::Info));
+    }
+
+    #[test]
+    fn sanitizes_fts_queries() {
+        assert_eq!(
+            sanitize_fts_query(r#"q="some=value with spaces" another"#),
+            Some(r#""q=" OR "some=value with spaces" OR "another""#.into())
+        );
+        assert_eq!(
+            sanitize_fts_query(r#""some=value with spaces" another"#),
+            Some(r#""some=value with spaces" OR "another""#.into())
+        );
+        assert_eq!(
+            sanitize_fts_query(r#""missing trailing quote"#),
+            Some(r#""missing trailing quote""#.into())
+        );
+        assert_eq!(
+            sanitize_fts_query("hello   world"),
+            Some(r#""hello" OR "world""#.into())
+        );
+        assert_eq!(
+            sanitize_fts_query(r#"timeout OR"#),
+            Some(r#""timeout" OR "OR""#.into())
+        );
+        assert_eq!(
+            sanitize_fts_query(r#"foo"bar"#),
+            Some(r#""foo" OR "bar""#.into())
+        );
+        assert_eq!(sanitize_fts_query(""), None);
+        assert_eq!(sanitize_fts_query("   "), None);
+        assert_eq!(sanitize_fts_query(r#""""#), None);
     }
 
     #[test]
