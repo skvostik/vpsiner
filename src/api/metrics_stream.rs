@@ -1,6 +1,6 @@
 //! SSE versions of the time-series metrics endpoints. Unlike `stream.rs`'s snapshot/diff
-//! endpoints, these are parameterized per connection (`from`/`resolution`, and `log_group`
-//! for the per-group endpoint) and driven by `BucketWatcher`, not a data-change signal: a new
+//! endpoints, these are parameterized per connection (`from`/`resolution`, and `service`
+//! for the per-service endpoint) and driven by `BucketWatcher`, not a data-change signal: a new
 //! point only exists once wall-clock time crosses the next completed bucket for that resolution.
 //! There is no `to` — a live stream always runs up to the server's own "now" and keeps going.
 
@@ -158,7 +158,7 @@ pub async fn containers(
                         .query_containers(range, resolution)
                         .await
                         .unwrap_or_default();
-                    let last_sent = latest_ts_by_log_group(&series).unwrap_or(range.from);
+                    let last_sent = latest_ts_by_service(&series).unwrap_or(range.from);
                     let event = to_event(Some("snapshot"), &series);
                     Some((
                         event,
@@ -182,7 +182,7 @@ pub async fn containers(
                             .query_containers(range, resolution)
                             .await
                             .unwrap_or_default();
-                        let cross_section = cross_section_by_log_group(series);
+                        let cross_section = cross_section_by_service(series);
                         if cross_section.is_empty() {
                             continue;
                         }
@@ -220,7 +220,7 @@ enum ContainerStreamState {
 
 pub async fn container(
     State(state): State<AppState>,
-    Path(log_group): Path<String>,
+    Path(service): Path<String>,
     Query(query): Query<MetricsStreamQuery>,
 ) -> AppResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
     let (range, resolution) = query.parse()?;
@@ -228,30 +228,28 @@ pub async fn container(
     let rx = state.bucket_watcher.subscribe(resolution);
 
     let stream = stream::unfold(
-        ContainerStreamState::Initial(metrics, rx, log_group, range, resolution),
+        ContainerStreamState::Initial(metrics, rx, service, range, resolution),
         |current_state| async move {
             match current_state {
-                ContainerStreamState::Initial(metrics, rx, log_group, range, resolution) => {
+                ContainerStreamState::Initial(metrics, rx, service, range, resolution) => {
                     let group_metrics = metrics
-                        .query_container(&log_group, range, resolution)
+                        .query_container(&service, range, resolution)
                         .await
                         .unwrap_or(crate::model::ContainerGroupMetrics {
                             sum: Vec::new(),
                             containers: HashMap::new(),
                         });
-                    let last_sent = latest_ts_in_group(&group_metrics).unwrap_or(range.from);
+                    let last_sent = latest_ts_in_service(&group_metrics).unwrap_or(range.from);
                     let event = to_event(Some("snapshot"), &group_metrics);
                     Some((
                         event,
-                        ContainerStreamState::Waiting(
-                            metrics, rx, log_group, last_sent, resolution,
-                        ),
+                        ContainerStreamState::Waiting(metrics, rx, service, last_sent, resolution),
                     ))
                 }
                 ContainerStreamState::Waiting(
                     metrics,
                     mut rx,
-                    log_group,
+                    service,
                     mut last_sent,
                     resolution,
                 ) => loop {
@@ -267,7 +265,7 @@ pub async fn container(
                         to: bucket_end,
                     };
                     let group_metrics = metrics
-                        .query_container(&log_group, range, resolution)
+                        .query_container(&service, range, resolution)
                         .await
                         .unwrap_or(crate::model::ContainerGroupMetrics {
                             sum: Vec::new(),
@@ -288,9 +286,7 @@ pub async fn container(
                     let event = to_event(Some("append"), &append);
                     return Some((
                         event,
-                        ContainerStreamState::Waiting(
-                            metrics, rx, log_group, last_sent, resolution,
-                        ),
+                        ContainerStreamState::Waiting(metrics, rx, service, last_sent, resolution),
                     ));
                 },
             }
@@ -300,23 +296,25 @@ pub async fn container(
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
-fn latest_ts_by_log_group(series: &HashMap<String, Vec<GroupPoint>>) -> Option<TimestampMs> {
+fn latest_ts_by_service(series: &HashMap<String, Vec<GroupPoint>>) -> Option<TimestampMs> {
     series
         .values()
         .filter_map(|points| points.last().map(|point| point.ts))
         .max()
 }
 
-fn cross_section_by_log_group(
+fn cross_section_by_service(
     series: HashMap<String, Vec<GroupPoint>>,
 ) -> HashMap<String, GroupPoint> {
     series
         .into_iter()
-        .filter_map(|(log_group, mut points)| points.pop().map(|point| (log_group, point)))
+        .filter_map(|(service, mut points)| points.pop().map(|point| (service, point)))
         .collect()
 }
 
-fn latest_ts_in_group(group_metrics: &crate::model::ContainerGroupMetrics) -> Option<TimestampMs> {
+fn latest_ts_in_service(
+    group_metrics: &crate::model::ContainerGroupMetrics,
+) -> Option<TimestampMs> {
     let sum_ts = group_metrics.sum.last().map(|point| point.ts);
     let containers_ts = group_metrics
         .containers

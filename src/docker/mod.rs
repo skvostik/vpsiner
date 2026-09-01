@@ -446,10 +446,7 @@ fn spawn_container_log_task(
     retention_weeks: u32,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let since_secs = match metadata
-            .checkpoint(&container.log_group, &container.id)
-            .await
-        {
+        let since_secs = match metadata.checkpoint(&container.service, &container.id).await {
             Ok(Some(checkpoint)) => checkpoint.ts.div_euclid(1_000) as i32,
             // No checkpoint yet: backfill from the start of the current retention window,
             // since that's the oldest data we'd keep anyway.
@@ -477,13 +474,13 @@ fn spawn_container_log_task(
             let lines = match result {
                 Ok(LogOutput::StdOut { message }) => map_log_output(
                     container.id.clone(),
-                    container.log_group.clone(),
+                    container.service.clone(),
                     message,
                     LogStream::Stdout,
                 ),
                 Ok(LogOutput::StdErr { message }) => map_log_output(
                     container.id.clone(),
-                    container.log_group.clone(),
+                    container.service.clone(),
                     message,
                     LogStream::Stderr,
                 ),
@@ -547,7 +544,7 @@ fn spawn_sample_observer(
                         match sample_container_stats(&docker, &container.id, request_timeout).await {
                             Ok(stats) => Some(ContainerSample {
                                 ts: collection_ts,
-                                log_group: container.log_group,
+                                service: container.service,
                                 cid: stats.cid,
                                 cpu_pct: stats.cpu_pct,
                                 mem_used: stats.mem_used,

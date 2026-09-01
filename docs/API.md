@@ -21,7 +21,7 @@ Rate rules, applying to every endpoint:
 
 ### Metrics bucket semantics
 
-Applies to the three time-series endpoints (`/api/metrics/host`, `/api/metrics/containers/{log_group}`, `/api/metrics/containers`). It does **not** apply to `/api/metrics/current`, which returns latest values rather than buckets.
+Applies to the three time-series endpoints (`/api/metrics/host`, `/api/metrics/containers/{service}`, `/api/metrics/containers`). It does **not** apply to `/api/metrics/current`, which returns latest values rather than buckets.
 
 - `resolution` is a **required** query parameter; allowed values are `10s`, `1m`, `5m`, and `1h`. There is no un-downsampled/"raw" mode — `10s` is simply the finest fixed bucket size and follows the same rules as the others. Missing or invalid `resolution` returns `400 Bad Request`.
 - Samples are grouped into half-open, epoch-aligned buckets: `(bucket_end - resolution, bucket_end]`, where `bucket_end = ceil(ts_ms / bucket_size_ms) * bucket_size_ms`. Bucket boundaries are anchored to the Unix epoch, not to the request's `from`. For example, `10s` buckets end on `:00, :10, :20, :30, :40`, or `:50` seconds of each minute; `1m` buckets end on each minute; `1h` buckets end on each hour.
@@ -44,7 +44,7 @@ Example response:
 ```json
 {
   "ok": true,
-  "service": "vpsiner",
+  "app": "vpsiner",
   "version": "0.1.0",
   "port": 8080,
   "sample_interval_ms": 10000,
@@ -53,9 +53,11 @@ Example response:
 }
 ```
 
+`app` is the application name.
+
 `sample_interval_ms` is the metrics sampling interval; clients should not poll metrics endpoints more often than this.
 
-`version` is the service version string.
+`version` is the application version string.
 
 `retention_weeks` is the configured metrics and logs retention window in weeks.
 
@@ -164,12 +166,14 @@ Fields:
 
 ### GET `/api/containers`
 
-Returns containers and their `log_group` values.
+Returns containers and their `service` values.
 
-`log_group` resolution precedence:
-- if container label `vpsiner.log_group` exists and is non-empty, it is used
-- otherwise, if both Docker Compose labels `com.docker.compose.project` and `com.docker.compose.service` exist and are non-empty, `log_group` is `{project}-{service}`
-- otherwise, `log_group` falls back to the container name without a leading slash
+`service` resolution precedence:
+- if container label `vpsiner.service` exists and is non-empty, it is used
+- otherwise, if both Docker Compose labels `com.docker.compose.project` and `com.docker.compose.service` exist and are non-empty, `service` is `{project}-{service}`
+- otherwise, `service` falls back to the container name without a leading slash
+
+Note that a VPSiner `service` is usually coarser than a Docker Compose service, because it combines the Compose project and service names as `{project}-{service}`.
 
 Parameters: none
 
@@ -179,7 +183,7 @@ Example response:
   {
     "id": "8af7d6c1273d",
     "name": "web-1",
-    "log_group": "project-web",
+    "service": "project-web",
     "image": "nginx:latest",
     "image_sha": "sha256:abcd...",
     "ports": ["80:80", "443:443"],
@@ -190,7 +194,7 @@ Example response:
   {
     "id": "5aa2bca1f0db",
     "name": "db-1",
-    "log_group": "project-db",
+    "service": "project-db",
     "image": "mysql:8",
     "image_sha": "sha256:efgh...",
     "ports": ["3306:3306"],
@@ -317,7 +321,7 @@ Example response:
 
 ### GET `/api/metrics/current`
 
-Returns the latest known value for the host, for every currently sampled container, and for every `log_group`. This is the endpoint to use for list and overview UIs that need one current number per entity; it is not a time series and cannot be used to plot history.
+Returns the latest known value for the host, for every currently sampled container, and for every `service`. This is the endpoint to use for list and overview UIs that need one current number per entity; it is not a time series and cannot be used to plot history.
 
 The records are the same `HostPoint`, `ContainerPoint`, and `GroupPoint` types the time-series endpoints return, so clients can share one model. See "Metrics point semantics" above for the rate rules.
 
@@ -332,14 +336,14 @@ Timestamps:
 Staleness:
 - records whose `ts` is older than three times `sample_interval_ms` (see `GET /api/health`) are omitted
 - `host` is `null` when no recent host sample exists, including before the first sample after startup
-- `containers` and `log_groups` are empty objects when no container has been sampled recently, for example when no containers are running
+- `containers` and `services` are empty objects when no container has been sampled recently, for example when no containers are running
 - clients MUST treat `null` `host` and empty objects as valid successful responses
 - a container that stops disappears from `containers` within the staleness window
 
 Aggregation:
 - keys under `containers` are container IDs
-- `log_groups` is derived by summing the entries in `containers` that share a `log_group`
-- a `log_groups` entry's `ts` is the greatest `ts` among its containers
+- `services` is derived by summing the entries in `containers` that share a `service`
+- a `services` entry's `ts` is the greatest `ts` among its containers
 
 Polling:
 - clients SHOULD NOT poll more often than `sample_interval_ms` from `GET /api/health`
@@ -369,7 +373,7 @@ Example response:
   "containers": {
     "8af7d6c1273d": {
       "ts": 1720003600000,
-      "log_group": "project-web",
+      "service": "project-web",
       "cpu_pct": 12.8,
       "mem_used": 402653184,
       "mem_limit": 1073741824,
@@ -380,7 +384,7 @@ Example response:
     },
     "91bc832df407": {
       "ts": 1720003600000,
-      "log_group": "project-web",
+      "service": "project-web",
       "cpu_pct": 7.6,
       "mem_used": 301989888,
       "mem_limit": 1073741824,
@@ -390,7 +394,7 @@ Example response:
       "blk_write_rate": 3300.0
     }
   },
-  "log_groups": {
+  "services": {
     "project-web": {
       "ts": 1720003600000,
       "cpu_pct": 20.4,
@@ -410,28 +414,28 @@ Empty response example, valid when nothing has been sampled recently:
 {
   "host": null,
   "containers": {},
-  "log_groups": {}
+  "services": {}
 }
 ```
 
 ---
 
-## 7) Metrics for a specific log group
+## 7) Metrics for a specific service
 
-### GET `/api/metrics/containers/{log_group}?from={ts}&to={ts}&resolution={r}`
+### GET `/api/metrics/containers/{service}?from={ts}&to={ts}&resolution={r}`
 
-Returns container metrics for a single `log_group`.
+Returns container metrics for a single `service`.
 
 The response contains:
-- `sum`: one time series aggregated across all container IDs in this `log_group` at each timestamp
+- `sum`: one time series aggregated across all container IDs in this `service` at each timestamp
 - `containers`: individual time series keyed by container ID, for viewing each sampled container separately
 
-`sum` aggregates the metric values for all container samples in the `log_group` that share a timestamp.
+`sum` aggregates the metric values for all container samples in the `service` that share a timestamp.
 
 Metric semantics:
 - `cpu_pct` is the container CPU utilization during the sample interval, expressed as a percentage of total host logical CPU capacity
 - a container using one full logical CPU on a host with `N` logical CPUs contributes approximately `100 / N` to `cpu_pct`
-- aggregated `cpu_pct` values are summed by timestamp, so group CPU usage is comparable to host CPU usage and normally does not exceed `100`, aside from sampling jitter
+- aggregated `cpu_pct` values are summed by timestamp, so service CPU usage is comparable to host CPU usage and normally does not exceed `100`, aside from sampling jitter
 - `mem_used` and `mem_limit` are byte values
 - `net_rx_rate`, `net_tx_rate`, `blk_read_rate`, and `blk_write_rate` are bytes per second; see "Metrics point semantics" above
 
@@ -440,8 +444,8 @@ Aggregation rules:
 - a `sum` data point at timestamp `ts` includes only container buckets with that timestamp
 - missing container samples are not interpolated
 - no synthetic zero-valued container samples are generated
-- because rates rather than counters are summed, a container entering or leaving the group mid-range does not produce a spike in `sum`
-- `containers` includes container IDs with metric samples for the requested `log_group` and time range
+- because rates rather than counters are summed, a container entering or leaving the service mid-range does not produce a spike in `sum`
+- `containers` includes container IDs with metric samples for the requested `service` and time range
 
 Ordering:
 - `sum` samples MUST be returned in ascending timestamp order: `ts ASC`
@@ -453,7 +457,7 @@ Default values:
 - `from`, `to`, and `resolution` are required
 
 Parameters:
-- `log_group` (path): `log_group` from `/api/containers`
+- `service` (path): `service` from `/api/containers`
 - `from` (query): start time in ms
 - `to` (query): end time in ms
 - `resolution` (query, required): returned sample resolution; allowed values: `10s`, `1m`, `5m`, `1h`
@@ -482,7 +486,7 @@ Example response:
     "8af7d6c1273d": [
       {
         "ts": 1720000000000,
-        "log_group": "project-web",
+        "service": "project-web",
         "cpu_pct": 12.8,
         "mem_used": 402653184,
         "mem_limit": 1073741824,
@@ -495,7 +499,7 @@ Example response:
     "91bc832df407": [
       {
         "ts": 1720000000000,
-        "log_group": "project-web",
+        "service": "project-web",
         "cpu_pct": 7.6,
         "mem_used": 301989888,
         "mem_limit": 1073741824,
@@ -511,18 +515,18 @@ Example response:
 
 Notes:
 - the keys under `containers` are container IDs
-- `sum` data points do not include `log_group`, because the group is given by the request path
-- `containers` data points include `log_group` so they match the records returned by `/api/metrics/current`
+- `sum` data points do not include `service`, because the service is given by the request path
+- `containers` data points include `service` so they match the records returned by `/api/metrics/current`
 
 ---
 
-## 8) Aggregate metrics for all container log groups
+## 8) Aggregate metrics for all container services
 
 ### GET `/api/metrics/containers?from={ts}&to={ts}&resolution={r}`
 
-Returns aggregate container metrics for all `log_group` values during the given interval.
+Returns aggregate container metrics for all `service` values during the given interval.
 
-The response is keyed by `log_group`. Each value is the aggregated time series for that group, using the same summing rules as the `sum` field from `/api/metrics/containers/{log_group}`.
+The response is keyed by `service`. Each value is the aggregated time series for that service, using the same summing rules as the `sum` field from `/api/metrics/containers/{service}`.
 
 Metric semantics:
 - `cpu_pct` uses the same host-normalized scale as `HostPoint.cpu_pct`
@@ -530,16 +534,16 @@ Metric semantics:
 - `mem_used` and `mem_limit` are byte values; `*_rate` fields are bytes per second
 
 Aggregation rules:
-- each `log_group` time series is computed by grouping the per-container buckets by exact `log_group` and `ts`, then summing all numeric fields
-- a group data point at timestamp `ts` includes only container buckets with that timestamp
+- each `service` time series is computed by grouping the per-container buckets by exact `service` and `ts`, then summing all numeric fields
+- a service data point at timestamp `ts` includes only container buckets with that timestamp
 - missing container samples are not interpolated
 - no synthetic zero-valued container samples are generated
-- because rates rather than counters are summed, a container entering or leaving a group mid-range does not produce a spike
+- because rates rather than counters are summed, a container entering or leaving a service mid-range does not produce a spike
 
 Ordering:
-- each `log_group` time series MUST be returned in ascending timestamp order: `ts ASC`
+- each `service` time series MUST be returned in ascending timestamp order: `ts ASC`
 
-Downsampling: see "Metrics bucket semantics" above. Each group series is calculated from downsampled container series by bucket timestamp.
+Downsampling: see "Metrics bucket semantics" above. Each service series is calculated from downsampled container series by bucket timestamp.
 
 Default values:
 - `from`, `to`, and `resolution` are required
@@ -586,21 +590,21 @@ Example response:
 
 ---
 
-## 9) List log groups
+## 9) List services
 
 ### GET `/api/logs`
 
-Returns known `log_group` values with the timestamp of the newest log line and current live status. Groups known only from Docker are included even when no logs have been stored yet.
+Returns known `service` values with the timestamp of the newest log line and current live status. Services known only from Docker are included even when no logs have been stored yet.
 
 Parameters: none
 
 Ordering:
-- object keys are emitted in ascending `log_group` order for stable responses
+- object keys are emitted in ascending `service` order for stable responses
 
 Notes:
-- `last_received` is `null` when the group has no log lines
-- `last_received` is the greatest `ts` in the group
-- `live` is `true` when at least one container in the group is currently running
+- `last_received` is `null` when the service has no log lines
+- `last_received` is the greatest `ts` in the service
+- `live` is `true` when at least one container in the service is currently running
 
 Example response:
 ```json
@@ -615,11 +619,11 @@ Example response:
 
 ## 10) Query logs
 
-### GET `/api/logs/{log_group}?from={ts}&to={ts}&q={text}&level={lvl}&stream={s}&limit={n}&before={token}&after={token}`
+### GET `/api/logs/{service}?from={ts}&to={ts}&q={text}&level={lvl}&stream={s}&limit={n}&before={token}&after={token}`
 
-Returns paginated logs for the given group.
+Returns paginated logs for the given service.
 
-Each log line includes its `log_group`, source container ID, and a single text field (`line`) with ANSI/VT100 color escape sequences removed. `q` is sanitized on the backend and matched case-insensitively against `line`. The backend does not parse any other structured fields out of the text — that is left up to clients.
+Each log line includes its `service`, source container ID, and a single text field (`line`) with ANSI/VT100 color escape sequences removed. `q` is sanitized on the backend and matched case-insensitively against `line`. The backend does not parse any other structured fields out of the text — that is left up to clients.
 
 `q` matches arbitrary substrings, including across punctuation, but only substrings of 3 or more characters can match; shorter tokens never match any row. Search queries in `q` are parsed into whitespace-separated tokens or quoted phrases (e.g. `"some=value with spaces"`), treated as literal substrings, and combined with `OR`. Missing trailing quotes are automatically closed.
 
@@ -639,7 +643,7 @@ Pagination:
 - `has_newer` indicates whether there are more matching logs newer than `newer_cursor` at response time
 - if an `after` request returns no new items, `newer_cursor` repeats the submitted `after` cursor so clients can continue polling with the response cursor; `older_cursor` is `null`, `has_older` is `false`, and `has_newer` is `false`
 - cursors do not encode filter values, but `has_older`/`has_newer` are only accurate when the filter (`from`, `to`, `q`, `level`, `stream`) matches the request that produced the cursor; clients MUST discard `before`/`after` cursors and issue a fresh unpaginated request when changing filters
-- cursors are intended for the same `log_group`; clients MUST NOT reuse a cursor from one `log_group` with another `log_group`
+- cursors are intended for the same `service`; clients MUST NOT reuse a cursor from one `service` with another `service`
 
 Default values for this endpoint:
 - `level`: no filtering
@@ -649,7 +653,7 @@ Default values for this endpoint:
 - `q` / `before` / `after`: no default values
 
 Parameters:
-- `log_group` (path): log group
+- `service` (path): service
 - `from` (optional): start filter time in ms; default: none (no lower bound)
 - `to` (optional): end filter time in ms; default: none (no upper bound)
 - `q` (optional): text search filter against `line`; whitespace-separated tokens or quoted phrases matched with `OR`; default: none
@@ -670,7 +674,7 @@ Example response:
   "items": [
     {
       "ts": 1720000234567,
-      "log_group": "project-web",
+      "service": "project-web",
       "cid": "8af7d6c1273d",
       "stream": "stdout",
       "level": "info",
@@ -678,7 +682,7 @@ Example response:
     },
     {
       "ts": 1720000241000,
-      "log_group": "project-web",
+      "service": "project-web",
       "cid": "91bc832df407",
       "stream": "stderr",
       "level": "error",
@@ -693,7 +697,7 @@ Example response:
 ```
 
 Notes:
-- `items` contains log entries with `log_group`, `cid`, `stream`, `level`, and `line` values
+- `items` contains log entries with `service`, `cid`, `stream`, `level`, and `line` values
 - if `has_older` is `true`, the request can be repeated with `before=older_cursor` to fetch the next older page
 - `newer_cursor` can be used with `after=newer_cursor` for live polling even when `has_newer` is `false`; the response may contain an empty `items` array when no newer logs exist yet
 - if an `after` request returns no new items, `newer_cursor` repeats the submitted `after` cursor
@@ -729,7 +733,7 @@ Accept: text/event-stream
 
 Example event (identical payload shape to `GET /api/metrics/current`):
 ```
-data: {"host":{"ts":1720003600000,"cpu_pct":21.4,"mem_used":2147483648,"mem_total":8589934592,"storage_used":104857600,"storage_total":536870912,"metrics_size":5242880,"logs_size":73400320,"net_rx_rate":15432.0,"net_tx_rate":9650.0,"disk_read_rate":2000.0,"disk_write_rate":1500.0},"containers":{},"log_groups":{}}
+data: {"host":{"ts":1720003600000,"cpu_pct":21.4,"mem_used":2147483648,"mem_total":8589934592,"storage_used":104857600,"storage_total":536870912,"metrics_size":5242880,"logs_size":73400320,"net_rx_rate":15432.0,"net_tx_rate":9650.0,"disk_read_rate":2000.0,"disk_write_rate":1500.0},"containers":{},"services":{}}
 
 ```
 
@@ -763,10 +767,10 @@ Accept: text/event-stream
 Example events:
 ```
 event: snapshot
-data: [{"id":"8af7d6c1273d","name":"web-1","log_group":"project-web","image":"nginx:latest","image_sha":"sha256:abcd...","ports":["80:80"],"labels":[],"state":"running","started_at":1720003600000}]
+data: [{"id":"8af7d6c1273d","name":"web-1","service":"project-web","image":"nginx:latest","image_sha":"sha256:abcd...","ports":["80:80"],"labels":[],"state":"running","started_at":1720003600000}]
 
 event: diff
-data: {"added":[],"updated":[{"id":"8af7d6c1273d","name":"web-1","log_group":"project-web","image":"nginx:latest","image_sha":"sha256:abcd...","ports":["80:80"],"labels":[],"state":"exited","started_at":1720003600000}],"removed":[]}
+data: {"added":[],"updated":[{"id":"8af7d6c1273d","name":"web-1","service":"project-web","image":"nginx:latest","image_sha":"sha256:abcd...","ports":["80:80"],"labels":[],"state":"exited","started_at":1720003600000}],"removed":[]}
 
 ```
 
@@ -803,12 +807,12 @@ data: {"ts":1720000010000,"cpu_pct":22.1,"mem_used":2148000000,"mem_total":85899
 
 ### GET `/api/stream/metrics/containers?from={ts}&resolution={r}`
 
-Push equivalent of `GET /api/metrics/containers` (aggregate per `log_group`); same parameterization (no `to`, see above) and bucket-append behavior as `/api/stream/metrics/host`.
+Push equivalent of `GET /api/metrics/containers` (aggregate per `service`); same parameterization (no `to`, see above) and bucket-append behavior as `/api/stream/metrics/host`.
 
 Behavior:
-- `snapshot` payload shape matches `GET /api/metrics/containers` exactly (object keyed by `log_group`, each an array of `GroupPoint`)
-- `append` payload is an object keyed by `log_group`, but each value is a single `GroupPoint` (the new bucket's cross-section), not an array — only `log_group`s with data in that bucket are included
-- a `log_group` that first appears mid-window can show up as a new key in a later `append` event; clients should treat first sight of a key as starting a new series
+- `snapshot` payload shape matches `GET /api/metrics/containers` exactly (object keyed by `service`, each an array of `GroupPoint`)
+- `append` payload is an object keyed by `service`, but each value is a single `GroupPoint` (the new bucket's cross-section), not an array — only `service`s with data in that bucket are included
+- a `service` that first appears mid-window can show up as a new key in a later `append` event; clients should treat first sight of a key as starting a new series
 
 Parameters:
 - `from` (required): start time in ms
@@ -824,17 +828,17 @@ data: {"project-web":{"ts":1720000010000,"cpu_pct":21.0,"mem_used":705000000,"me
 
 ```
 
-### GET `/api/stream/metrics/containers/{log_group}?from={ts}&resolution={r}`
+### GET `/api/stream/metrics/containers/{service}?from={ts}&resolution={r}`
 
-Push equivalent of `GET /api/metrics/containers/{log_group}`; same parameterization (no `to`, see above) and bucket-append behavior as the other metrics streams above.
+Push equivalent of `GET /api/metrics/containers/{service}`; same parameterization (no `to`, see above) and bucket-append behavior as the other metrics streams above.
 
 Behavior:
-- `snapshot` payload shape matches `GET /api/metrics/containers/{log_group}` exactly (`{ sum: GroupPoint[], containers: { [id]: ContainerPoint[] } }`)
+- `snapshot` payload shape matches `GET /api/metrics/containers/{service}` exactly (`{ sum: GroupPoint[], containers: { [id]: ContainerPoint[] } }`)
 - `append` payload is `{ sum: GroupPoint | null, containers: { [id]: ContainerPoint } }` — a single cross-section for the newly-completed bucket; an append with `sum: null` and empty `containers` is never sent (skipped instead)
 - a container that starts mid-window appears as a new key under `containers` in a later `append` event
 
 Parameters:
-- `log_group` (path): `log_group` from `/api/containers`
+- `service` (path): `service` from `/api/containers`
 - `from` (required): start time in ms
 - `resolution` (required): returned sample resolution; allowed values: `10s`, `1m`, `5m`, `1h`
 
@@ -847,10 +851,10 @@ Accept: text/event-stream
 Example events:
 ```
 event: snapshot
-data: {"sum":[{"ts":1720000000000,"cpu_pct":20.4,"mem_used":704643072,"mem_limit":2147483648,"net_rx_rate":17500.0,"net_tx_rate":12600.0,"blk_read_rate":8800.0,"blk_write_rate":7400.0}],"containers":{"8af7d6c1273d":[{"ts":1720000000000,"log_group":"project-web","cpu_pct":12.8,"mem_used":402653184,"mem_limit":1073741824,"net_rx_rate":10500.0,"net_tx_rate":7300.0,"blk_read_rate":5200.0,"blk_write_rate":4100.0}]}}
+data: {"sum":[{"ts":1720000000000,"cpu_pct":20.4,"mem_used":704643072,"mem_limit":2147483648,"net_rx_rate":17500.0,"net_tx_rate":12600.0,"blk_read_rate":8800.0,"blk_write_rate":7400.0}],"containers":{"8af7d6c1273d":[{"ts":1720000000000,"service":"project-web","cpu_pct":12.8,"mem_used":402653184,"mem_limit":1073741824,"net_rx_rate":10500.0,"net_tx_rate":7300.0,"blk_read_rate":5200.0,"blk_write_rate":4100.0}]}}
 
 event: append
-data: {"sum":{"ts":1720000010000,"cpu_pct":21.0,"mem_used":705000000,"mem_limit":2147483648,"net_rx_rate":17800.0,"net_tx_rate":12700.0,"blk_read_rate":8900.0,"blk_write_rate":7500.0},"containers":{"8af7d6c1273d":{"ts":1720000010000,"log_group":"project-web","cpu_pct":13.0,"mem_used":403000000,"mem_limit":1073741824,"net_rx_rate":10600.0,"net_tx_rate":7350.0,"blk_read_rate":5250.0,"blk_write_rate":4150.0}}}
+data: {"sum":{"ts":1720000010000,"cpu_pct":21.0,"mem_used":705000000,"mem_limit":2147483648,"net_rx_rate":17800.0,"net_tx_rate":12700.0,"blk_read_rate":8900.0,"blk_write_rate":7500.0},"containers":{"8af7d6c1273d":{"ts":1720000010000,"service":"project-web","cpu_pct":13.0,"mem_used":403000000,"mem_limit":1073741824,"net_rx_rate":10600.0,"net_tx_rate":7350.0,"blk_read_rate":5250.0,"blk_write_rate":4150.0}}}
 
 ```
 
@@ -859,19 +863,19 @@ data: {"sum":{"ts":1720000010000,"cpu_pct":21.0,"mem_used":705000000,"mem_limit"
 Diff-based push equivalent of `GET /api/logs`. Reacts to two independent change sources: a new log line being flushed (moves `last_received`) and a container starting/stopping (flips `live`). Emits the same two named events as `/api/stream/containers`:
 
 - `snapshot` — sent once, immediately on connect. Payload identical in shape to `GET /api/logs`'s response.
-- `diff` — sent whenever any group's status actually changes. Payload:
+- `diff` — sent whenever any service's status actually changes. Payload:
   ```json
   {
-    "added": { "log_group": "LogGroupStatus" },
-    "updated": { "log_group": "LogGroupStatus" },
-    "removed": [ "log_group" ]
+    "added": { "service": "ServiceStatus" },
+    "updated": { "service": "ServiceStatus" },
+    "removed": [ "service" ]
   }
   ```
 
 Parameters: none.
 
 Behavior:
-- `updated` entries are whole replacement records for that `log_group`, not per-field patches
+- `updated` entries are whole replacement records for that `service`, not per-field patches
 - no event is emitted at all when nothing actually changed
 - each connection tracks its own diff baseline independently
 
@@ -891,9 +895,9 @@ data: {"added":{},"updated":{"project-web":{"last_received":1720003600000,"live"
 
 ```
 
-### GET `/api/stream/logs/{log_group}?q={text}&level={lvl}&stream={s}&after={token}`
+### GET `/api/stream/logs/{service}?q={text}&level={lvl}&stream={s}&after={token}`
 
-Filter-aware, forward-only push equivalent of the tailing use of `GET /api/logs/{log_group}` (polling with `after`). This endpoint only replaces tailing — the REST endpoint keeps its full bidirectional cursor-pagination role for initial page loads and scrolling up/down through history.
+Filter-aware, forward-only push equivalent of the tailing use of `GET /api/logs/{service}` (polling with `after`). This endpoint only replaces tailing — the REST endpoint keeps its full bidirectional cursor-pagination role for initial page loads and scrolling up/down through history.
 
 Behavior:
 - no `snapshot` event on connect — the connection performs an immediate first check against the given `after` cursor (self-healing any gap between a client's last REST page load and this connection opening), then waits for further log flushes
@@ -904,11 +908,11 @@ Behavior:
     "newer_cursor": "string | null"
   }
   ```
-- `newer_cursor` lets clients keep their own pagination cursor consistent with what the stream has already delivered, the same way `newer_cursor` works on `GET /api/logs/{log_group}`
+- `newer_cursor` lets clients keep their own pagination cursor consistent with what the stream has already delivered, the same way `newer_cursor` works on `GET /api/logs/{service}`
 - filters (`q`, `level`, `stream`) apply exactly as they do on the REST endpoint; there is no `from`, `to`, `before`, or `limit` — not meaningful for a forward-only tail
 
 Parameters:
-- `log_group` (path): log group
+- `service` (path): service
 - `q` (optional): text search filter against `line`; default: none
 - `level` (optional): comma-separated log levels; default: no filtering
 - `stream` (optional): comma-separated streams; default: no filtering
@@ -923,7 +927,7 @@ Accept: text/event-stream
 Example event:
 ```
 event: append
-data: {"items":[{"ts":1720003600000,"log_group":"project-web","cid":"8af7d6c1273d","stream":"stdout","level":"info","line":"[2024-07-04T12:33:54Z] INFO Request completed in 42ms"}],"newer_cursor":"eyJ0cyI6MTcyMDAwMzYwMDAwMCwid2VlayI6IjIwMjQtVzI3IiwiaWQiOjEyMzQ3fQ=="}
+data: {"items":[{"ts":1720003600000,"service":"project-web","cid":"8af7d6c1273d","stream":"stdout","level":"info","line":"[2024-07-04T12:33:54Z] INFO Request completed in 42ms"}],"newer_cursor":"eyJ0cyI6MTcyMDAwMzYwMDAwMCwid2VlayI6IjIwMjQtVzI3IiwiaWQiOjEyMzQ3fQ=="}
 
 ```
 
@@ -935,7 +939,7 @@ data: {"items":[{"ts":1720003600000,"log_group":"project-web","cid":"8af7d6c1273
 ```json
 {
   "ok": true,
-  "service": "string",
+  "app": "string",
   "version": "string",
   "port": 8080,
   "sample_interval_ms": 10000,
@@ -964,7 +968,7 @@ data: {"items":[{"ts":1720003600000,"log_group":"project-web","cid":"8af7d6c1273
 {
   "id": "string",
   "name": "string",
-  "log_group": "string",
+  "service": "string",
   "image": "string",
   "image_sha": "string",
   "ports": ["string"],
@@ -1005,7 +1009,7 @@ data: {"items":[{"ts":1720003600000,"log_group":"project-web","cid":"8af7d6c1273
 ```json
 {
   "ts": 1234567890123,
-  "log_group": "string",
+  "service": "string",
   "cpu_pct": 12.5,
   "mem_used": 123456789,
   "mem_limit": 456789123,
@@ -1046,14 +1050,14 @@ data: {"items":[{"ts":1720003600000,"log_group":"project-web","cid":"8af7d6c1273
 }
 ```
 
-### `ContainerMetricsByLogGroup`
+### `ContainerMetricsByService`
 ```json
 {
-  "log_group": ["GroupPoint"]
+  "service": ["GroupPoint"]
 }
 ```
 
-### `LogGroupStatus`
+### `ServiceStatus`
 ```json
 {
   "last_received": "number | null",
@@ -1061,11 +1065,11 @@ data: {"items":[{"ts":1720003600000,"log_group":"project-web","cid":"8af7d6c1273
 }
 ```
 
-### `LogGroupDiff`
+### `ServiceDiff`
 ```json
 {
-  "added": { "log_group": "LogGroupStatus" },
-  "updated": { "log_group": "LogGroupStatus" },
+  "added": { "service": "ServiceStatus" },
+  "updated": { "service": "ServiceStatus" },
   "removed": ["string"]
 }
 ```
@@ -1083,7 +1087,7 @@ data: {"items":[{"ts":1720003600000,"log_group":"project-web","cid":"8af7d6c1273
 {
   "host": "HostPoint | null",
   "containers": { "container_id": "ContainerPoint" },
-  "log_groups": { "log_group": "GroupPoint" }
+  "services": { "service": "GroupPoint" }
 }
 ```
 
@@ -1091,7 +1095,7 @@ data: {"items":[{"ts":1720003600000,"log_group":"project-web","cid":"8af7d6c1273
 ```json
 {
   "ts": 1234567890123,
-  "log_group": "string",
+  "service": "string",
   "cid": "string",
   "stream": "stdout | stderr",
   "level": "debug | info | warn | error | null",
@@ -1105,7 +1109,7 @@ data: {"items":[{"ts":1720003600000,"log_group":"project-web","cid":"8af7d6c1273
   "items": [
     {
       "ts": 1234567890123,
-      "log_group": "string",
+      "service": "string",
       "cid": "string",
       "stream": "stdout",
       "level": "info",
@@ -1123,26 +1127,26 @@ data: {"items":[{"ts":1720003600000,"log_group":"project-web","cid":"8af7d6c1273
 
 ## 13) Route summary
 
-| Endpoint                                     | Method | Description                                                               |
-| -------------------------------------------- | ------ | ------------------------------------------------------------------------- |
-| `/api/health`                                | GET    | Health check                                                              |
-| `/api/config/ui`                             | GET    | UI configuration and custom links                                         |
-| `/api/config/settings`                       | GET    | Supported environment variables with effective and default values         |
-| `/api/config/computed`                       | GET    | Runtime-computed backend values                                           |
-| `/api/containers`                            | GET    | List containers and details                                               |
-| `/api/containers/{id}/start`                 | POST   | Start container                                                           |
-| `/api/containers/{id}/stop`                  | POST   | Stop container                                                            |
-| `/api/containers/{id}/restart`               | POST   | Restart container                                                         |
-| `/api/metrics/host`                          | GET    | Host metrics                                                              |
-| `/api/metrics/current`                       | GET    | Latest host, per container and per log_group values with rates            |
-| `/api/metrics/containers/{log_group}`        | GET    | Container metrics (sum + per container id)                                |
-| `/api/metrics/containers`                    | GET    | Aggregate container metrics (sum per log_group)                           |
-| `/api/logs`                                  | GET    | List log groups                                                           |
-| `/api/logs/{log_group}`                      | GET    | Query logs                                                                |
-| `/api/stream/metrics/current`                | GET    | SSE push equivalent of `/api/metrics/current`                             |
-| `/api/stream/containers`                     | GET    | SSE diff-based push equivalent of `/api/containers`                       |
-| `/api/stream/metrics/host`                   | GET    | SSE append-based push equivalent of `/api/metrics/host`                   |
-| `/api/stream/metrics/containers`             | GET    | SSE append-based push equivalent of `/api/metrics/containers`             |
-| `/api/stream/metrics/containers/{log_group}` | GET    | SSE append-based push equivalent of `/api/metrics/containers/{log_group}` |
-| `/api/stream/logs`                           | GET    | SSE diff-based push equivalent of `/api/logs`                             |
-| `/api/stream/logs/{log_group}`               | GET    | SSE forward-tailing push equivalent of polling `/api/logs/{log_group}`    |
+| Endpoint                                   | Method | Description                                                             |
+| ------------------------------------------ | ------ | ----------------------------------------------------------------------- |
+| `/api/health`                              | GET    | Health check                                                            |
+| `/api/config/ui`                           | GET    | UI configuration and custom links                                       |
+| `/api/config/settings`                     | GET    | Supported environment variables with effective and default values       |
+| `/api/config/computed`                     | GET    | Runtime-computed backend values                                         |
+| `/api/containers`                          | GET    | List containers and details                                             |
+| `/api/containers/{id}/start`               | POST   | Start container                                                         |
+| `/api/containers/{id}/stop`                | POST   | Stop container                                                          |
+| `/api/containers/{id}/restart`             | POST   | Restart container                                                       |
+| `/api/metrics/host`                        | GET    | Host metrics                                                            |
+| `/api/metrics/current`                     | GET    | Latest host, per container and per service values with rates            |
+| `/api/metrics/containers/{service}`        | GET    | Container metrics (sum + per container id)                              |
+| `/api/metrics/containers`                  | GET    | Aggregate container metrics (sum per service)                           |
+| `/api/logs`                                | GET    | List services                                                           |
+| `/api/logs/{service}`                      | GET    | Query logs                                                              |
+| `/api/stream/metrics/current`              | GET    | SSE push equivalent of `/api/metrics/current`                           |
+| `/api/stream/containers`                   | GET    | SSE diff-based push equivalent of `/api/containers`                     |
+| `/api/stream/metrics/host`                 | GET    | SSE append-based push equivalent of `/api/metrics/host`                 |
+| `/api/stream/metrics/containers`           | GET    | SSE append-based push equivalent of `/api/metrics/containers`           |
+| `/api/stream/metrics/containers/{service}` | GET    | SSE append-based push equivalent of `/api/metrics/containers/{service}` |
+| `/api/stream/logs`                         | GET    | SSE diff-based push equivalent of `/api/logs`                           |
+| `/api/stream/logs/{service}`               | GET    | SSE forward-tailing push equivalent of polling `/api/logs/{service}`    |

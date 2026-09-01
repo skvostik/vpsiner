@@ -156,13 +156,13 @@ struct ContainerGauges {
     cpu_pct: f64,
     mem_used: u128,
     mem_limit: u128,
-    log_group: String,
+    service: String,
 }
 
 impl ContainerGauges {
     fn add(&mut self, sample: &ContainerSample) {
         if self.count == 0 {
-            self.log_group = sample.log_group.clone();
+            self.service = sample.service.clone();
         }
         self.count += 1;
         self.cpu_pct += sample.cpu_pct;
@@ -177,7 +177,7 @@ impl ContainerGauges {
         let count = self.count as u128;
         Some(ContainerPoint {
             ts,
-            log_group: self.log_group.clone(),
+            service: self.service.clone(),
             cpu_pct: self.cpu_pct / self.count as f64,
             mem_used: (self.mem_used / count) as u64,
             mem_limit: (self.mem_limit / count) as u64,
@@ -282,7 +282,7 @@ mod tests {
     fn container_counter(ts: i64, cid: &str, net_rx: u64) -> ContainerSample {
         ContainerSample {
             ts,
-            log_group: "web".into(),
+            service: "web".into(),
             cid: cid.into(),
             cpu_pct: 25.0,
             mem_used: 1_000,

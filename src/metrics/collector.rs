@@ -139,7 +139,7 @@ mod tests {
         docker.expect_container_samples().returning(|| {
             Box::pin(stream::iter(vec![vec![ContainerSample {
                 ts: 123,
-                log_group: "shop-web".into(),
+                service: "shop-web".into(),
                 cid: "short-id".into(),
                 cpu_pct: 12.5,
                 mem_used: 100,
@@ -156,7 +156,7 @@ mod tests {
             .expect_insert_containers()
             .withf(|samples| {
                 samples.len() == 1
-                    && samples[0].log_group == "shop-web"
+                    && samples[0].service == "shop-web"
                     && samples[0].cid == "short-id"
             })
             .returning(|_| Ok(()));

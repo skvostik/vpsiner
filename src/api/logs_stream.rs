@@ -1,5 +1,5 @@
 //! SSE versions of the logs endpoints: a diff-based groups list, and filter-aware forward
-//! tailing for a single log group. Both react to `LogFlushWatcher` instead of polling; the
+//! tailing for a single service. Both react to `LogFlushWatcher` instead of polling; the
 //! groups list also reacts to `DockerService::subscribe_containers_info()` (slice 2) since a
 //! group's `live` flag depends on container state, not log flushes.
 
@@ -13,10 +13,10 @@ use futures_util::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
-use crate::api::logs::{merge_log_groups, parse_levels, parse_streams};
+use crate::api::logs::{merge_services, parse_levels, parse_streams};
 use crate::error::AppResult;
 use crate::logs::store::LogStore;
-use crate::model::{LogFilter, LogGroupDiff, LogGroupStatus, LogTailAppend};
+use crate::model::{LogFilter, LogTailAppend, ServiceDiff, ServiceStatus};
 use crate::state::AppState;
 
 enum GroupsStreamState {
@@ -25,7 +25,7 @@ enum GroupsStreamState {
         AppState,
         watch::Receiver<u64>,
         watch::Receiver<u64>,
-        BTreeMap<String, LogGroupStatus>,
+        BTreeMap<String, ServiceStatus>,
     ),
 }
 
@@ -62,7 +62,7 @@ pub async fn groups(
                             return None;
                         }
                         let current = current_groups(&state).await;
-                        let diff = diff_groups(&last_sent, &current);
+                        let diff = diff_services(&last_sent, &current);
                         if diff.added.is_empty()
                             && diff.updated.is_empty()
                             && diff.removed.is_empty()
@@ -85,37 +85,37 @@ pub async fn groups(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
-async fn current_groups(state: &AppState) -> BTreeMap<String, LogGroupStatus> {
+async fn current_groups(state: &AppState) -> BTreeMap<String, ServiceStatus> {
     let stored = state
         .metadata
         .list_last_received()
         .await
         .unwrap_or_default();
     let containers = state.docker.containers_info().unwrap_or_default();
-    merge_log_groups(stored, containers)
+    merge_services(stored, containers)
 }
 
-fn diff_groups(
-    last_sent: &BTreeMap<String, LogGroupStatus>,
-    current: &BTreeMap<String, LogGroupStatus>,
-) -> LogGroupDiff {
-    let mut diff = LogGroupDiff::default();
+fn diff_services(
+    last_sent: &BTreeMap<String, ServiceStatus>,
+    current: &BTreeMap<String, ServiceStatus>,
+) -> ServiceDiff {
+    let mut diff = ServiceDiff::default();
 
-    for (log_group, status) in current {
-        match last_sent.get(log_group) {
+    for (service, status) in current {
+        match last_sent.get(service) {
             None => {
-                diff.added.insert(log_group.clone(), status.clone());
+                diff.added.insert(service.clone(), status.clone());
             }
             Some(previous) if previous != status => {
-                diff.updated.insert(log_group.clone(), status.clone());
+                diff.updated.insert(service.clone(), status.clone());
             }
             Some(_) => {}
         }
     }
 
-    for log_group in last_sent.keys() {
-        if !current.contains_key(log_group) {
-            diff.removed.push(log_group.clone());
+    for service in last_sent.keys() {
+        if !current.contains_key(service) {
+            diff.removed.push(service.clone());
         }
     }
 
@@ -148,7 +148,7 @@ impl LogTailQuery {
 struct TailState {
     logs: Arc<dyn LogStore>,
     rx: watch::Receiver<u64>,
-    log_group: String,
+    service: String,
     filter: LogFilter,
     /// Skips waiting for a flush notification once, so lines flushed between the client's last
     /// REST page load and this connection opening aren't missed.
@@ -157,15 +157,15 @@ struct TailState {
 
 pub async fn tail(
     State(state): State<AppState>,
-    Path(log_group): Path<String>,
+    Path(service): Path<String>,
     Query(query): Query<LogTailQuery>,
 ) -> AppResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
     let filter = query.filter()?;
-    let rx = state.log_flush_watcher.subscribe(&log_group);
+    let rx = state.log_flush_watcher.subscribe(&service);
     let initial_state = TailState {
         logs: state.logs.clone(),
         rx,
-        log_group,
+        service,
         filter,
         first: true,
     };
@@ -180,11 +180,7 @@ pub async fn tail(
                 state.rx.borrow_and_update();
             }
 
-            let page = match state
-                .logs
-                .query(&state.log_group, state.filter.clone())
-                .await
-            {
+            let page = match state.logs.query(&state.service, state.filter.clone()).await {
                 Ok(page) => page,
                 Err(_) => continue,
             };

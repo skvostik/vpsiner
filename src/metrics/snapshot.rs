@@ -112,7 +112,7 @@ impl MetricsSnapshotState {
                 sample.cid.clone(),
                 ContainerPoint {
                     ts: sample.ts,
-                    log_group: sample.log_group.clone(),
+                    service: sample.service.clone(),
                     cpu_pct: sample.cpu_pct,
                     mem_used: sample.mem_used,
                     mem_limit: sample.mem_limit,
@@ -147,28 +147,28 @@ impl MetricsSnapshotState {
             .map(|(cid, snapshot)| (cid.clone(), snapshot.clone()))
             .collect();
 
-        let mut log_groups: HashMap<String, GroupPoint> = HashMap::new();
+        let mut services: HashMap<String, GroupPoint> = HashMap::new();
         for snapshot in containers.values() {
-            let group = log_groups
-                .entry(snapshot.log_group.clone())
+            let service = services
+                .entry(snapshot.service.clone())
                 .or_insert_with(|| GroupPoint {
                     ts: snapshot.ts,
                     ..GroupPoint::default()
                 });
-            group.ts = group.ts.max(snapshot.ts);
-            group.cpu_pct += snapshot.cpu_pct;
-            group.mem_used = group.mem_used.saturating_add(snapshot.mem_used);
-            group.mem_limit = group.mem_limit.saturating_add(snapshot.mem_limit);
-            group.net_rx_rate += snapshot.net_rx_rate;
-            group.net_tx_rate += snapshot.net_tx_rate;
-            group.blk_read_rate += snapshot.blk_read_rate;
-            group.blk_write_rate += snapshot.blk_write_rate;
+            service.ts = service.ts.max(snapshot.ts);
+            service.cpu_pct += snapshot.cpu_pct;
+            service.mem_used = service.mem_used.saturating_add(snapshot.mem_used);
+            service.mem_limit = service.mem_limit.saturating_add(snapshot.mem_limit);
+            service.net_rx_rate += snapshot.net_rx_rate;
+            service.net_tx_rate += snapshot.net_tx_rate;
+            service.blk_read_rate += snapshot.blk_read_rate;
+            service.blk_write_rate += snapshot.blk_write_rate;
         }
 
         MetricsSnapshot {
             host,
             containers,
-            log_groups,
+            services,
         }
     }
 }
@@ -198,15 +198,10 @@ mod tests {
         }
     }
 
-    fn container_sample(
-        ts: TimestampMs,
-        cid: &str,
-        log_group: &str,
-        net_rx: u64,
-    ) -> ContainerSample {
+    fn container_sample(ts: TimestampMs, cid: &str, service: &str, net_rx: u64) -> ContainerSample {
         ContainerSample {
             ts,
-            log_group: log_group.into(),
+            service: service.into(),
             cid: cid.into(),
             cpu_pct: 5.0,
             mem_used: 100,
@@ -254,7 +249,7 @@ mod tests {
         let state = state();
         state.record_containers(&[container_sample(10_000, "abc", "web", 0)]);
         assert!(state.current_at(40_001).containers.is_empty());
-        assert!(state.current_at(40_001).log_groups.is_empty());
+        assert!(state.current_at(40_001).services.is_empty());
         assert!(!state.current_at(40_000).containers.is_empty());
     }
 
@@ -290,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn log_groups_sum_their_containers() {
+    fn services_sum_their_containers() {
         let state = state();
         state.record_containers(&[
             container_sample(10_000, "abc", "web", 0),
@@ -299,10 +294,10 @@ mod tests {
         ]);
 
         let snapshot = state.current_at(10_000);
-        assert_eq!(snapshot.log_groups["web"].cpu_pct, 10.0);
-        assert_eq!(snapshot.log_groups["web"].mem_used, 200);
-        assert_eq!(snapshot.log_groups["db"].cpu_pct, 5.0);
-        assert_eq!(snapshot.log_groups["db"].mem_used, 100);
+        assert_eq!(snapshot.services["web"].cpu_pct, 10.0);
+        assert_eq!(snapshot.services["web"].mem_used, 200);
+        assert_eq!(snapshot.services["db"].cpu_pct, 5.0);
+        assert_eq!(snapshot.services["db"].mem_used, 100);
     }
 
     #[test]
@@ -310,6 +305,6 @@ mod tests {
         let snapshot = state().current_at(10_000);
         assert!(snapshot.host.is_none());
         assert!(snapshot.containers.is_empty());
-        assert!(snapshot.log_groups.is_empty());
+        assert!(snapshot.services.is_empty());
     }
 }

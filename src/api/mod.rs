@@ -14,7 +14,7 @@ use crate::state::AppState;
 #[derive(Serialize)]
 pub struct HealthResponse {
     pub ok: bool,
-    pub service: &'static str,
+    pub app: &'static str,
     pub version: &'static str,
     pub port: u16,
     pub sample_interval_ms: u64,
@@ -34,10 +34,10 @@ pub fn router() -> Router<AppState> {
         .route("/containers/{id}/restart", post(containers::restart))
         .route("/metrics/host", get(metrics::host))
         .route("/metrics/current", get(metrics::current))
-        .route("/metrics/containers/{log_group}", get(metrics::container))
+        .route("/metrics/containers/{service}", get(metrics::container))
         .route("/metrics/containers", get(metrics::containers_history))
         .route("/logs", get(logs::list_groups))
-        .route("/logs/{log_group}", get(logs::query))
+        .route("/logs/{service}", get(logs::query))
         .nest(
             "/stream",
             Router::new()
@@ -45,19 +45,19 @@ pub fn router() -> Router<AppState> {
                 .route("/metrics/host", get(metrics_stream::host))
                 .route("/metrics/containers", get(metrics_stream::containers))
                 .route(
-                    "/metrics/containers/{log_group}",
+                    "/metrics/containers/{service}",
                     get(metrics_stream::container),
                 )
                 .route("/containers", get(stream::containers))
                 .route("/logs", get(logs_stream::groups))
-                .route("/logs/{log_group}", get(logs_stream::tail)),
+                .route("/logs/{service}", get(logs_stream::tail)),
         )
 }
 
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     Json(HealthResponse {
         ok: true,
-        service: "vpsiner",
+        app: "vpsiner",
         version: env!("CARGO_PKG_VERSION"),
         port: state.config.port,
         sample_interval_ms: state.config.collect_interval.as_millis() as u64,

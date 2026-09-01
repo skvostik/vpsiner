@@ -1,7 +1,7 @@
 import { onBeforeUnmount, ref, watch, type Ref } from 'vue'
 
 import { reportSseIssue } from './useBackendHealth'
-import type { ContainerMetricsByLogGroup, GroupPoint, MetricsResolution } from '../types'
+import type { ContainerMetricsByService, GroupPoint, MetricsResolution } from '../types'
 
 const trimTickMs = 5_000
 
@@ -11,7 +11,7 @@ export function useContainersMetricsStream(
   windowMs: Ref<number>,
   active: Ref<boolean>
 ) {
-  const series = ref<ContainerMetricsByLogGroup>({})
+  const series = ref<ContainerMetricsByService>({})
 
   let source: EventSource | undefined
   let trimTimer: number | undefined
@@ -19,8 +19,8 @@ export function useContainersMetricsStream(
   function trim() {
     if (!windowMs.value) return
     const cutoff = Date.now() - windowMs.value
-    for (const logGroup of Object.keys(series.value)) {
-      series.value[logGroup] = series.value[logGroup].filter((point) => point.ts >= cutoff)
+    for (const service of Object.keys(series.value)) {
+      series.value[service] = series.value[service].filter((point) => point.ts >= cutoff)
     }
   }
 
@@ -39,13 +39,13 @@ export function useContainersMetricsStream(
     const params = new URLSearchParams({ from: String(from), resolution: resolution.value })
     source = new EventSource(`/api/stream/metrics/containers?${params}`)
     source.addEventListener('snapshot', (event) => {
-      series.value = JSON.parse((event as MessageEvent).data) as ContainerMetricsByLogGroup
+      series.value = JSON.parse((event as MessageEvent).data) as ContainerMetricsByService
       console.debug('[containers-metrics-stream] snapshot', series.value)
     })
     source.addEventListener('append', (event) => {
       const append = JSON.parse((event as MessageEvent).data) as Record<string, GroupPoint>
-      for (const [logGroup, point] of Object.entries(append)) {
-        series.value[logGroup] = [...(series.value[logGroup] ?? []), point]
+      for (const [service, point] of Object.entries(append)) {
+        series.value[service] = [...(series.value[service] ?? []), point]
       }
       trim()
       console.debug('[containers-metrics-stream] append', append)

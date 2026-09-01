@@ -27,7 +27,7 @@ const tooltipText = computed(() => {
 const ariaLabel = computed(() => {
   switch (resolvedStatus.value) {
     case 'live':
-      return props.pulse ? 'Live data updates' : 'Log group is live'
+      return props.pulse ? 'Live data updates' : 'Service is live'
     case 'history':
       return 'Browsing historical data'
     case 'stopped':

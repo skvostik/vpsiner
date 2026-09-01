@@ -15,7 +15,7 @@ use tokio::sync::{mpsc, watch};
 pub(super) struct ObservedContainer {
     pub id: String,
     pub name: String,
-    pub log_group: String,
+    pub service: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,7 +35,7 @@ impl ObservedContainer {
         container_short_id(&self.id)
     }
     pub fn log_id(&self) -> String {
-        container_log_id(&self.log_group, &self.short_id())
+        container_log_id(&self.service, &self.short_id())
     }
 }
 

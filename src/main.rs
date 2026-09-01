@@ -321,7 +321,7 @@ mod tests {
             Ok(vec![ContainerSummary {
                 id: "abc123".into(),
                 name: "web".into(),
-                log_group: "shop-web".into(),
+                service: "shop-web".into(),
                 image: "nginx:latest".into(),
                 image_sha: String::new(),
                 ports: Vec::new(),
@@ -346,7 +346,7 @@ mod tests {
 
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let containers: Vec<ContainerSummary> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(containers[0].log_group, "shop-web");
+        assert_eq!(containers[0].service, "shop-web");
     }
 
     #[tokio::test]

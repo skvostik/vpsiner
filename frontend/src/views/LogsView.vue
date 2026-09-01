@@ -10,18 +10,18 @@ import LogViewer from '../components/logs/LogViewer.vue'
 import { backendOnline } from '../composables/useBackendHealth'
 import { useLogs } from '../composables/useLogs'
 import { usePageTitle } from '../composables/usePageTitle'
-import type { LogGroups, LogLevel, LogLine, LogStream } from '../types'
+import type { Services, LogLevel, LogLine, LogStream } from '../types'
 
 type LogsState = {
-  groups: Ref<LogGroups>
-  selectedGroup: Ref<string>
+  services: Ref<Services>
+  selectedService: Ref<string>
   logs: Ref<LogLine[]>
   query: Ref<string>
   level: Ref<LogLevel[]>
   stream: Ref<LogStream[]>
   customFrom: Ref<number | undefined>
   customTo: Ref<number | undefined>
-  loadingGroups: Ref<boolean>
+  loadingServices: Ref<boolean>
   loadingLogs: Ref<boolean>
   hasMore: Ref<boolean>
   hasNewer: Ref<boolean>
@@ -44,20 +44,20 @@ const route = useRoute()
 const router = useRouter()
 const filtersExpanded = ref(false)
 const filtersExpandedStorageKey = 'vpsiner.logs.filters-expanded.v1'
-const routeGroup = computed(() =>
-  typeof route.params.logGroup === 'string' ? route.params.logGroup : undefined
+const routeService = computed(() =>
+  typeof route.params.service === 'string' ? route.params.service : undefined
 )
-const logsState = useLogs(routeGroup.value) as LogsState
+const logsState = useLogs(routeService.value) as LogsState
 const {
-  groups,
-  selectedGroup,
+  services,
+  selectedService,
   logs,
   query,
   level,
   stream,
   customFrom,
   customTo,
-  loadingGroups,
+  loadingServices,
   loadingLogs,
   hasMore,
   hasNewer,
@@ -75,14 +75,14 @@ const {
   updateCustomFrom,
   updateCustomTo,
 } = logsState
-const selectedGroupSummary = computed(() => groups.value[selectedGroup.value])
+const selectedServiceSummary = computed(() => services.value[selectedService.value])
 const pageStatus = computed<'live' | 'history' | 'stopped'>(() => {
-  if (!backendOnline.value || !selectedGroup.value) return 'stopped'
-  if (!selectedGroupSummary.value?.live) return 'stopped'
+  if (!backendOnline.value || !selectedService.value) return 'stopped'
+  if (!selectedServiceSummary.value?.live) return 'stopped'
   return tailing.value ? 'live' : 'history'
 })
 // A lower time bound, text search, or level/stream filter can all hide logs older than what's
-// currently loaded, so "no more older logs" alone doesn't mean the group's history truly ends here.
+// currently loaded, so "no more older logs" alone doesn't mean the service's history truly ends here.
 const hasActiveFilters = computed(
   () =>
     !!query.value ||
@@ -91,14 +91,14 @@ const hasActiveFilters = computed(
     customFrom.value !== undefined
 )
 
-watch(routeGroup, (group) => {
-  if (group && group !== selectedGroup.value) selectedGroup.value = group
+watch(routeService, (service) => {
+  if (service && service !== selectedService.value) selectedService.value = service
 })
-watch(selectedGroup, (group) => {
-  if (group && group !== routeGroup.value)
-    router.replace({ name: 'log-viewer', params: { logGroup: group } })
+watch(selectedService, (service) => {
+  if (service && service !== routeService.value)
+    router.replace({ name: 'log-viewer', params: { service } })
 })
-usePageTitle(() => selectedGroup.value || 'Logs')
+usePageTitle(() => selectedService.value || 'Logs')
 watch(filtersExpanded, (expanded) => {
   localStorage.setItem(filtersExpandedStorageKey, String(expanded))
 })
@@ -114,12 +114,12 @@ onMounted(() => {
     <LiveStatusIcon :status="pageStatus" :size="15" :pulse="pageStatus === 'live'" />
   </Teleport>
   <Teleport to="#app-header-title-subtext">
-    <template v-if="selectedGroupSummary">
-      <span v-if="selectedGroupSummary.last_received === null">No logs received yet</span>
+    <template v-if="selectedServiceSummary">
+      <span v-if="selectedServiceSummary.last_received === null">No logs received yet</span>
       <span v-else>
         Last log received
-        <time :datetime="new Date(selectedGroupSummary.last_received).toISOString()">
-          {{ new Date(selectedGroupSummary.last_received).toLocaleString() }}
+        <time :datetime="new Date(selectedServiceSummary.last_received).toISOString()">
+          {{ new Date(selectedServiceSummary.last_received).toLocaleString() }}
         </time>
       </span>
     </template>
@@ -166,7 +166,7 @@ onMounted(() => {
       :has-newer="hasNewer"
       :query="query"
       :tailing="tailing"
-      :has-stored-logs="selectedGroupSummary?.last_received != null"
+      :has-stored-logs="selectedServiceSummary?.last_received != null"
       :has-active-filters="hasActiveFilters"
       :fresh-keys="freshKeys"
       :load-older="loadMore"
@@ -174,6 +174,6 @@ onMounted(() => {
       @at-bottom-change="reportAtBottom"
       @edit-filters="filtersExpanded = true"
     />
-    <n-empty v-if="!selectedGroup && !loadingGroups" description="No log group selected" />
+    <n-empty v-if="!selectedService && !loadingServices" description="No service selected" />
   </div>
 </template>

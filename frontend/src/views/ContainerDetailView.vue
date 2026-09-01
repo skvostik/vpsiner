@@ -23,7 +23,7 @@ import type { ContainerPoint, MetricsResolution, TimeRange } from '../types'
 const route = useRoute()
 const router = useRouter()
 const containerId = computed(() => (typeof route.params.id === 'string' ? route.params.id : ''))
-const logGroup = computed(() => container.value?.log_group ?? '')
+const service = computed(() => container.value?.service ?? '')
 const restContainerSamples = ref<Record<string, ContainerPoint[]>>({})
 const error = ref('')
 const labelsExpanded = ref(false)
@@ -97,8 +97,8 @@ const diskWriteSeries = computed<ChartSeries[]>(() =>
   }))
 )
 
-// Aggregate rates (log-group sum) power only the header stat numbers, not the per-container charts.
-const latest = computed(() => snapshot.value.log_groups[logGroup.value])
+// Aggregate rates (service sum) power only the header stat numbers, not the per-container charts.
+const latest = computed(() => snapshot.value.services[service.value])
 const latestNetworkIn = computed(() => latest.value?.net_rx_rate ?? 0)
 const latestNetworkOut = computed(() => latest.value?.net_tx_rate ?? 0)
 const latestDiskRead = computed(() => latest.value?.blk_read_rate ?? 0)
@@ -128,8 +128,8 @@ function formatRate(value: number) {
 }
 
 async function loadMetrics(range: TimeRange, resolution: MetricsResolution) {
-  if (!logGroup.value || isLive.value) return
-  const next = await api.containers.metrics(logGroup.value, range, resolution)
+  if (!service.value || isLive.value) return
+  const next = await api.containers.metrics(service.value, range, resolution)
   restContainerSamples.value = next.containers
 }
 
@@ -147,7 +147,7 @@ const {
   reload,
 } = useMetricsWindow(loadMetrics)
 const { containers: liveContainerSamples } = useContainerMetricsStream(
-  logGroup,
+  service,
   resolution,
   liveWindowMs,
   isLive
@@ -162,8 +162,8 @@ const pageStatus = computed<'live' | 'history' | 'stopped'>(() => {
   return isLive.value ? 'live' : 'history'
 })
 
-// log_group is only known after the container info loads, so trigger the first metrics fetch then.
-watch(logGroup, (value, previous) => {
+// service is only known after the container info loads, so trigger the first metrics fetch then.
+watch(service, (value, previous) => {
   if (value && !previous) reload()
 })
 
@@ -177,7 +177,7 @@ async function runAction(action: 'start' | 'stop' | 'restart') {
   }
 }
 
-usePageTitle(() => container.value?.name || logGroup.value || 'Container')
+usePageTitle(() => container.value?.name || service.value || 'Container')
 </script>
 
 <template>
@@ -186,7 +186,7 @@ usePageTitle(() => container.value?.name || logGroup.value || 'Container')
   </Teleport>
   <div>
     <div class="flex items-center gap-3">
-      <router-link v-if="logGroup" :to="{ name: 'log-viewer', params: { logGroup } }">
+      <router-link v-if="service" :to="{ name: 'log-viewer', params: { service } }">
         <n-button tertiary aria-label="Open container logs" tag="span">
           <template #icon><Logs :size="16" /></template>
           Logs

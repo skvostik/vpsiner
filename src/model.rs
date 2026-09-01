@@ -26,7 +26,7 @@ pub enum ContainerState {
 pub struct ContainerSummary {
     pub id: String,
     pub name: String,
-    pub log_group: String,
+    pub service: String,
     pub image: String,
     pub image_sha: String,
     pub ports: Vec<String>,
@@ -47,11 +47,11 @@ pub fn container_short_id(container_id: &str) -> &str {
     container_id.get(..12).unwrap_or(container_id)
 }
 
-pub fn container_log_id(log_group: &str, container_id: &str) -> String {
+pub fn container_log_id(service: &str, container_id: &str) -> String {
     format!(
         "{}@{}",
         &container_id.get(..12).unwrap_or(container_id),
-        log_group
+        service
     )
 }
 
@@ -60,7 +60,7 @@ impl ContainerSummary {
         container_short_id(&self.id)
     }
     pub fn log_id(&self) -> String {
-        container_log_id(&self.log_group, &self.short_id())
+        container_log_id(&self.service, &self.short_id())
     }
 }
 
@@ -89,7 +89,7 @@ pub struct HostSample {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContainerSample {
     pub ts: TimestampMs,
-    pub log_group: String,
+    pub service: String,
     pub cid: String,
     pub cpu_pct: f64,
     pub mem_used: u64,
@@ -106,9 +106,9 @@ pub struct ContainerGroupMetrics {
     pub containers: HashMap<String, Vec<ContainerPoint>>,
 }
 
-pub type ContainerMetricsByLogGroup = HashMap<String, Vec<GroupPoint>>;
+pub type ContainerMetricsByService = HashMap<String, Vec<GroupPoint>>;
 
-/// One newly-completed bucket's cross-section, pushed by `/api/stream/metrics/containers/{log_group}`.
+/// One newly-completed bucket's cross-section, pushed by `/api/stream/metrics/containers/{service}`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ContainerGroupMetricsAppend {
     pub sum: Option<GroupPoint>,
@@ -134,7 +134,7 @@ pub struct HostPoint {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContainerPoint {
     pub ts: TimestampMs,
-    pub log_group: String,
+    pub service: String,
     pub cpu_pct: f64,
     pub mem_used: u64,
     pub mem_limit: u64,
@@ -160,7 +160,7 @@ pub struct GroupPoint {
 pub struct MetricsSnapshot {
     pub host: Option<HostPoint>,
     pub containers: HashMap<String, ContainerPoint>,
-    pub log_groups: HashMap<String, GroupPoint>,
+    pub services: HashMap<String, GroupPoint>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -195,7 +195,7 @@ pub enum LogLevel {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogLine {
     pub ts: TimestampMs,
-    pub log_group: String,
+    pub service: String,
     pub cid: String,
     pub stream: LogStream,
     pub level: Option<LogLevel>,
@@ -220,20 +220,20 @@ pub struct LogPage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LogGroupStatus {
+pub struct ServiceStatus {
     pub last_received: Option<TimestampMs>,
     pub live: bool,
 }
 
 /// Incremental update for `/api/stream/logs`, relative to what a client has already seen.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LogGroupDiff {
-    pub added: BTreeMap<String, LogGroupStatus>,
-    pub updated: BTreeMap<String, LogGroupStatus>,
+pub struct ServiceDiff {
+    pub added: BTreeMap<String, ServiceStatus>,
+    pub updated: BTreeMap<String, ServiceStatus>,
     pub removed: Vec<String>,
 }
 
-/// One batch of newly-flushed lines pushed by `/api/stream/logs/{log_group}`, carrying the
+/// One batch of newly-flushed lines pushed by `/api/stream/logs/{service}`, carrying the
 /// cursor to resume from so clients can keep their own pagination cursors consistent.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogTailAppend {

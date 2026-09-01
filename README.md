@@ -17,7 +17,7 @@ under 50 MB. Actual usage depends on the number of containers and log volume.
     - [Add some test logs](#add-some-test-logs)
   - [Configuration](#configuration)
     - [Common settings](#common-settings)
-    - [Log groups](#log-groups)
+    - [Services](#services)
     - [Container controls](#container-controls)
     - [UI customization and custom links](#ui-customization-and-custom-links)
     - [Data persistence](#data-persistence)
@@ -95,11 +95,11 @@ should use both.
 
 No other containers running yet? Start few instances of
 [Funny Logger](https://github.com/skvostik/funny-logger) and place it in a
-`demo-group` log group:
+`demo-service` service:
 
 ```bash
 docker run -d \
-  --label vpsiner.log_group=demo-group \
+  --label vpsiner.service=demo-service \
   ghcr.io/skvostik/funny-logger:latest
 ```
 
@@ -130,28 +130,30 @@ There are further advanced variables for tuning intervals, buffer sizes and
 timeouts. The **Configuration** page in the app lists every supported variable
 with its description, default, and the value the running instance resolved.
 
-### Log groups
+### Services
 
-`log_group` is the stable identity for a logical service. It groups both the
+`service` is the stable identity for a logical service. It groups both the
 container's logs and metrics, and links their history when a container is
 recreated and gets a new container ID.
 
-VPSiner chooses the `log_group` value in this order:
+VPSiner chooses the `service` value in this order:
 
-1. The container's `vpsiner.log_group` label.
+1. The container's `vpsiner.service` label.
 2. Docker Compose project and service labels, producing `{project}-{service}`.
+   Note that a VPSiner service is therefore usually *coarser* than a Compose
+   service: it is the project and Compose service combined.
 3. The container name.
 
 Docker Compose labels are added automatically, so most Compose deployments need
 no configuration. Use an explicit label when several containers should share a
-group:
+service:
 
 ```yaml
 services:
   worker:
     image: example/worker
     labels:
-      vpsiner.log_group: jobs
+      vpsiner.service: jobs
 ```
 
 ### Container controls

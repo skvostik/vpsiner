@@ -23,11 +23,11 @@ pub(super) fn get_container_name(response: &bollard::models::ContainerSummary) -
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-pub(super) fn get_container_log_group(response: &bollard::models::ContainerSummary) -> String {
+pub(super) fn get_container_service(response: &bollard::models::ContainerSummary) -> String {
     let labels = response.labels.clone().unwrap_or_default();
     let name = get_container_name(response);
     if let Some(value) = labels
-        .get("vpsiner.log_group")
+        .get("vpsiner.service")
         .filter(|value| !value.trim().is_empty())
     {
         return value.trim().to_string();
@@ -110,7 +110,7 @@ pub(super) fn map_container_summary(
     response: &bollard::models::ContainerSummary,
 ) -> ContainerSummary {
     let name = get_container_name(response);
-    let log_group = get_container_log_group(response);
+    let service = get_container_service(response);
     let label_list = get_container_labels(response);
     let state = get_container_state(response);
     let ports = get_container_ports(response);
@@ -119,7 +119,7 @@ pub(super) fn map_container_summary(
     ContainerSummary {
         id,
         name: name.clone(),
-        log_group,
+        service,
         image: response.image.clone().unwrap_or_default(),
         image_sha: response.image_id.clone().unwrap_or_default(),
         ports,
@@ -224,7 +224,7 @@ pub(super) fn map_container_stats(
 
 pub(super) fn map_log_output(
     container_id: String,
-    log_group: String,
+    service: String,
     message: Bytes,
     stream: LogStream,
 ) -> Vec<LogLine> {
@@ -235,7 +235,7 @@ pub(super) fn map_log_output(
             let line = strip_ansi_escape_codes(raw_line);
             LogLine {
                 ts,
-                log_group: log_group.clone(),
+                service: service.clone(),
                 cid: container_id.clone(),
                 stream,
                 level: detect_level(&line),
@@ -272,7 +272,7 @@ mod tests {
         let (expected_ts, _) =
             crate::logs::parse_docker_timestamp("2024-07-04T12:33:54.000000000Z INFO ready");
         assert_eq!(line.ts, expected_ts);
-        assert_eq!(line.log_group, "group-1");
+        assert_eq!(line.service, "group-1");
         assert_eq!(line.line, "INFO ready");
     }
 }

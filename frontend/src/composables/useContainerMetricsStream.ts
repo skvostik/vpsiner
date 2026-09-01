@@ -10,9 +10,9 @@ import type {
 
 const trimTickMs = 5_000
 
-/** Live per-log-group history for the container detail view, pushed instead of polled. */
+/** Live per-service history for the container detail view, pushed instead of polled. */
 export function useContainerMetricsStream(
-  logGroup: Ref<string>,
+  service: Ref<string>,
   resolution: Ref<MetricsResolution>,
   windowMs: Ref<number>,
   active: Ref<boolean>
@@ -41,7 +41,7 @@ export function useContainerMetricsStream(
 
   function connect() {
     disconnect()
-    if (!active.value || !logGroup.value || !windowMs.value) return
+    if (!active.value || !service.value || !windowMs.value) return
 
     const from = Date.now() - windowMs.value
     const params = new URLSearchParams({
@@ -49,7 +49,7 @@ export function useContainerMetricsStream(
       resolution: resolution.value,
     })
     source = new EventSource(
-      `/api/stream/metrics/containers/${encodeURIComponent(logGroup.value)}?${params}`
+      `/api/stream/metrics/containers/${encodeURIComponent(service.value)}?${params}`
     )
     source.addEventListener('snapshot', (event) => {
       const data = JSON.parse((event as MessageEvent).data) as {
@@ -75,7 +75,7 @@ export function useContainerMetricsStream(
     trimTimer = window.setInterval(trim, trimTickMs)
   }
 
-  watch([logGroup, resolution, windowMs, active], connect, { immediate: true })
+  watch([service, resolution, windowMs, active], connect, { immediate: true })
   onBeforeUnmount(disconnect)
 
   return { sum, containers }

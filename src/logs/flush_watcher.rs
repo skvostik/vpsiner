@@ -1,5 +1,5 @@
-//! Notifies SSE endpoints when a log group's buffered lines are durably persisted, so
-//! `/api/stream/logs` and `/api/stream/logs/{log_group}` can react instead of polling.
+//! Notifies SSE endpoints when a service's buffered lines are durably persisted, so
+//! `/api/stream/logs` and `/api/stream/logs/{service}` can react instead of polling.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -7,9 +7,9 @@ use std::sync::Mutex;
 use tokio::sync::watch;
 
 pub struct LogFlushWatcher {
-    groups: Mutex<HashMap<String, watch::Sender<u64>>>,
-    /// Bumped alongside every per-group notification, for listeners that care about "something
-    /// changed somewhere" without subscribing to every group individually (the groups-list SSE).
+    services: Mutex<HashMap<String, watch::Sender<u64>>>,
+    /// Bumped alongside every per-service notification, for listeners that care about "something
+    /// changed somewhere" without subscribing to every service individually (the services-list SSE).
     any: watch::Sender<u64>,
 }
 
@@ -23,15 +23,15 @@ impl LogFlushWatcher {
     pub fn new() -> Self {
         let (any, _) = watch::channel(0);
         Self {
-            groups: Mutex::new(HashMap::new()),
+            services: Mutex::new(HashMap::new()),
             any,
         }
     }
 
-    pub fn subscribe(&self, log_group: &str) -> watch::Receiver<u64> {
-        let mut groups = self.groups.lock().expect("flush watcher lock poisoned");
-        groups
-            .entry(log_group.to_string())
+    pub fn subscribe(&self, service: &str) -> watch::Receiver<u64> {
+        let mut services = self.services.lock().expect("flush watcher lock poisoned");
+        services
+            .entry(service.to_string())
             .or_insert_with(|| watch::channel(0).0)
             .subscribe()
     }
@@ -40,12 +40,12 @@ impl LogFlushWatcher {
         self.any.subscribe()
     }
 
-    /// Called after a group's buffered lines are durably persisted (append + checkpoint both ok).
-    pub fn notify(&self, log_group: &str) {
+    /// Called after a service's buffered lines are durably persisted (append + checkpoint both ok).
+    pub fn notify(&self, service: &str) {
         {
-            let mut groups = self.groups.lock().expect("flush watcher lock poisoned");
-            let tx = groups
-                .entry(log_group.to_string())
+            let mut services = self.services.lock().expect("flush watcher lock poisoned");
+            let tx = services
+                .entry(service.to_string())
                 .or_insert_with(|| watch::channel(0).0);
             tx.send_modify(|revision| *revision += 1);
         }
@@ -58,7 +58,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn notifies_only_the_named_group_and_the_global_signal() {
+    fn notifies_only_the_named_service_and_the_global_signal() {
         let watcher = LogFlushWatcher::new();
         let project_web = watcher.subscribe("project-web");
         let project_db = watcher.subscribe("project-db");

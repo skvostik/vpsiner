@@ -280,14 +280,14 @@ impl Config {
                 ENV_LOG_FLUSH_DEBOUNCE_MS,
                 self.log_flush_debounce.as_millis().to_string(),
                 DEFAULT_LOG_FLUSH_DEBOUNCE_MS.to_string(),
-                "Delay used to coalesce buffered log lines per log group before writing them to storage",
+                "Delay used to coalesce buffered log lines per service before writing them to storage",
                 "advanced",
             ),
             entry(
                 ENV_LOG_FLUSH_KEEP_ALIVE_SECS,
                 self.log_flush_keep_alive.as_secs().to_string(),
                 DEFAULT_LOG_FLUSH_KEEP_ALIVE_SECS.to_string(),
-                "How long an idle per-group log flush worker stays alive before exiting",
+                "How long an idle per-service log flush worker stays alive before exiting",
                 "advanced",
             ),
             entry(

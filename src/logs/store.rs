@@ -11,7 +11,7 @@ use sqlx::{
 use tokio::sync::{Mutex, OnceCell, OwnedMutexGuard};
 
 use super::{
-    database_week_start_ms, decode_cursor, detect_level, encode_cursor, safe_group_path,
+    database_week_start_ms, decode_cursor, detect_level, encode_cursor, safe_service_path,
     sanitize_fts_query, week_database_name,
 };
 use crate::error::{AppError, AppResult};
@@ -24,8 +24,8 @@ pub trait LogStore: Send + Sync + 'static {
 
     async fn delete_before(&self, cutoff_ms: i64) -> AppResult<Vec<String>>;
 
-    async fn append(&self, log_group: &str, lines: Vec<LogLine>) -> AppResult<()>;
-    async fn query(&self, log_group: &str, filter: LogFilter) -> AppResult<LogPage>;
+    async fn append(&self, service: &str, lines: Vec<LogLine>) -> AppResult<()>;
+    async fn query(&self, service: &str, filter: LogFilter) -> AppResult<LogPage>;
 
     /// Releases every cached week-database connection.
     async fn close(&self);
@@ -84,7 +84,7 @@ enum Direction {
 struct CachedPool {
     /// Kept behind a cell so a slow open never holds the cache lock.
     cell: Arc<OnceCell<SqlitePool>>,
-    log_group: String,
+    service: String,
     week: String,
     last_used: Instant,
 }
@@ -114,14 +114,14 @@ impl PoolCache {
         self.operation_locks.lock().await.remove(path);
     }
 
-    async fn pool(&self, path: &Path, log_group: &str, week: &str) -> AppResult<SqlitePool> {
+    async fn pool(&self, path: &Path, service: &str, week: &str) -> AppResult<SqlitePool> {
         let cell = {
             let mut entries = self.entries.lock().await;
             let entry = entries
                 .entry(path.to_path_buf())
                 .or_insert_with(|| CachedPool {
                     cell: Arc::new(OnceCell::new()),
-                    log_group: log_group.to_string(),
+                    service: service.to_string(),
                     week: week.to_string(),
                     last_used: Instant::now(),
                 });
@@ -130,7 +130,7 @@ impl PoolCache {
         };
         let pool = cell
             .get_or_try_init(|| {
-                open_database(path, log_group, week, self.cache_size_kb, self.busy_timeout)
+                open_database(path, service, week, self.cache_size_kb, self.busy_timeout)
             })
             .await?;
         Ok(pool.clone())
@@ -187,7 +187,7 @@ async fn close_entry(entry: &CachedPool) {
     if let Some(pool) = entry.cell.get() {
         pool.close().await;
         tracing::info!(
-            log_group = %entry.log_group,
+            service = %entry.service,
             week = %entry.week,
             "closed log database connection"
         );
@@ -198,17 +198,17 @@ async fn close_entry(entry: &CachedPool) {
 impl LogStore for SqliteLogStore {
     async fn database_size_bytes(&self) -> AppResult<u64> {
         let mut total = 0;
-        let mut groups = match tokio::fs::read_dir(&self.root).await {
+        let mut services = match tokio::fs::read_dir(&self.root).await {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(total),
             Err(error) => return Err(storage(error)),
         };
 
-        while let Some(group) = groups.next_entry().await.map_err(storage)? {
-            if !group.file_type().await.map_err(storage)?.is_dir() {
+        while let Some(service) = services.next_entry().await.map_err(storage)? {
+            if !service.file_type().await.map_err(storage)?.is_dir() {
                 continue;
             }
-            let mut databases = tokio::fs::read_dir(group.path()).await.map_err(storage)?;
+            let mut databases = tokio::fs::read_dir(service.path()).await.map_err(storage)?;
             while let Some(database) = databases.next_entry().await.map_err(storage)? {
                 let path = database.path();
                 if path.extension().and_then(|value| value.to_str()) == Some("db") {
@@ -222,18 +222,18 @@ impl LogStore for SqliteLogStore {
 
     async fn delete_before(&self, cutoff_ms: i64) -> AppResult<Vec<String>> {
         let mut removed = Vec::new();
-        let mut groups = match tokio::fs::read_dir(&self.root).await {
+        let mut services = match tokio::fs::read_dir(&self.root).await {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(removed),
             Err(error) => return Err(storage(error)),
         };
 
-        while let Some(group) = groups.next_entry().await.map_err(storage)? {
-            if !group.file_type().await.map_err(storage)?.is_dir() {
+        while let Some(service) = services.next_entry().await.map_err(storage)? {
+            if !service.file_type().await.map_err(storage)?.is_dir() {
                 continue;
             }
-            let group_name = group.file_name().to_string_lossy().into_owned();
-            let mut databases = tokio::fs::read_dir(group.path()).await.map_err(storage)?;
+            let service_name = service.file_name().to_string_lossy().into_owned();
+            let mut databases = tokio::fs::read_dir(service.path()).await.map_err(storage)?;
             while let Some(database) = databases.next_entry().await.map_err(storage)? {
                 let file_name = database.file_name().to_string_lossy().into_owned();
                 let path = database.path();
@@ -246,7 +246,7 @@ impl LogStore for SqliteLogStore {
                 self.pools.evict(&path).await;
                 tokio::fs::remove_file(&path).await.map_err(storage)?;
                 self.pools.forget_path(&path).await;
-                removed.push(format!("{group_name}/{file_name}"));
+                removed.push(format!("{service_name}/{file_name}"));
             }
         }
 
@@ -254,7 +254,7 @@ impl LogStore for SqliteLogStore {
         Ok(removed)
     }
 
-    async fn append(&self, log_group: &str, lines: Vec<LogLine>) -> AppResult<()> {
+    async fn append(&self, service: &str, lines: Vec<LogLine>) -> AppResult<()> {
         let mut by_week = HashMap::<String, Vec<LogLine>>::new();
         for line in lines {
             if let Some(week) = week_database_name(line.ts) {
@@ -265,15 +265,15 @@ impl LogStore for SqliteLogStore {
             return Ok(());
         }
 
-        let group_dir = self.root.join(safe_group_path(log_group));
-        tokio::fs::create_dir_all(&group_dir)
+        let service_dir = self.root.join(safe_service_path(service));
+        tokio::fs::create_dir_all(&service_dir)
             .await
             .map_err(storage)?;
 
         for (week, lines) in by_week {
-            let path = group_dir.join(&week);
+            let path = service_dir.join(&week);
             let _operation = self.pools.lock_path(&path).await;
-            let pool = self.pools.pool(&path, log_group, &week).await?;
+            let pool = self.pools.pool(&path, service, &week).await?;
             let mut tx = pool.begin().await.map_err(storage)?;
             for line in lines {
                 let level = detect_level(&line.line).map(level_name);
@@ -294,7 +294,7 @@ impl LogStore for SqliteLogStore {
         Ok(())
     }
 
-    async fn query(&self, log_group: &str, filter: LogFilter) -> AppResult<LogPage> {
+    async fn query(&self, service: &str, filter: LogFilter) -> AppResult<LogPage> {
         let before = filter
             .before
             .as_deref()
@@ -318,8 +318,8 @@ impl LogStore for SqliteLogStore {
             before.as_ref()
         };
 
-        let group_dir = self.root.join(safe_group_path(log_group));
-        let Some(weeks) = read_week_files(&group_dir).await? else {
+        let service_dir = self.root.join(safe_service_path(service));
+        let Some(weeks) = read_week_files(&service_dir).await? else {
             return Ok(empty_page(None));
         };
 
@@ -332,9 +332,9 @@ impl LogStore for SqliteLogStore {
             if page.len() >= target {
                 break;
             }
-            let path = group_dir.join(&week);
+            let path = service_dir.join(&week);
             let _operation = self.pools.lock_path(&path).await;
-            let pool = self.pools.pool(&path, log_group, &week).await?;
+            let pool = self.pools.pool(&path, service, &week).await?;
             let mut builder = if sanitized_query.is_some() {
                 QueryBuilder::<Sqlite>::new(
                     "SELECT logs.id, logs.ts, logs.cid, logs.stream, logs.level, logs.line \
@@ -359,7 +359,7 @@ impl LogStore for SqliteLogStore {
             });
             builder.push_bind((target - page.len()) as i64);
             for row in builder.build().fetch_all(&pool).await.map_err(storage)? {
-                if let Some(entry) = decode_row(&row, log_group, &week) {
+                if let Some(entry) = decode_row(&row, service, &week) {
                     page.push(entry);
                 }
             }
@@ -439,9 +439,9 @@ fn level_name(level: LogLevel) -> String {
     format!("{level:?}").to_ascii_lowercase()
 }
 
-/// Every `*.db` week file in `group_dir` with its week start, ascending. `None` when absent.
-async fn read_week_files(group_dir: &Path) -> AppResult<Option<Vec<(String, i64)>>> {
-    let mut entries = match tokio::fs::read_dir(group_dir).await {
+/// Every `*.db` week file in `service_dir` with its week start, ascending. `None` when absent.
+async fn read_week_files(service_dir: &Path) -> AppResult<Option<Vec<(String, i64)>>> {
+    let mut entries = match tokio::fs::read_dir(service_dir).await {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(storage(err)),
@@ -554,7 +554,7 @@ fn push_cursor(
         .push("))");
 }
 
-fn decode_row(row: &SqliteRow, log_group: &str, week: &str) -> Option<StoredLog> {
+fn decode_row(row: &SqliteRow, service: &str, week: &str) -> Option<StoredLog> {
     let stream = match row.get::<String, _>("stream").as_str() {
         "stdout" => LogStream::Stdout,
         "stderr" => LogStream::Stderr,
@@ -576,7 +576,7 @@ fn decode_row(row: &SqliteRow, log_group: &str, week: &str) -> Option<StoredLog>
         id: row.get("id"),
         line: LogLine {
             ts,
-            log_group: log_group.to_string(),
+            service: service.to_string(),
             cid: row.get("cid"),
             stream,
             level,
@@ -587,13 +587,13 @@ fn decode_row(row: &SqliteRow, log_group: &str, week: &str) -> Option<StoredLog>
 
 async fn open_database(
     path: &Path,
-    log_group: &str,
+    service: &str,
     week: &str,
     cache_size_kb: u64,
     busy_timeout: Duration,
 ) -> AppResult<SqlitePool> {
     tracing::info!(
-        log_group = %log_group,
+        service = %service,
         week = %week,
         "opening log database connection"
     );
@@ -718,7 +718,7 @@ mod tests {
     fn line(ts: i64, line: &str) -> LogLine {
         LogLine {
             ts,
-            log_group: "group".into(),
+            service: "group".into(),
             cid: "abc123".into(),
             stream: LogStream::Stdout,
             level: None,
@@ -1025,7 +1025,7 @@ mod tests {
             .unwrap();
         let path = store
             .root
-            .join(safe_group_path("group"))
+            .join(safe_service_path("group"))
             .join(week_database_name(ts).unwrap());
 
         let operation = store.pools.lock_path(&path).await;

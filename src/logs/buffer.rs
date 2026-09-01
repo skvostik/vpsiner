@@ -12,9 +12,9 @@ use crate::logs::metadata::LogMetadataStore;
 use crate::logs::store::LogStore;
 use crate::model::LogLine;
 
-/// Owns in-memory buffering, per-container two-level dedup, and per-group debounced flushing to
-/// the `LogStore`/`LogMetadataStore`. Each log group flushes independently so a burst in one
-/// group never blocks or piles up with another.
+/// Owns in-memory buffering, per-container two-level dedup, and per-service debounced flushing to
+/// the `LogStore`/`LogMetadataStore`. Each service flushes independently so a burst in one
+/// service never blocks or piles up with another.
 pub struct LogBuffer {
     inner: Arc<Inner>,
 }
@@ -25,23 +25,23 @@ struct Inner {
     flush_watcher: Arc<LogFlushWatcher>,
     debounce: Duration,
     keep_alive: Duration,
-    groups: Mutex<HashMap<String, GroupHandle>>,
+    services: Mutex<HashMap<String, ServiceHandle>>,
 }
 
-struct GroupHandle {
-    state: Arc<Mutex<GroupState>>,
+struct ServiceHandle {
+    state: Arc<Mutex<ServiceState>>,
     flush_tx: Option<mpsc::Sender<()>>,
 }
 
 #[derive(Default)]
-struct GroupState {
+struct ServiceState {
     lines: Vec<LogLine>,
     // Last accepted (ts, content hash) per container, seeded from LogMetadataStore on startup.
     checkpoints: HashMap<String, (i64, u64)>,
 }
 
 impl LogBuffer {
-    /// Preloads every known (log_group, container_id) checkpoint so dedup survives restarts.
+    /// Preloads every known (service, container_id) checkpoint so dedup survives restarts.
     pub async fn new(
         logs: Arc<dyn LogStore>,
         metadata: Arc<dyn LogMetadataStore>,
@@ -51,10 +51,10 @@ impl LogBuffer {
     ) -> AppResult<Self> {
         tracing::info!(debounce = ?debounce, keep_alive = ?keep_alive, "initializing log buffer");
         tracing::info!("preloading log buffer checkpoints from metadata store");
-        let mut seeded: HashMap<String, GroupState> = HashMap::new();
-        for (log_group, container_id, checkpoint) in metadata.list_checkpoints().await? {
+        let mut seeded: HashMap<String, ServiceState> = HashMap::new();
+        for (service, container_id, checkpoint) in metadata.list_checkpoints().await? {
             seeded
-                .entry(log_group)
+                .entry(service)
                 .or_default()
                 .checkpoints
                 .insert(container_id, (checkpoint.ts, checkpoint.line_hash));
@@ -66,56 +66,56 @@ impl LogBuffer {
             flush_watcher,
             debounce,
             keep_alive,
-            groups: Mutex::new(HashMap::new()),
+            services: Mutex::new(HashMap::new()),
         });
         let buffer = Self { inner };
-        for (log_group, state) in seeded {
-            buffer.seed_group(log_group, state);
+        for (service, state) in seeded {
+            buffer.seed_service(service, state);
         }
         Ok(buffer)
     }
 
-    fn seed_group(&self, log_group: String, state: GroupState) {
+    fn seed_service(&self, service: String, state: ServiceState) {
         let state = Arc::new(Mutex::new(state));
-        self.inner.groups.lock().unwrap().insert(
-            log_group,
-            GroupHandle {
+        self.inner.services.lock().unwrap().insert(
+            service,
+            ServiceHandle {
                 state,
                 flush_tx: None,
             },
         );
     }
 
-    fn group_state(&self, log_group: &str) -> Arc<Mutex<GroupState>> {
-        let mut groups = self.inner.groups.lock().unwrap();
-        if !groups.contains_key(log_group) {
-            groups.insert(
-                log_group.to_string(),
-                GroupHandle {
-                    state: Arc::new(Mutex::new(GroupState::default())),
+    fn service_state(&self, service: &str) -> Arc<Mutex<ServiceState>> {
+        let mut services = self.inner.services.lock().unwrap();
+        if !services.contains_key(service) {
+            services.insert(
+                service.to_string(),
+                ServiceHandle {
+                    state: Arc::new(Mutex::new(ServiceState::default())),
                     flush_tx: None,
                 },
             );
         }
-        groups
-            .get(log_group)
-            .expect("group entry must exist")
+        services
+            .get(service)
+            .expect("service entry must exist")
             .state
             .clone()
     }
 
-    fn schedule_flush(&self, log_group: &str) {
+    fn schedule_flush(&self, service: &str) {
         let (state, flush_tx) = {
-            let mut groups = self.inner.groups.lock().unwrap();
-            let handle = groups
-                .get_mut(log_group)
-                .expect("group entry must exist before scheduling flush");
+            let mut services = self.inner.services.lock().unwrap();
+            let handle = services
+                .get_mut(service)
+                .expect("service entry must exist before scheduling flush");
             if handle.flush_tx.is_none() {
                 let (flush_tx, flush_rx) = mpsc::channel(1);
-                tracing::info!(log_group=%log_group, "spawning log flush worker");
+                tracing::info!(service=%service, "spawning log flush worker");
                 spawn_flush_worker(
                     Arc::downgrade(&self.inner),
-                    log_group.to_string(),
+                    service.to_string(),
                     handle.state.clone(),
                     flush_rx,
                 );
@@ -136,12 +136,12 @@ impl LogBuffer {
     }
 
     /// Buffers `line` unless it's dropped by the two-level dedup check, and schedules a
-    /// debounced flush for its group: strictly-older lines are dropped, exact repeats at the
+    /// debounced flush for its service: strictly-older lines are dropped, exact repeats at the
     /// boundary timestamp are dropped, anything else (including a distinct line sharing the
     /// same timestamp) is accepted.
     pub fn push(&self, line: LogLine) {
-        let log_group = line.log_group.clone();
-        let state = self.group_state(&log_group);
+        let service = line.service.clone();
+        let state = self.service_state(&service);
         {
             let mut guard = state.lock().unwrap();
             let hash = hash_line(&line);
@@ -153,27 +153,27 @@ impl LogBuffer {
             guard.checkpoints.insert(line.cid.clone(), (line.ts, hash));
             guard.lines.push(line);
         }
-        self.schedule_flush(&log_group);
+        self.schedule_flush(&service);
     }
 
-    /// Flushes every group immediately, bypassing the debounce. Used on shutdown.
+    /// Flushes every service immediately, bypassing the debounce. Used on shutdown.
     pub async fn flush_all(&self) {
-        let handles: Vec<(String, Arc<Mutex<GroupState>>)> = self
+        let handles: Vec<(String, Arc<Mutex<ServiceState>>)> = self
             .inner
-            .groups
+            .services
             .lock()
             .unwrap()
             .iter()
-            .map(|(group, handle)| (group.clone(), handle.state.clone()))
+            .map(|(service, handle)| (service.clone(), handle.state.clone()))
             .collect();
-        for (group, state) in handles {
-            self.inner.flush_group(&group, &state).await;
+        for (service, state) in handles {
+            self.inner.flush_service(&service, &state).await;
         }
     }
 }
 
 impl Inner {
-    async fn flush_group(&self, log_group: &str, state: &Arc<Mutex<GroupState>>) {
+    async fn flush_service(&self, service: &str, state: &Arc<Mutex<ServiceState>>) {
         let (lines, checkpoints) = {
             let mut guard = state.lock().unwrap();
             if guard.lines.is_empty() {
@@ -196,8 +196,8 @@ impl Inner {
         };
 
         let retry_lines = lines.clone();
-        if let Err(err) = self.logs.append(log_group, lines).await {
-            tracing::warn!(log_group = %log_group, error = %err, "failed to persist container logs; scheduling retry");
+        if let Err(err) = self.logs.append(service, lines).await {
+            tracing::warn!(service = %service, error = %err, "failed to persist container logs; scheduling retry");
 
             // Preserve failed lines and keep their relative order ahead of any newer lines.
             {
@@ -212,27 +212,27 @@ impl Inner {
                 }
             }
 
-            self.request_group_flush(log_group);
+            self.request_service_flush(service);
             return; // don't advance checkpoints for data that didn't land
         }
         for (cid, ts, line_hash) in checkpoints {
             if let Err(err) = self
                 .metadata
-                .record_received(log_group, &cid, ts, line_hash)
+                .record_received(service, &cid, ts, line_hash)
                 .await
             {
-                tracing::error!(log_group = %log_group, cid = %cid, error = %err, "failed to persist last-received checkpoint");
+                tracing::error!(service = %service, cid = %cid, error = %err, "failed to persist last-received checkpoint");
             }
         }
-        self.flush_watcher.notify(log_group);
+        self.flush_watcher.notify(service);
     }
 
-    fn request_group_flush(&self, log_group: &str) {
+    fn request_service_flush(&self, service: &str) {
         let sender = self
-            .groups
+            .services
             .lock()
             .unwrap()
-            .get(log_group)
+            .get(service)
             .and_then(|handle| handle.flush_tx.clone());
         if let Some(flush_tx) = sender {
             let _ = flush_tx.try_send(());
@@ -242,8 +242,8 @@ impl Inner {
 
 fn spawn_flush_worker(
     inner: Weak<Inner>,
-    log_group: String,
-    state: Arc<Mutex<GroupState>>,
+    service: String,
+    state: Arc<Mutex<ServiceState>>,
     mut flush_rx: mpsc::Receiver<()>,
 ) {
     tokio::spawn(async move {
@@ -267,7 +267,7 @@ fn spawn_flush_worker(
                     let Some(inner_ref) = inner.upgrade() else {
                         return;
                     };
-                    inner_ref.flush_group(&log_group, &state).await;
+                    inner_ref.flush_service(&service, &state).await;
                 }
                 Ok(None) => return,
                 Err(_) => {
@@ -275,14 +275,14 @@ fn spawn_flush_worker(
                         return;
                     };
 
-                    let mut groups = inner_ref.groups.lock().unwrap();
-                    let Some(handle) = groups.get_mut(&log_group) else {
+                    let mut services = inner_ref.services.lock().unwrap();
+                    let Some(handle) = services.get_mut(&service) else {
                         return;
                     };
 
                     if handle.state.lock().unwrap().lines.is_empty() {
                         handle.flush_tx = None;
-                        tracing::debug!(log_group=%log_group, keep_alive=?keep_alive, "stopping idle log flush worker");
+                        tracing::debug!(service=%service, keep_alive=?keep_alive, "stopping idle log flush worker");
                         return;
                     }
                 }
