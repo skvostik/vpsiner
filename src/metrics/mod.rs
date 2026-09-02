@@ -1,4 +1,5 @@
 pub mod bucket_watcher;
+mod bucketizer;
 pub mod collector;
 pub mod downsampling;
 pub mod host;
