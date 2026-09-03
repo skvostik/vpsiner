@@ -1,15 +1,13 @@
 import { onBeforeUnmount, ref, watch, type Ref } from 'vue'
 
 import { reportSseIssue } from './useBackendHealth'
+import { reconnectDelayMs, trimTickMs } from './streamConfig'
 import type {
   ContainerMetricsByService,
   GroupPoint,
   MetricsResolution,
   MetricsResponse,
 } from '../types'
-
-const trimTickMs = 5_000
-const reconnectDelayMs = 3_000
 
 /** Live aggregate per-log-group metrics history for HostView, pushed instead of polled. */
 export function useContainersMetricsStream(

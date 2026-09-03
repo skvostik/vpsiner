@@ -1,6 +1,7 @@
 import { onBeforeUnmount, ref, watch, type Ref } from 'vue'
 
 import { reportSseIssue } from './useBackendHealth'
+import { reconnectDelayMs, trimTickMs } from './streamConfig'
 import type {
   ContainerGroupMetricsAppend,
   ContainerPoint,
@@ -8,9 +9,6 @@ import type {
   MetricsResolution,
   MetricsResponse,
 } from '../types'
-
-const trimTickMs = 5_000
-const reconnectDelayMs = 3_000
 
 /** Live per-service history for the container detail view, pushed instead of polled. */
 export function useContainerMetricsStream(

@@ -1,7 +1,10 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
-const onlineIntervalMs = 15_000
-const offlineIntervalMs = 3_000
+import {
+  healthCheckTimeoutMs,
+  healthOfflineIntervalMs,
+  healthOnlineIntervalMs,
+} from './streamConfig'
 
 export const backendOnline = ref(true)
 /** Whether container start/stop/restart endpoints are usable against the current Docker socket/proxy. */
@@ -15,7 +18,11 @@ let timer: number | undefined
 
 async function check() {
   try {
-    const response = await fetch('/api/health', { cache: 'no-store' })
+    // A hung request (backend accepted the connection but never replies) must not stall polling forever.
+    const response = await fetch('/api/health', {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(healthCheckTimeoutMs),
+    })
     backendOnline.value = response.ok
     if (response.ok) {
       const body = (await response.json()) as {
@@ -35,7 +42,10 @@ async function check() {
 
 function schedule() {
   if (timer) window.clearTimeout(timer)
-  timer = window.setTimeout(check, backendOnline.value ? onlineIntervalMs : offlineIntervalMs)
+  timer = window.setTimeout(
+    check,
+    backendOnline.value ? healthOnlineIntervalMs : healthOfflineIntervalMs
+  )
 }
 
 /** Lets API calls flag an outage immediately instead of waiting for the next poll. */

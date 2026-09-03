@@ -3,6 +3,7 @@ import { useMessage } from 'naive-ui'
 
 import { api } from '../api'
 import { reportSseIssue } from './useBackendHealth'
+import { reconnectDelayMs } from './streamConfig'
 import { useServicesStream } from './useServicesStream'
 import type {
   LogLevel,
@@ -94,6 +95,7 @@ export function useLogs(initialService?: string): UseLogsState {
   let requestVersion = 0
   let freshTimer: number | undefined
   let tailSource: EventSource | undefined
+  let tailReconnectTimer: number | undefined
   // Serializes pagination fetches so they never mutate pages concurrently.
   let fetching = false
 
@@ -312,6 +314,8 @@ export function useLogs(initialService?: string): UseLogsState {
   }
 
   function stopTailStream() {
+    if (tailReconnectTimer) window.clearTimeout(tailReconnectTimer)
+    tailReconnectTimer = undefined
     tailSource?.close()
     tailSource = undefined
   }
@@ -340,8 +344,20 @@ export function useLogs(initialService?: string): UseLogsState {
       }
       hasNewer.value = false
     })
-    // The browser retries automatically; only surface a real outage once the stream is closed.
-    tailSource.onerror = () => reportSseIssue(tailSource)
+    // A failed handshake (e.g. proxy 502 during a backend restart) leaves the browser's
+    // own retry disabled, so reconnect ourselves as long as tailing is still wanted.
+    tailSource.onerror = () => {
+      const failedSource = tailSource
+      reportSseIssue(failedSource)
+      failedSource?.close()
+      if (tailSource === failedSource) tailSource = undefined
+      if (tailing.value && !tailReconnectTimer) {
+        tailReconnectTimer = window.setTimeout(() => {
+          tailReconnectTimer = undefined
+          startTailStream()
+        }, reconnectDelayMs)
+      }
+    }
   }
 
   function persist() {
