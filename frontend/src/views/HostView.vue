@@ -11,7 +11,7 @@ import { useHostMetricsStream } from '../composables/useHostMetricsStream'
 import { useMetricsSnapshotStream } from '../composables/useMetricsSnapshotStream'
 import { useMetricsWindow } from '../composables/useMetricsWindow'
 import { usePageTitle } from '../composables/usePageTitle'
-import type { ContainerMetricsByService, HostPoint, MetricsResolution, TimeRange } from '../types'
+import type { ContainerMetricsByService, HostPoint, TimeRange } from '../types'
 
 const restHostSamples = ref<HostPoint[]>([])
 const restContainerMetricHistory = ref<ContainerMetricsByService>({})
@@ -19,14 +19,15 @@ const restContainerMetricHistory = ref<ContainerMetricsByService>({})
 // Card headers always show current values, independently of the chart window below them.
 const { snapshot } = useMetricsSnapshotStream()
 
-async function load(range: TimeRange, resolution: MetricsResolution) {
+async function load(range: TimeRange) {
   if (isLive.value) return // live windows are handled by the SSE streams instead
   const [hostMetrics, history] = await Promise.all([
-    api.host.metrics(range, resolution),
-    containerMetricsHistory(range, resolution),
+    api.host.metrics(range),
+    containerMetricsHistory(range),
   ])
-  restHostSamples.value = hostMetrics
-  restContainerMetricHistory.value = history
+  restHostSamples.value = hostMetrics.data
+  restContainerMetricHistory.value = history.data
+  return hostMetrics.resolution
 }
 
 const {
@@ -34,18 +35,18 @@ const {
   customFrom,
   customTo,
   isLive,
-  resolution,
   resolutionLabel,
   liveWindowMs,
+  setResolution,
   updateWindow,
   updateCustomFrom,
   updateCustomTo,
 } = useMetricsWindow(load)
-const { points: liveHostSamples } = useHostMetricsStream(resolution, liveWindowMs, isLive)
+const { points: liveHostSamples } = useHostMetricsStream(liveWindowMs, isLive, setResolution)
 const { series: liveContainerMetricHistory } = useContainersMetricsStream(
-  resolution,
   liveWindowMs,
-  isLive
+  isLive,
+  setResolution
 )
 const hostSamples = computed(() => (isLive.value ? liveHostSamples.value : restHostSamples.value))
 const containerMetricHistory = computed(() =>

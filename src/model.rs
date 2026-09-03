@@ -142,6 +142,12 @@ pub struct ContainerGroupMetrics {
 
 pub type ContainerMetricsByService = HashMap<String, Vec<GroupPoint>>;
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MetricsResponse<T> {
+    pub resolution: String,
+    pub data: T,
+}
+
 /// One newly-completed bucket's cross-section, pushed by `/api/stream/metrics/containers/{service}`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ContainerGroupMetricsAppend {
@@ -350,6 +356,8 @@ pub enum MetricsResolution {
     OneHour,
 }
 
+const RESOLUTION_BOUNDARY_TOLERANCE_MS: TimestampMs = 60_000;
+
 impl MetricsResolution {
     /// Resolutions materialised by rolling up the `10s` tables.
     pub const COARSE: [MetricsResolution; 3] = [
@@ -364,6 +372,28 @@ impl MetricsResolution {
             MetricsResolution::OneMinute => 60_000,
             MetricsResolution::FiveMinutes => 300_000,
             MetricsResolution::OneHour => 3_600_000,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MetricsResolution::TenSeconds => "10s",
+            MetricsResolution::OneMinute => "1m",
+            MetricsResolution::FiveMinutes => "5m",
+            MetricsResolution::OneHour => "1h",
+        }
+    }
+
+    pub fn for_range(range: TimeRange) -> Self {
+        let span = range.to.saturating_sub(range.from);
+        if span <= 30 * 60 * 1000 + RESOLUTION_BOUNDARY_TOLERANCE_MS {
+            MetricsResolution::TenSeconds
+        } else if span <= 3 * 60 * 60 * 1000 + RESOLUTION_BOUNDARY_TOLERANCE_MS {
+            MetricsResolution::OneMinute
+        } else if span <= 24 * 60 * 60 * 1000 + RESOLUTION_BOUNDARY_TOLERANCE_MS {
+            MetricsResolution::FiveMinutes
+        } else {
+            MetricsResolution::OneHour
         }
     }
 }

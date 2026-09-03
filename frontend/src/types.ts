@@ -64,6 +64,12 @@ export interface ContainerGroupMetrics {
 }
 
 export type ContainerMetricsByService = Record<string, GroupPoint[]>
+export type MetricsResolution = '10s' | '1m' | '5m' | '1h'
+
+export interface MetricsResponse<T> {
+  resolution: MetricsResolution
+  data: T
+}
 
 /** One newly-completed bucket's cross-section, pushed by GET /api/stream/metrics/containers/{service}. */
 export interface ContainerGroupMetricsAppend {
@@ -84,7 +90,6 @@ export type LogStream = 'stdout' | 'stderr'
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
 
 export type MetricsWindow = '10m' | '30m' | '1h' | '6h' | '24h' | '7d' | 'custom'
-export type MetricsResolution = '10s' | '1m' | '5m' | '1h'
 
 export interface TimeRange {
   from: number

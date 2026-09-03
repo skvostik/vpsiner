@@ -6,6 +6,7 @@ import type {
   ContainerPoint,
   GroupPoint,
   MetricsResolution,
+  MetricsResponse,
 } from '../types'
 
 const trimTickMs = 5_000
@@ -13,9 +14,9 @@ const trimTickMs = 5_000
 /** Live per-service history for the container detail view, pushed instead of polled. */
 export function useContainerMetricsStream(
   service: Ref<string>,
-  resolution: Ref<MetricsResolution>,
   windowMs: Ref<number>,
-  active: Ref<boolean>
+  active: Ref<boolean>,
+  setResolution: (resolution: MetricsResolution) => void
 ) {
   const sum = ref<GroupPoint[]>([])
   const containers = ref<Record<string, ContainerPoint[]>>({})
@@ -44,21 +45,20 @@ export function useContainerMetricsStream(
     if (!active.value || !service.value || !windowMs.value) return
 
     const from = Date.now() - windowMs.value
-    const params = new URLSearchParams({
-      from: String(from),
-      resolution: resolution.value,
-    })
+    const params = new URLSearchParams({ from: String(from) })
     source = new EventSource(
       `/api/stream/metrics/containers/${encodeURIComponent(service.value)}?${params}`
     )
     source.addEventListener('snapshot', (event) => {
-      const data = JSON.parse((event as MessageEvent).data) as {
+      const response = JSON.parse((event as MessageEvent).data) as MetricsResponse<{
         sum: GroupPoint[]
         containers: Record<string, ContainerPoint[]>
-      }
+      }>
+      const data = response.data
       sum.value = data.sum
       containers.value = data.containers
-      console.debug('[container-metrics-stream] snapshot', data)
+      setResolution(response.resolution)
+      console.debug('[container-metrics-stream] snapshot', response)
     })
     source.addEventListener('append', (event) => {
       const append = JSON.parse((event as MessageEvent).data) as ContainerGroupMetricsAppend
@@ -75,7 +75,7 @@ export function useContainerMetricsStream(
     trimTimer = window.setInterval(trim, trimTickMs)
   }
 
-  watch([service, resolution, windowMs, active], connect, { immediate: true })
+  watch([service, windowMs, active], connect, { immediate: true })
   onBeforeUnmount(disconnect)
 
   return { sum, containers }

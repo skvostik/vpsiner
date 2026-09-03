@@ -18,7 +18,7 @@ import { useMetricsSnapshotStream } from '../composables/useMetricsSnapshotStrea
 import { useMetricsWindow } from '../composables/useMetricsWindow'
 import { useNow } from '../composables/useNow'
 import { usePageTitle } from '../composables/usePageTitle'
-import type { ContainerPoint, MetricsResolution, TimeRange } from '../types'
+import type { ContainerPoint, TimeRange } from '../types'
 
 const route = useRoute()
 const router = useRouter()
@@ -123,10 +123,11 @@ const canRestart = computed(
     ['running', 'paused'].includes(container.value.state)
 )
 
-async function loadMetrics(range: TimeRange, resolution: MetricsResolution) {
+async function loadMetrics(range: TimeRange) {
   if (!service.value || isLive.value) return
-  const next = await api.containers.metrics(service.value, range, resolution)
-  restContainerSamples.value = next.containers
+  const next = await api.containers.metrics(service.value, range)
+  restContainerSamples.value = next.data.containers
+  return next.resolution
 }
 
 const {
@@ -134,9 +135,9 @@ const {
   customFrom,
   customTo,
   isLive,
-  resolution,
   resolutionLabel,
   liveWindowMs,
+  setResolution,
   updateWindow,
   updateCustomFrom,
   updateCustomTo,
@@ -144,9 +145,9 @@ const {
 } = useMetricsWindow(loadMetrics)
 const { containers: liveContainerSamples } = useContainerMetricsStream(
   service,
-  resolution,
   liveWindowMs,
-  isLive
+  isLive,
+  setResolution
 )
 const containerSamples = computed(() =>
   isLive.value ? liveContainerSamples.value : restContainerSamples.value

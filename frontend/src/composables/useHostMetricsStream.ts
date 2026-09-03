@@ -1,15 +1,15 @@
 import { onBeforeUnmount, ref, watch, type Ref } from 'vue'
 
 import { reportSseIssue } from './useBackendHealth'
-import type { HostPoint, MetricsResolution } from '../types'
+import type { HostPoint, MetricsResolution, MetricsResponse } from '../types'
 
 const trimTickMs = 5_000
 
 /** Live host metrics history for HostView, pushed instead of polled. */
 export function useHostMetricsStream(
-  resolution: Ref<MetricsResolution>,
   windowMs: Ref<number>,
-  active: Ref<boolean>
+  active: Ref<boolean>,
+  setResolution: (resolution: MetricsResolution) => void
 ) {
   const points = ref<HostPoint[]>([])
 
@@ -34,11 +34,13 @@ export function useHostMetricsStream(
     if (!active.value || !windowMs.value) return
 
     const from = Date.now() - windowMs.value
-    const params = new URLSearchParams({ from: String(from), resolution: resolution.value })
+    const params = new URLSearchParams({ from: String(from) })
     source = new EventSource(`/api/stream/metrics/host?${params}`)
     source.addEventListener('snapshot', (event) => {
-      points.value = JSON.parse((event as MessageEvent).data) as HostPoint[]
-      console.debug('[host-metrics-stream] snapshot', points.value)
+      const response = JSON.parse((event as MessageEvent).data) as MetricsResponse<HostPoint[]>
+      points.value = response.data
+      setResolution(response.resolution)
+      console.debug('[host-metrics-stream] snapshot', response)
     })
     source.addEventListener('append', (event) => {
       const point = JSON.parse((event as MessageEvent).data) as HostPoint
@@ -52,7 +54,7 @@ export function useHostMetricsStream(
     trimTimer = window.setInterval(trim, trimTickMs)
   }
 
-  watch([resolution, windowMs, active], connect, { immediate: true })
+  watch([windowMs, active], connect, { immediate: true })
   onBeforeUnmount(disconnect)
 
   return { points }

@@ -1,5 +1,5 @@
 //! SSE versions of the time-series metrics endpoints. Unlike `stream.rs`'s snapshot/diff
-//! endpoints, these are parameterized per connection (`from`/`resolution`, and `service`
+//! endpoints, these are parameterized per connection (`from`, and `service`
 //! for the per-service endpoint) and driven by `BucketWatcher`, not a data-change signal: a new
 //! point only exists once wall-clock time crosses the next completed bucket for that resolution.
 //! Each endpoint watches only its own sample source, so the two collectors never wake each other.
@@ -15,12 +15,12 @@ use futures_util::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
-use crate::api::metrics::parse_resolution;
 use crate::error::{AppError, AppResult};
 use crate::metrics::bucket_watcher::MetricsSource;
 use crate::metrics::store::MetricsStore;
 use crate::model::{
-    ContainerGroupMetricsAppend, GroupPoint, MetricsResolution, TimeRange, TimestampMs,
+    ContainerGroupMetricsAppend, GroupPoint, MetricsResolution, MetricsResponse, TimeRange,
+    TimestampMs,
 };
 use crate::state::AppState;
 
@@ -35,7 +35,6 @@ fn now_ms() -> TimestampMs {
 #[derive(Debug, Deserialize)]
 pub struct MetricsStreamQuery {
     pub from: i64,
-    pub resolution: String,
 }
 
 impl MetricsStreamQuery {
@@ -51,7 +50,10 @@ impl MetricsStreamQuery {
                 from: self.from,
                 to,
             },
-            parse_resolution(&self.resolution)?,
+            MetricsResolution::for_range(TimeRange {
+                from: self.from,
+                to,
+            }),
         ))
     }
 }
@@ -91,7 +93,13 @@ pub async fn host(
                         .await
                         .unwrap_or_default();
                     let last_sent = points.last().map(|p| p.ts).unwrap_or(range.from);
-                    let event = to_event(Some("snapshot"), &points);
+                    let event = to_event(
+                        Some("snapshot"),
+                        &MetricsResponse {
+                            resolution: resolution.as_str().to_string(),
+                            data: points,
+                        },
+                    );
                     Some((
                         event,
                         HostStreamState::Waiting(metrics, rx, last_sent, resolution),
@@ -169,7 +177,13 @@ pub async fn containers(
                         .map(|(service, group)| (service, group.sum))
                         .collect();
                     let last_sent = latest_ts_by_service(&series).unwrap_or(range.from);
-                    let event = to_event(Some("snapshot"), &series);
+                    let event = to_event(
+                        Some("snapshot"),
+                        &MetricsResponse {
+                            resolution: resolution.as_str().to_string(),
+                            data: series,
+                        },
+                    );
                     Some((
                         event,
                         ContainersStreamState::Waiting(metrics, rx, last_sent, resolution),
@@ -254,7 +268,13 @@ pub async fn container(
                         .unwrap_or_default();
                     let group_metrics = by_service.remove(&service).unwrap_or_default();
                     let last_sent = latest_ts_in_service(&group_metrics).unwrap_or(range.from);
-                    let event = to_event(Some("snapshot"), &group_metrics);
+                    let event = to_event(
+                        Some("snapshot"),
+                        &MetricsResponse {
+                            resolution: resolution.as_str().to_string(),
+                            data: group_metrics,
+                        },
+                    );
                     Some((
                         event,
                         ContainerStreamState::Waiting(metrics, rx, service, last_sent, resolution),

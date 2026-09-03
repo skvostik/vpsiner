@@ -1,15 +1,20 @@
 import { onBeforeUnmount, ref, watch, type Ref } from 'vue'
 
 import { reportSseIssue } from './useBackendHealth'
-import type { ContainerMetricsByService, GroupPoint, MetricsResolution } from '../types'
+import type {
+  ContainerMetricsByService,
+  GroupPoint,
+  MetricsResolution,
+  MetricsResponse,
+} from '../types'
 
 const trimTickMs = 5_000
 
 /** Live aggregate per-log-group metrics history for HostView, pushed instead of polled. */
 export function useContainersMetricsStream(
-  resolution: Ref<MetricsResolution>,
   windowMs: Ref<number>,
-  active: Ref<boolean>
+  active: Ref<boolean>,
+  setResolution: (resolution: MetricsResolution) => void
 ) {
   const series = ref<ContainerMetricsByService>({})
 
@@ -36,11 +41,15 @@ export function useContainersMetricsStream(
     if (!active.value || !windowMs.value) return
 
     const from = Date.now() - windowMs.value
-    const params = new URLSearchParams({ from: String(from), resolution: resolution.value })
+    const params = new URLSearchParams({ from: String(from) })
     source = new EventSource(`/api/stream/metrics/containers?${params}`)
     source.addEventListener('snapshot', (event) => {
-      series.value = JSON.parse((event as MessageEvent).data) as ContainerMetricsByService
-      console.debug('[containers-metrics-stream] snapshot', series.value)
+      const response = JSON.parse(
+        (event as MessageEvent).data
+      ) as MetricsResponse<ContainerMetricsByService>
+      series.value = response.data
+      setResolution(response.resolution)
+      console.debug('[containers-metrics-stream] snapshot', response)
     })
     source.addEventListener('append', (event) => {
       const append = JSON.parse((event as MessageEvent).data) as Record<string, GroupPoint>
@@ -56,7 +65,7 @@ export function useContainersMetricsStream(
     trimTimer = window.setInterval(trim, trimTickMs)
   }
 
-  watch([resolution, windowMs, active], connect, { immediate: true })
+  watch([windowMs, active], connect, { immediate: true })
   onBeforeUnmount(disconnect)
 
   return { series }

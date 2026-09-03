@@ -20,22 +20,13 @@ const resolutionLabels: Record<MetricsResolution, string> = {
   '1h': '1 hour avg',
 }
 
-function resolutionFor(range: TimeRange): MetricsResolution {
-  const span = range.to - range.from
-  if (span <= 30 * 60 * 1000) return '10s'
-  if (span <= 3 * 60 * 60 * 1000) return '1m'
-  if (span <= 24 * 60 * 60 * 1000) return '5m'
-  return '1h'
-}
-
-export function useMetricsWindow(
-  load: (range: TimeRange, resolution: MetricsResolution) => Promise<void>
-) {
+export function useMetricsWindow(load: (range: TimeRange) => Promise<MetricsResolution | void>) {
   const timeWindow = ref<MetricsWindow>('10m')
   const customFrom = ref<number>()
   const customTo = ref<number>()
   const loading = ref(false)
   const error = ref('')
+  const resolution = ref<MetricsResolution>()
 
   const isLive = computed(() => timeWindow.value !== 'custom')
 
@@ -48,8 +39,9 @@ export function useMetricsWindow(
     return { from: to - durationMs[timeWindow.value], to }
   }
 
-  const resolutionLabel = computed(() => resolutionLabels[resolutionFor(computeRange())])
-  const resolution = computed(() => resolutionFor(computeRange()))
+  const resolutionLabel = computed(() =>
+    resolution.value ? resolutionLabels[resolution.value] : undefined
+  )
   const liveWindowMs = computed(() =>
     isLive.value && timeWindow.value !== 'custom' ? durationMs[timeWindow.value] : 0
   )
@@ -58,13 +50,18 @@ export function useMetricsWindow(
     loading.value = true
     const range = computeRange()
     try {
-      await load(range, resolutionFor(range))
+      const nextResolution = await load(range)
+      if (nextResolution) resolution.value = nextResolution
       error.value = ''
     } catch (loadError) {
       error.value = loadError instanceof Error ? loadError.message : 'Unable to load metrics'
     } finally {
       loading.value = false
     }
+  }
+
+  function setResolution(value: MetricsResolution) {
+    resolution.value = value
   }
 
   function persist() {
@@ -126,6 +123,7 @@ export function useMetricsWindow(
     resolution,
     resolutionLabel,
     liveWindowMs,
+    setResolution,
     updateWindow,
     updateCustomFrom,
     updateCustomTo,
