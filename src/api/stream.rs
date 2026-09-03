@@ -7,6 +7,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use futures_util::stream::{self, Stream};
 use serde::Serialize;
 use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 
 use crate::docker::DockerService;
 use crate::metrics::snapshot::MetricsSnapshotState;
@@ -18,11 +19,13 @@ enum StreamState {
         Arc<MetricsSnapshotState>,
         watch::Receiver<u64>,
         watch::Receiver<u64>,
+        CancellationToken,
     ),
     Waiting(
         Arc<MetricsSnapshotState>,
         watch::Receiver<u64>,
         watch::Receiver<u64>,
+        CancellationToken,
     ),
 }
 
@@ -32,19 +35,21 @@ pub async fn current(
     let snapshot = state.snapshot.clone();
     let host_rx = snapshot.subscribe_host();
     let containers_rx = snapshot.subscribe_containers();
+    let shutdown = state.shutdown.clone();
     let stream = stream::unfold(
-        StreamState::Initial(snapshot, host_rx, containers_rx),
+        StreamState::Initial(snapshot, host_rx, containers_rx, shutdown),
         |current_state| async move {
             match current_state {
-                StreamState::Initial(snapshot, host_rx, containers_rx) => {
+                StreamState::Initial(snapshot, host_rx, containers_rx, shutdown) => {
                     let event = to_event(Some("snapshot"), &snapshot.current());
                     Some((
                         event,
-                        StreamState::Waiting(snapshot, host_rx, containers_rx),
+                        StreamState::Waiting(snapshot, host_rx, containers_rx, shutdown),
                     ))
                 }
-                StreamState::Waiting(snapshot, mut host_rx, mut containers_rx) => {
+                StreamState::Waiting(snapshot, mut host_rx, mut containers_rx, shutdown) => {
                     let event = tokio::select! {
+                        _ = shutdown.cancelled() => return None,
                         changed = host_rx.changed() => {
                             changed.ok()?;
                             to_event(Some("host"), &snapshot.current_host())
@@ -56,7 +61,7 @@ pub async fn current(
                     };
                     Some((
                         event,
-                        StreamState::Waiting(snapshot, host_rx, containers_rx),
+                        StreamState::Waiting(snapshot, host_rx, containers_rx, shutdown),
                     ))
                 }
             }
@@ -67,11 +72,16 @@ pub async fn current(
 }
 
 enum ContainersStreamState {
-    Initial(Arc<dyn DockerService>, watch::Receiver<u64>),
+    Initial(
+        Arc<dyn DockerService>,
+        watch::Receiver<u64>,
+        CancellationToken,
+    ),
     Waiting(
         Arc<dyn DockerService>,
         watch::Receiver<u64>,
         HashMap<String, ContainerSummary>,
+        CancellationToken,
     ),
 }
 
@@ -80,20 +90,29 @@ pub async fn containers(
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let docker = state.docker.clone();
     let rx = docker.subscribe_containers_info();
+    let shutdown = state.shutdown.clone();
     let stream = stream::unfold(
-        ContainersStreamState::Initial(docker, rx),
+        ContainersStreamState::Initial(docker, rx, shutdown),
         |current_state| async move {
             match current_state {
-                ContainersStreamState::Initial(docker, rx) => {
+                ContainersStreamState::Initial(docker, rx, shutdown) => {
                     let containers = docker.containers_info().unwrap_or_default();
                     let last_sent = index_by_id(&containers);
                     let event = to_event(Some("snapshot"), &containers);
-                    Some((event, ContainersStreamState::Waiting(docker, rx, last_sent)))
+                    Some((
+                        event,
+                        ContainersStreamState::Waiting(docker, rx, last_sent, shutdown),
+                    ))
                 }
-                ContainersStreamState::Waiting(docker, mut rx, mut last_sent) => {
+                ContainersStreamState::Waiting(docker, mut rx, mut last_sent, shutdown) => {
                     loop {
-                        if rx.changed().await.is_err() {
-                            return None;
+                        tokio::select! {
+                            _ = shutdown.cancelled() => return None,
+                            changed = rx.changed() => {
+                                if changed.is_err() {
+                                    return None;
+                                }
+                            }
                         }
                         rx.borrow_and_update();
                         let containers = docker.containers_info().unwrap_or_default();
@@ -109,7 +128,7 @@ pub async fn containers(
                         let event = to_event(Some("diff"), &diff);
                         return Some((
                             event,
-                            ContainersStreamState::Waiting(docker, rx, last_sent),
+                            ContainersStreamState::Waiting(docker, rx, last_sent, shutdown),
                         ));
                     }
                 }

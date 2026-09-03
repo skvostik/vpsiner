@@ -12,6 +12,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use futures_util::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 
 use crate::api::logs::{merge_services, parse_levels, parse_streams};
 use crate::error::AppResult;
@@ -20,12 +21,18 @@ use crate::model::{LogFilter, LogTailAppend, ServiceDiff, ServiceStatus};
 use crate::state::AppState;
 
 enum GroupsStreamState {
-    Initial(AppState, watch::Receiver<u64>, watch::Receiver<u64>),
+    Initial(
+        AppState,
+        watch::Receiver<u64>,
+        watch::Receiver<u64>,
+        CancellationToken,
+    ),
     Waiting(
         AppState,
         watch::Receiver<u64>,
         watch::Receiver<u64>,
         BTreeMap<String, ServiceStatus>,
+        CancellationToken,
     ),
 }
 
@@ -34,17 +41,24 @@ pub async fn groups(
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let flush_rx = state.log_flush_watcher.subscribe_any();
     let containers_rx = state.docker.subscribe_containers_info();
+    let shutdown = state.shutdown.clone();
 
     let stream = stream::unfold(
-        GroupsStreamState::Initial(state, flush_rx, containers_rx),
+        GroupsStreamState::Initial(state, flush_rx, containers_rx, shutdown),
         |current_state| async move {
             match current_state {
-                GroupsStreamState::Initial(state, flush_rx, containers_rx) => {
+                GroupsStreamState::Initial(state, flush_rx, containers_rx, shutdown) => {
                     let current = current_groups(&state).await;
                     let event = to_event(Some("snapshot"), &current);
                     Some((
                         event,
-                        GroupsStreamState::Waiting(state, flush_rx, containers_rx, current),
+                        GroupsStreamState::Waiting(
+                            state,
+                            flush_rx,
+                            containers_rx,
+                            current,
+                            shutdown,
+                        ),
                     ))
                 }
                 GroupsStreamState::Waiting(
@@ -52,9 +66,11 @@ pub async fn groups(
                     mut flush_rx,
                     mut containers_rx,
                     mut last_sent,
+                    shutdown,
                 ) => {
                     loop {
                         let changed = tokio::select! {
+                            _ = shutdown.cancelled() => return None,
                             result = flush_rx.changed() => result,
                             result = containers_rx.changed() => result,
                         };
@@ -74,7 +90,13 @@ pub async fn groups(
                         let event = to_event(Some("diff"), &diff);
                         return Some((
                             event,
-                            GroupsStreamState::Waiting(state, flush_rx, containers_rx, last_sent),
+                            GroupsStreamState::Waiting(
+                                state,
+                                flush_rx,
+                                containers_rx,
+                                last_sent,
+                                shutdown,
+                            ),
                         ));
                     }
                 }
@@ -153,6 +175,7 @@ struct TailState {
     /// Skips waiting for a flush notification once, so lines flushed between the client's last
     /// REST page load and this connection opening aren't missed.
     first: bool,
+    shutdown: CancellationToken,
 }
 
 pub async fn tail(
@@ -168,15 +191,22 @@ pub async fn tail(
         service,
         filter,
         first: true,
+        shutdown: state.shutdown.clone(),
     };
 
     let stream = stream::unfold(initial_state, |mut state| async move {
         loop {
             if state.first {
                 state.first = false;
-            } else if state.rx.changed().await.is_err() {
-                return None;
             } else {
+                tokio::select! {
+                    _ = state.shutdown.cancelled() => return None,
+                    changed = state.rx.changed() => {
+                        if changed.is_err() {
+                            return None;
+                        }
+                    }
+                }
                 state.rx.borrow_and_update();
             }
 

@@ -171,6 +171,7 @@ async fn async_main() {
     let metadata_store = state.metadata.clone();
     let metrics_store = state.metrics.clone();
     let logs_store = state.logs.clone();
+    let shutdown = state.shutdown.clone();
     let app = build_router(state, &config);
 
     let listener = tokio::net::TcpListener::bind(addr)
@@ -178,7 +179,7 @@ async fn async_main() {
         .expect("failed to bind TCP listener");
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(shutdown))
         .await
         .expect("server failed to start");
 
@@ -219,7 +220,7 @@ async fn close_with_timeout(name: &str, close_future: impl std::future::Future<O
     }
 }
 
-async fn shutdown_signal() {
+async fn shutdown_signal(shutdown: tokio_util::sync::CancellationToken) {
     let interrupt = async {
         tokio::signal::ctrl_c()
             .await
@@ -242,6 +243,8 @@ async fn shutdown_signal() {
     }
 
     tracing::info!("shutdown signal received");
+    // Wakes up every SSE stream so their connections close instead of blocking graceful shutdown.
+    shutdown.cancel();
 }
 
 fn build_router(state: AppState, config: &Config) -> Router {

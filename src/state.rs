@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use tokio_util::sync::CancellationToken;
+
 use crate::config::Config;
 use crate::docker::DockerService;
 use crate::logs::flush_watcher::LogFlushWatcher;
@@ -22,6 +24,8 @@ pub struct AppState {
     pub snapshot: Arc<MetricsSnapshotState>,
     pub bucket_watcher: Arc<BucketWatcher>,
     pub log_flush_watcher: Arc<LogFlushWatcher>,
+    /// Cancelled on shutdown so SSE streams stop holding their connection open.
+    pub shutdown: CancellationToken,
 }
 
 impl AppState {
@@ -46,6 +50,7 @@ impl AppState {
             snapshot,
             bucket_watcher,
             log_flush_watcher,
+            shutdown: CancellationToken::new(),
         }
     }
 }
