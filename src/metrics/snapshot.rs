@@ -122,12 +122,31 @@ impl MetricsSnapshotState {
                     None => (None, None, None, None),
                 };
 
+            // Derived from the rate of two cumulative counters, same as the bucketizer; the
+            // first sample for a container has no prior reading to diff against.
+            let cpu_pct = state
+                .previous
+                .get(&sample.cid)
+                .and_then(|previous| {
+                    let dt_ms = sample.ts - previous.ts;
+                    let cpu_rate =
+                        optional_rate(sample.cpu_usage_ns, previous.cpu_usage_ns, dt_ms)?;
+                    let system_rate = optional_rate(
+                        sample.system_cpu_usage_ns,
+                        previous.system_cpu_usage_ns,
+                        dt_ms,
+                    )?;
+                    (system_rate > 0.0)
+                        .then(|| cpu_rate / system_rate * sample.cpu_count as f64 * 100.0)
+                })
+                .unwrap_or(0.0);
+
             current.insert(
                 sample.cid.clone(),
                 ContainerPoint {
                     ts: sample.ts,
                     service: sample.service.clone(),
-                    cpu_pct: sample.cpu_pct,
+                    cpu_pct,
                     mem_used: sample.mem_used,
                     mem_limit: sample.mem_limit,
                     net_rx_rate,
@@ -252,11 +271,15 @@ mod tests {
         service: &str,
         net_rx: u64,
     ) -> ContainerRawSample {
+        // One CPU online, advancing so the ratio between any two samples is a steady 5% usage.
+        let seconds = (ts / 1_000) as u64;
         ContainerRawSample {
             ts,
             service: service.into(),
             cid: cid.into(),
-            cpu_pct: 5.0,
+            cpu_usage_ns: seconds * 50_000_000,
+            system_cpu_usage_ns: seconds * 1_000_000_000,
+            cpu_count: 1,
             mem_used: 100,
             mem_limit: 200,
             net_rx,
@@ -358,8 +381,14 @@ mod tests {
             container_sample(10_000, "def", "web", 0),
             container_sample(10_000, "ghi", "db", 0),
         ]);
+        // cpu_pct is a rate, so it needs a second sample per container to be non-zero.
+        state.record_containers(&[
+            container_sample(20_000, "abc", "web", 0),
+            container_sample(20_000, "def", "web", 0),
+            container_sample(20_000, "ghi", "db", 0),
+        ]);
 
-        let snapshot = state.current_at(10_000);
+        let snapshot = state.current_at(20_000);
         assert_eq!(snapshot.services["web"].cpu_pct, 10.0);
         assert_eq!(snapshot.services["web"].mem_used, 200);
         assert_eq!(snapshot.services["db"].cpu_pct, 5.0);

@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use crate::metrics::{
     bucketizer::{Bucketizer, CounterBucketizer, GaugeBucketizer, buffer_capacity},
-    collector_host::cpu_pct_mill,
     downsampling::bucket_end,
 };
 use crate::model::{ContainerRawSample, ContainerSample, MetricsResolution, TimestampMs};
@@ -12,7 +11,10 @@ use crate::model::{ContainerRawSample, ContainerSample, MetricsResolution, Times
 const MAX_IDLE_FLUSHES: u32 = 2;
 
 struct ContainerBucketizer {
-    bck_cpu_pct_mill: GaugeBucketizer,
+    bck_cpu_usage_ns: CounterBucketizer,
+    bck_system_cpu_usage_ns: CounterBucketizer,
+    /// Not bucketized: the online CPU count essentially never changes mid-run.
+    last_cpu_count: u32,
     bck_mem_used: GaugeBucketizer,
     bck_mem_limit: GaugeBucketizer,
     bck_net_rx_rate_mill: CounterBucketizer,
@@ -27,7 +29,9 @@ impl ContainerBucketizer {
         let capacity = buffer_capacity(collect_interval, bucket_len_ms);
 
         Self {
-            bck_cpu_pct_mill: GaugeBucketizer::new(capacity, bucket_len_ms),
+            bck_cpu_usage_ns: CounterBucketizer::new(capacity, bucket_len_ms),
+            bck_system_cpu_usage_ns: CounterBucketizer::new(capacity, bucket_len_ms),
+            last_cpu_count: 1,
             bck_mem_used: GaugeBucketizer::new(capacity, bucket_len_ms),
             bck_mem_limit: GaugeBucketizer::new(capacity, bucket_len_ms),
             bck_net_rx_rate_mill: CounterBucketizer::new(capacity, bucket_len_ms),
@@ -38,8 +42,10 @@ impl ContainerBucketizer {
     }
 
     fn push(&mut self, sample: &ContainerRawSample) {
-        self.bck_cpu_pct_mill
-            .push(sample.ts, cpu_pct_mill(sample.cpu_pct));
+        self.bck_cpu_usage_ns.push(sample.ts, sample.cpu_usage_ns);
+        self.bck_system_cpu_usage_ns
+            .push(sample.ts, sample.system_cpu_usage_ns);
+        self.last_cpu_count = sample.cpu_count;
         self.bck_mem_used.push(sample.ts, sample.mem_used);
         self.bck_mem_limit.push(sample.ts, sample.mem_limit);
         self.bck_net_rx_rate_mill.push(sample.ts, sample.net_rx);
@@ -47,6 +53,20 @@ impl ContainerBucketizer {
         self.bck_blk_read_rate_mill.push(sample.ts, sample.blk_read);
         self.bck_blk_write_rate_mill
             .push(sample.ts, sample.blk_write);
+    }
+
+    /// Derives CPU% from the ratio of two counter rates rather than averaging instantaneous
+    /// samples, so it reflects the true usage across the whole bucket window.
+    fn cpu_pct_mill(&self, bucket_end: TimestampMs) -> Option<u64> {
+        let cpu_rate = self.bck_cpu_usage_ns.collect(bucket_end)?;
+        let system_rate = self.bck_system_cpu_usage_ns.collect(bucket_end)?;
+        if system_rate == 0 {
+            return None;
+        }
+        u64::try_from(
+            cpu_rate as u128 * self.last_cpu_count as u128 * 100_000 / system_rate as u128,
+        )
+        .ok()
     }
 
     fn collect(
@@ -59,7 +79,7 @@ impl ContainerBucketizer {
             ts: bucket_end,
             service: service.to_owned(),
             cid: cid.to_owned(),
-            cpu_pct_mill: self.bck_cpu_pct_mill.collect(bucket_end)?,
+            cpu_pct_mill: self.cpu_pct_mill(bucket_end)?,
             mem_used: self.bck_mem_used.collect(bucket_end)?,
             mem_limit: self.bck_mem_limit.collect(bucket_end)?,
             net_rx_rate_mill: self.bck_net_rx_rate_mill.collect(bucket_end),
@@ -158,11 +178,15 @@ mod tests {
     }
 
     fn raw_sample(ts: TimestampMs, cid: &str, counter: u64) -> ContainerRawSample {
+        // One CPU online, advancing so the ratio is a steady 25% usage.
+        let seconds = (ts / 1_000) as u64;
         ContainerRawSample {
             ts,
             service: "web".into(),
             cid: cid.into(),
-            cpu_pct: 25.0,
+            cpu_usage_ns: seconds * 250_000_000,
+            system_cpu_usage_ns: seconds * 1_000_000_000,
+            cpu_count: 1,
             mem_used: 1_000,
             mem_limit: 2_000,
             net_rx: counter,

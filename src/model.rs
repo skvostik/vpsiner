@@ -107,7 +107,11 @@ pub struct ContainerRawSample {
     pub ts: TimestampMs,
     pub service: String,
     pub cid: String,
-    pub cpu_pct: f64,
+    /// Cumulative CPU time consumed by the container, from `cpu_stats.cpu_usage.total_usage`.
+    pub cpu_usage_ns: u64,
+    /// Cumulative CPU time consumed by the whole host, from `cpu_stats.system_cpu_usage`.
+    pub system_cpu_usage_ns: u64,
+    pub cpu_count: u32,
     pub mem_used: u64,
     pub mem_limit: u64,
     pub net_rx: u64,
@@ -204,7 +208,9 @@ pub struct ContainersSnapshot {
 pub struct ContainerStats {
     pub ts: TimestampMs,
     pub cid: String,
-    pub cpu_pct: f64,
+    pub cpu_usage_ns: u64,
+    pub system_cpu_usage_ns: u64,
+    pub cpu_count: u32,
     pub mem_used: u64,
     pub mem_limit: u64,
     pub net_rx: u64,

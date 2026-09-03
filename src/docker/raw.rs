@@ -131,7 +131,7 @@ pub(super) async fn sample_container_stats(
 ) -> AppResult<ContainerStats> {
     let options = StatsOptionsBuilder::default()
         .stream(false)
-        .one_shot(false)
+        .one_shot(true)
         .build();
     let mut stream = docker.stats(id, Some(options));
     match tokio::time::timeout(request_timeout, stream.next()).await {

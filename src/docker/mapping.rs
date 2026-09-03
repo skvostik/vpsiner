@@ -133,38 +133,26 @@ pub(super) fn map_container_stats(
     response: ContainerStatsResponse,
     fallback_id: &str,
 ) -> ContainerStats {
-    let cpu_pct = response
-        .cpu_stats
-        .as_ref()
+    // With `one_shot`, only `cpu_stats` is populated; `precpu_stats` carries no data.
+    let cpu_stats = response.cpu_stats.as_ref();
+    let cpu_usage_ns = cpu_stats
+        .and_then(|current| current.cpu_usage.as_ref()?.total_usage)
+        .unwrap_or(0);
+    let system_cpu_usage_ns = cpu_stats
+        .and_then(|current| current.system_cpu_usage)
+        .unwrap_or(0);
+    let cpu_count = cpu_stats
         .and_then(|current| {
-            let current_total = current.cpu_usage.as_ref()?.total_usage?;
-            let previous_total = response
-                .precpu_stats
-                .as_ref()?
-                .cpu_usage
-                .as_ref()?
-                .total_usage?;
-            let current_system = current.system_cpu_usage?;
-            let previous_system = response.precpu_stats.as_ref()?.system_cpu_usage?;
-            let cpu_delta = current_total.saturating_sub(previous_total);
-            let system_delta = current_system.saturating_sub(previous_system);
-            if system_delta == 0 {
-                return Some(0.0);
-            }
-            let cpu_count = current
-                .online_cpus
-                .or_else(|| {
-                    current
-                        .cpu_usage
-                        .as_ref()?
-                        .percpu_usage
-                        .as_ref()
-                        .map(|cpus| cpus.len() as u32)
-                })
-                .unwrap_or(1);
-            Some((cpu_delta as f64 / system_delta as f64) * cpu_count as f64 * 100.0)
+            current.online_cpus.or_else(|| {
+                current
+                    .cpu_usage
+                    .as_ref()?
+                    .percpu_usage
+                    .as_ref()
+                    .map(|cpus| cpus.len() as u32)
+            })
         })
-        .unwrap_or(0.0);
+        .unwrap_or(1);
 
     let (net_rx, net_tx) =
         response
@@ -212,7 +200,9 @@ pub(super) fn map_container_stats(
     ContainerStats {
         ts,
         cid: response.id.unwrap_or_else(|| fallback_id.to_string()),
-        cpu_pct,
+        cpu_usage_ns,
+        system_cpu_usage_ns,
+        cpu_count,
         mem_used: mem_usage.saturating_sub(mem_cache),
         mem_limit: memory_stats.and_then(|stats| stats.limit).unwrap_or(0),
         net_rx,

@@ -174,7 +174,10 @@ mod tests {
                         ts: second * 1_000,
                         service: "shop-web".into(),
                         cid: "short-id".into(),
-                        cpu_pct: 12.5,
+                        // One CPU online, advancing so the ratio is a steady 12.5% usage.
+                        cpu_usage_ns: second as u64 * 125_000_000,
+                        system_cpu_usage_ns: second as u64 * 1_000_000_000,
+                        cpu_count: 1,
                         mem_used: 100,
                         mem_limit: 200,
                         net_rx: second as u64 * 1_000,
