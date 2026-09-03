@@ -11,8 +11,8 @@ use sqlx::{QueryBuilder, Row, SqlitePool};
 use crate::error::{AppError, AppResult};
 use crate::metrics::downsampling::{downsample_container, downsample_host, sum_by_bucket};
 use crate::model::{
-    ContainerGroupMetrics, ContainerMetricsByService, ContainerPoint, ContainerSample, HostPoint,
-    HostSample, MetricsResolution, TimeRange,
+    ContainerGroupMetrics, ContainerPoint, ContainerSample, HostPoint, HostSample,
+    MetricsResolution, TimeRange,
 };
 
 /// Persistence for `metrics.db`.
@@ -33,18 +33,13 @@ pub trait MetricsStore: Send + Sync + 'static {
         resolution: MetricsResolution,
     ) -> AppResult<Vec<HostPoint>>;
 
-    async fn query_container(
-        &self,
-        service: &str,
-        range: TimeRange,
-        resolution: MetricsResolution,
-    ) -> AppResult<ContainerGroupMetrics>;
-
+    /// Returns every service's samples, each broken down by container as well as summed;
+    /// callers filter to a single service themselves when that's all they need.
     async fn query_containers(
         &self,
         range: TimeRange,
         resolution: MetricsResolution,
-    ) -> AppResult<ContainerMetricsByService>;
+    ) -> AppResult<HashMap<String, ContainerGroupMetrics>>;
 
     /// Checkpoints the write-ahead log and releases the connection.
     async fn close(&self);
@@ -145,16 +140,6 @@ impl SqliteMetricsStore {
                 blk_write_rate_mill INTEGER,
                 PRIMARY KEY (ts, cid)
             ) WITHOUT ROWID",
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(storage)?;
-
-        // Used by per-service container metrics queries: filter by service, then walk the
-        // matching samples in timestamp order for a time range. Queries without a service
-        // filter, and retention deletes, use the timestamp-ordered primary key instead.
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_ctr_service_ts ON container_metrics_10s(service, ts)",
         )
         .execute(&self.pool)
         .await
@@ -396,54 +381,11 @@ impl MetricsStore for SqliteMetricsStore {
         Ok(points)
     }
 
-    async fn query_container(
-        &self,
-        service: &str,
-        range: TimeRange,
-        resolution: MetricsResolution,
-    ) -> AppResult<ContainerGroupMetrics> {
-        let rows = sqlx::query(
-            "SELECT ts, cid, service, cpu_pct_mill, mem_used, mem_limit, net_rx_rate_mill, net_tx_rate_mill, blk_read_rate_mill, blk_write_rate_mill
-             FROM container_metrics_10s
-             WHERE service = ? AND ts >= ? AND ts <= ?
-             ORDER BY ts ASC",
-        )
-        .bind(service)
-        .bind(range.from)
-        .bind(range.to)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|err| AppError::Storage(err.to_string()))?;
-
-        let samples: Vec<ContainerSample> = rows
-            .into_iter()
-            .map(container_sample_from_row)
-            .collect::<AppResult<Vec<_>>>()?;
-
-        let mut by_container: HashMap<String, Vec<ContainerSample>> = HashMap::new();
-        for sample in samples {
-            by_container
-                .entry(sample.cid.clone())
-                .or_default()
-                .push(sample);
-        }
-
-        let mut containers: HashMap<String, Vec<ContainerPoint>> = HashMap::new();
-        for (cid, samples) in by_container {
-            let mut points = downsample_container(samples, resolution);
-            points.retain(|point| point.ts >= range.from);
-            containers.insert(cid, points);
-        }
-
-        let sum = sum_by_bucket(containers.values());
-        Ok(ContainerGroupMetrics { sum, containers })
-    }
-
     async fn query_containers(
         &self,
         range: TimeRange,
         resolution: MetricsResolution,
-    ) -> AppResult<ContainerMetricsByService> {
+    ) -> AppResult<HashMap<String, ContainerGroupMetrics>> {
         let rows = sqlx::query(
             "SELECT ts, cid, service, cpu_pct_mill, mem_used, mem_limit, net_rx_rate_mill, net_tx_rate_mill, blk_read_rate_mill, blk_write_rate_mill
              FROM container_metrics_10s
@@ -472,17 +414,16 @@ impl MetricsStore for SqliteMetricsStore {
                 .push(sample);
         }
 
-        let mut by_service: ContainerMetricsByService = HashMap::new();
+        let mut by_service = HashMap::new();
         for (service, by_container) in by_service_and_container {
-            let containers: Vec<Vec<ContainerPoint>> = by_container
-                .into_values()
-                .map(|samples| {
-                    let mut points = downsample_container(samples, resolution);
-                    points.retain(|point| point.ts >= range.from);
-                    points
-                })
-                .collect();
-            by_service.insert(service, sum_by_bucket(containers.iter()));
+            let mut containers: HashMap<String, Vec<ContainerPoint>> = HashMap::new();
+            for (cid, samples) in by_container {
+                let mut points = downsample_container(samples, resolution);
+                points.retain(|point| point.ts >= range.from);
+                containers.insert(cid, points);
+            }
+            let sum = sum_by_bucket(containers.values());
+            by_service.insert(service, ContainerGroupMetrics { sum, containers });
         }
 
         Ok(by_service)
@@ -577,14 +518,14 @@ mod tests {
         assert_eq!(hosts[0].mem_used, 100);
         assert_eq!(hosts[0].net_rx_rate, Some(300.0));
 
-        let containers = store
-            .query_container(
-                "web",
+        let by_service = store
+            .query_containers(
                 TimeRange { from: 0, to: 250 },
                 MetricsResolution::TenSeconds,
             )
             .await
             .unwrap();
+        let containers = &by_service["web"];
         assert_eq!(containers.sum.len(), 1);
         assert_eq!(containers.sum[0].ts, 10_000);
         assert_eq!(containers.sum[0].cpu_pct, 25.0);
@@ -647,9 +588,8 @@ mod tests {
             .await
             .unwrap();
 
-        let metrics = store
-            .query_container(
-                "web",
+        let by_service = store
+            .query_containers(
                 TimeRange {
                     from: 0,
                     to: 10_000,
@@ -658,6 +598,7 @@ mod tests {
             )
             .await
             .unwrap();
+        let metrics = &by_service["web"];
 
         assert_eq!(metrics.containers["abc123"][0].net_rx_rate, None);
         assert_eq!(metrics.sum[0].net_rx_rate, None);

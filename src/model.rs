@@ -134,7 +134,7 @@ pub struct ContainerSample {
     pub blk_write_rate_mill: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ContainerGroupMetrics {
     pub sum: Vec<GroupPoint>,
     pub containers: HashMap<String, Vec<ContainerPoint>>,

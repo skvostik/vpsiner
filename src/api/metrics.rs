@@ -59,12 +59,8 @@ pub async fn container(
     Query(query): Query<MetricsQuery>,
 ) -> AppResult<Json<ContainerGroupMetrics>> {
     let (range, resolution) = query.parse()?;
-    Ok(Json(
-        state
-            .metrics
-            .query_container(&service, range, resolution)
-            .await?,
-    ))
+    let mut by_service = state.metrics.query_containers(range, resolution).await?;
+    Ok(Json(by_service.remove(&service).unwrap_or_default()))
 }
 
 pub async fn containers_history(
@@ -72,8 +68,12 @@ pub async fn containers_history(
     Query(query): Query<MetricsQuery>,
 ) -> AppResult<Json<ContainerMetricsByService>> {
     let (range, resolution) = query.parse()?;
+    let by_service = state.metrics.query_containers(range, resolution).await?;
     Ok(Json(
-        state.metrics.query_containers(range, resolution).await?,
+        by_service
+            .into_iter()
+            .map(|(service, group)| (service, group.sum))
+            .collect(),
     ))
 }
 

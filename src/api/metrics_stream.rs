@@ -160,10 +160,14 @@ pub async fn containers(
         |current_state| async move {
             match current_state {
                 ContainersStreamState::Initial(metrics, rx, range, resolution) => {
-                    let series = metrics
+                    let by_service = metrics
                         .query_containers(range, resolution)
                         .await
                         .unwrap_or_default();
+                    let series: HashMap<String, Vec<GroupPoint>> = by_service
+                        .into_iter()
+                        .map(|(service, group)| (service, group.sum))
+                        .collect();
                     let last_sent = latest_ts_by_service(&series).unwrap_or(range.from);
                     let event = to_event(Some("snapshot"), &series);
                     Some((
@@ -184,10 +188,14 @@ pub async fn containers(
                             from: last_sent,
                             to: bucket_end,
                         };
-                        let series = metrics
+                        let by_service = metrics
                             .query_containers(range, resolution)
                             .await
                             .unwrap_or_default();
+                        let series: HashMap<String, Vec<GroupPoint>> = by_service
+                            .into_iter()
+                            .map(|(service, group)| (service, group.sum))
+                            .collect();
                         let Some(latest_ts) = latest_ts_by_service(&series) else {
                             continue;
                         };
@@ -240,13 +248,11 @@ pub async fn container(
         |current_state| async move {
             match current_state {
                 ContainerStreamState::Initial(metrics, rx, service, range, resolution) => {
-                    let group_metrics = metrics
-                        .query_container(&service, range, resolution)
+                    let mut by_service = metrics
+                        .query_containers(range, resolution)
                         .await
-                        .unwrap_or(crate::model::ContainerGroupMetrics {
-                            sum: Vec::new(),
-                            containers: HashMap::new(),
-                        });
+                        .unwrap_or_default();
+                    let group_metrics = by_service.remove(&service).unwrap_or_default();
                     let last_sent = latest_ts_in_service(&group_metrics).unwrap_or(range.from);
                     let event = to_event(Some("snapshot"), &group_metrics);
                     Some((
@@ -272,13 +278,11 @@ pub async fn container(
                         from: last_sent,
                         to: bucket_end,
                     };
-                    let group_metrics = metrics
-                        .query_container(&service, range, resolution)
+                    let mut by_service = metrics
+                        .query_containers(range, resolution)
                         .await
-                        .unwrap_or(crate::model::ContainerGroupMetrics {
-                            sum: Vec::new(),
-                            containers: HashMap::new(),
-                        });
+                        .unwrap_or_default();
+                    let group_metrics = by_service.remove(&service).unwrap_or_default();
                     let Some(latest_ts) = latest_ts_in_service(&group_metrics) else {
                         continue;
                     };
