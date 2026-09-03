@@ -6,7 +6,7 @@ import { Play, RotateCcw, Square } from '@lucide/vue'
 import { dockerControlsAvailable } from '../composables/useBackendHealth'
 import { pendingAction, runContainerAction } from '../composables/useContainerActions'
 import { useNow } from '../composables/useNow'
-import { formatBytes, formatUptime } from '../format'
+import { formatBytes, formatRate, formatUptime } from '../format'
 import type { ContainerRow, ContainerState } from '../types'
 
 defineProps<{
@@ -115,7 +115,7 @@ function stateType(state: ContainerState) {
             <dd class="mt-1 whitespace-nowrap font-medium text-neutral-900 dark:text-neutral-100">
               {{
                 row.metrics
-                  ? `${formatBytes(row.metrics.net_rx_rate)}/s / ${formatBytes(row.metrics.net_tx_rate)}/s`
+                  ? `${formatRate(row.metrics.net_rx_rate)} / ${formatRate(row.metrics.net_tx_rate)}`
                   : '—'
               }}
             </dd>
@@ -125,7 +125,7 @@ function stateType(state: ContainerState) {
             <dd class="mt-1 whitespace-nowrap font-medium text-neutral-900 dark:text-neutral-100">
               {{
                 row.metrics
-                  ? `${formatBytes(row.metrics.blk_read_rate)}/s / ${formatBytes(row.metrics.blk_write_rate)}/s`
+                  ? `${formatRate(row.metrics.blk_read_rate)} / ${formatRate(row.metrics.blk_write_rate)}`
                   : '—'
               }}
             </dd>

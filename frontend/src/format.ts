@@ -6,6 +6,11 @@ export function formatBytes(value: number) {
   return `${(value / 1024 ** 4).toFixed(1)} TB`
 }
 
+/** A rate is null until two consecutive counter readings exist, and after a counter reset. */
+export function formatRate(value: number | null) {
+  return value == null ? '—' : `${formatBytes(value)}/s`
+}
+
 export function formatUptime(startedAt: number, now = Date.now()) {
   const totalSeconds = Math.max(0, Math.floor((now - startedAt) / 1_000))
   const days = Math.floor(totalSeconds / 86_400)

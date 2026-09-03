@@ -6,22 +6,25 @@ import type {
   ContainerPoint,
   GroupPoint,
   MetricsResolution,
+  MetricsResponse,
 } from '../types'
 
 const trimTickMs = 5_000
+const reconnectDelayMs = 3_000
 
 /** Live per-service history for the container detail view, pushed instead of polled. */
 export function useContainerMetricsStream(
   service: Ref<string>,
-  resolution: Ref<MetricsResolution>,
   windowMs: Ref<number>,
-  active: Ref<boolean>
+  active: Ref<boolean>,
+  setResolution: (resolution: MetricsResolution) => void
 ) {
   const sum = ref<GroupPoint[]>([])
   const containers = ref<Record<string, ContainerPoint[]>>({})
 
   let source: EventSource | undefined
   let trimTimer: number | undefined
+  let reconnectTimer: number | undefined
 
   function trim() {
     if (!windowMs.value) return
@@ -37,6 +40,19 @@ export function useContainerMetricsStream(
     source = undefined
     if (trimTimer) window.clearInterval(trimTimer)
     trimTimer = undefined
+    if (reconnectTimer) window.clearTimeout(reconnectTimer)
+    reconnectTimer = undefined
+  }
+
+  function reconnect(currentSource: EventSource) {
+    reportSseIssue(currentSource)
+    currentSource.close()
+    if (source === currentSource) source = undefined
+    if (!active.value || !service.value || !windowMs.value || reconnectTimer) return
+    reconnectTimer = window.setTimeout(() => {
+      reconnectTimer = undefined
+      connect()
+    }, reconnectDelayMs)
   }
 
   function connect() {
@@ -44,21 +60,21 @@ export function useContainerMetricsStream(
     if (!active.value || !service.value || !windowMs.value) return
 
     const from = Date.now() - windowMs.value
-    const params = new URLSearchParams({
-      from: String(from),
-      resolution: resolution.value,
-    })
+    const params = new URLSearchParams({ from: String(from) })
     source = new EventSource(
       `/api/stream/metrics/containers/${encodeURIComponent(service.value)}?${params}`
     )
     source.addEventListener('snapshot', (event) => {
-      const data = JSON.parse((event as MessageEvent).data) as {
+      const response = JSON.parse((event as MessageEvent).data) as MetricsResponse<{
         sum: GroupPoint[]
         containers: Record<string, ContainerPoint[]>
-      }
+      }>
+      const data = response.data
       sum.value = data.sum
       containers.value = data.containers
-      console.debug('[container-metrics-stream] snapshot', data)
+      trim()
+      setResolution(response.resolution)
+      console.debug('[container-metrics-stream] snapshot', response)
     })
     source.addEventListener('append', (event) => {
       const append = JSON.parse((event as MessageEvent).data) as ContainerGroupMetricsAppend
@@ -69,13 +85,14 @@ export function useContainerMetricsStream(
       trim()
       console.debug('[container-metrics-stream] append', append)
     })
-    // The browser retries automatically; only report an outage once the stream is definitively closed.
-    source.onerror = () => reportSseIssue(source)
+    source.onerror = () => {
+      if (source) reconnect(source)
+    }
 
     trimTimer = window.setInterval(trim, trimTickMs)
   }
 
-  watch([service, resolution, windowMs, active], connect, { immediate: true })
+  watch([service, windowMs, active], connect, { immediate: true })
   onBeforeUnmount(disconnect)
 
   return { sum, containers }

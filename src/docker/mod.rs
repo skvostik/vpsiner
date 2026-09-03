@@ -20,7 +20,8 @@ use crate::docker::mapping::receiver_stream;
 use crate::error::{AppError, AppResult};
 use crate::logs::metadata::LogMetadataStore;
 use crate::model::{
-    ContainerCommandResult, ContainerSample, ContainerState, ContainerSummary, LogLine, LogStream,
+    ContainerCommandResult, ContainerRawSample, ContainerState, ContainerSummary, LogLine,
+    LogStream,
 };
 
 use self::mapping::map_log_output;
@@ -41,7 +42,7 @@ pub trait DockerService: Send + Sync + 'static {
 
     fn logs(&self) -> BoxStream<'static, LogLine>;
 
-    fn container_samples(&self) -> BoxStream<'static, Vec<ContainerSample>>;
+    fn container_samples(&self) -> BoxStream<'static, Vec<ContainerRawSample>>;
 
     async fn start_container(&self, id: &str) -> AppResult<ContainerCommandResult>;
 
@@ -60,9 +61,9 @@ struct Inner {
     container_registry: Arc<dyn ContainerRegistry>,
     controls_available: Arc<AtomicBool>,
     logs_tx: mpsc::Sender<LogLine>,
-    samples_tx: mpsc::Sender<Vec<ContainerSample>>,
+    samples_tx: mpsc::Sender<Vec<ContainerRawSample>>,
     logs_rx: Mutex<Option<mpsc::Receiver<LogLine>>>,
-    samples_rx: Mutex<Option<mpsc::Receiver<Vec<ContainerSample>>>>,
+    samples_rx: Mutex<Option<mpsc::Receiver<Vec<ContainerRawSample>>>>,
     metadata: Arc<dyn LogMetadataStore>,
     retention_weeks: u32,
 }
@@ -101,7 +102,7 @@ impl BollardDocker {
         let request_timeout = Duration::from_secs(request_timeout_secs);
         let (logs_tx, logs_rx) = mpsc::channel::<LogLine>(log_channel_capacity);
         let (samples_tx, samples_rx) =
-            mpsc::channel::<Vec<ContainerSample>>(samples_channel_capacity);
+            mpsc::channel::<Vec<ContainerRawSample>>(samples_channel_capacity);
 
         let container_registry: Arc<dyn ContainerRegistry> =
             Arc::new(BollardContainerRegistry::new(
@@ -180,7 +181,7 @@ impl DockerService for BollardDocker {
         }
     }
 
-    fn container_samples(&self) -> BoxStream<'static, Vec<ContainerSample>> {
+    fn container_samples(&self) -> BoxStream<'static, Vec<ContainerRawSample>> {
         match self
             .inner
             .samples_rx
@@ -542,11 +543,13 @@ fn spawn_sample_observer(
                     let docker = docker.clone();
                     async move {
                         match sample_container_stats(&docker, &container.id, request_timeout).await {
-                            Ok(stats) => Some(ContainerSample {
+                            Ok(stats) => Some(ContainerRawSample {
                                 ts: collection_ts,
                                 service: container.service,
                                 cid: stats.cid,
-                                cpu_pct: stats.cpu_pct,
+                                cpu_usage_ns: stats.cpu_usage_ns,
+                                system_cpu_usage_ns: stats.system_cpu_usage_ns,
+                                cpu_count: stats.cpu_count,
                                 mem_used: stats.mem_used,
                                 mem_limit: stats.mem_limit,
                                 net_rx: stats.net_rx,

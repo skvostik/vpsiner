@@ -8,7 +8,7 @@ import { CanvasRenderer } from 'echarts/renderers'
 
 export interface ChartPoint {
   ts: number
-  value: number
+  value: number | null
 }
 
 export interface ChartSeries {
@@ -23,10 +23,12 @@ const props = withDefaults(
     series?: ChartSeries[]
     color?: string
     formatValue?: (value: number) => string
+    emptyMessage?: string
   }>(),
   {
     color: '#0891b2',
     formatValue: (value: number) => value.toFixed(1),
+    emptyMessage: 'Not enough data yet',
   }
 )
 
@@ -35,6 +37,7 @@ use([CanvasRenderer, LineChart, GridComponent, TooltipComponent, LegendComponent
 const chartSeries = computed(
   () => props.series ?? [{ name: 'Value', points: props.points ?? [], color: props.color }]
 )
+const hasData = computed(() => chartSeries.value.some((entry) => entry.points.length >= 2))
 
 function escapeHtml(value: string) {
   return value.replace(
@@ -56,9 +59,9 @@ function formatTooltip(params: unknown) {
   const timestamp = first?.axisValue
   const heading = typeof timestamp === 'number' ? new Date(timestamp).toLocaleString() : ''
   const rows = entries.map((entry) => {
-    const item = entry as { seriesName?: string; color?: string; value?: [number, number] }
+    const item = entry as { seriesName?: string; color?: string; value?: [number, number | null] }
     const value = Array.isArray(item.value) ? item.value[1] : undefined
-    return `<div style="display:flex;align-items:center;gap:8px"><span style="width:7px;height:7px;border-radius:50%;background:${item.color ?? '#737373'}"></span><span>${escapeHtml(item.seriesName ?? '')}</span><strong style="margin-left:auto">${value === undefined ? '—' : props.formatValue(value)}</strong></div>`
+    return `<div style="display:flex;align-items:center;gap:8px"><span style="width:7px;height:7px;border-radius:50%;background:${item.color ?? '#737373'}"></span><span>${escapeHtml(item.seriesName ?? '')}</span><strong style="margin-left:auto">${value == null ? '—' : props.formatValue(value)}</strong></div>`
   })
   return `<div><div style="margin-bottom:6px;font-weight:600">${escapeHtml(heading)}</div>${rows.join('')}</div>`
 }
@@ -121,7 +124,16 @@ const option = computed(() => ({
 </script>
 
 <template>
-  <div class="mt-4 min-w-0 h-40">
-    <v-chart :option="option" autoresize class="h-full w-full" aria-label="Metric history chart" />
+  <div class="mt-4 flex h-40 min-w-0 items-center justify-center">
+    <v-chart
+      v-if="hasData"
+      :option="option"
+      autoresize
+      class="h-full w-full"
+      aria-label="Metric history chart"
+    />
+    <p v-else class="px-4 text-center text-sm text-neutral-500 dark:text-neutral-400">
+      {{ props.emptyMessage }}
+    </p>
   </div>
 </template>

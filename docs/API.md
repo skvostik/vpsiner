@@ -23,14 +23,15 @@ Rate rules, applying to every endpoint:
 
 Applies to the three time-series endpoints (`/api/metrics/host`, `/api/metrics/containers/{service}`, `/api/metrics/containers`). It does **not** apply to `/api/metrics/current`, which returns latest values rather than buckets.
 
-- `resolution` is a **required** query parameter; allowed values are `10s`, `1m`, `5m`, and `1h`. There is no un-downsampled/"raw" mode — `10s` is simply the finest fixed bucket size and follows the same rules as the others. Missing or invalid `resolution` returns `400 Bad Request`.
+- The server selects `resolution` from the requested time range and returns it in the response. Clients do not send `resolution`.
+- Resolution selection uses the range span (`to - from`): up to 30 minutes returns `10s`, up to 3 hours returns `1m`, up to 24 hours returns `5m`, and longer ranges return `1h`. Each cutoff allows 60 seconds of tolerance, so live streams opened from client-side rolling windows do not fall into a coarser resolution because of small clock or request delays. There is no un-downsampled/"raw" mode — `10s` is simply the finest fixed bucket size and follows the same rules as the others.
 - Samples are grouped into half-open, epoch-aligned buckets: `(bucket_end - resolution, bucket_end]`, where `bucket_end = ceil(ts_ms / bucket_size_ms) * bucket_size_ms`. Bucket boundaries are anchored to the Unix epoch, not to the request's `from`. For example, `10s` buckets end on `:00, :10, :20, :30, :40`, or `:50` seconds of each minute; `1m` buckets end on each minute; `1h` buckets end on each hour.
 - Returned `ts` is the bucket end.
 - Only fully elapsed buckets (`ts <= now` at request time) are returned. An open trailing bucket is omitted, even if `to` extends past it.
 - Empty buckets are omitted.
 - Gauge metrics (e.g. `cpu_pct`, `mem_used`, `mem_total`, `storage_used`, `storage_total`, `metrics_size`, `logs_size`, `mem_limit`) are averaged across the samples within a bucket.
-- Rate metrics (e.g. `net_rx_rate`, `net_tx_rate`, `disk_read_rate`, `disk_write_rate`, `blk_read_rate`, `blk_write_rate`) are the **time-weighted** average rate across the bucket: the total observed byte delta divided by the total observed elapsed time. Sampling gaps therefore do not distort a bucket's rate — a longer interval simply carries proportionally more weight.
-- An interval is attributed to the bucket containing its later sample. The server reads one sample from before `from` so the first returned bucket has a real rate rather than `0`.
+- Rate metrics (e.g. `net_rx_rate`, `net_tx_rate`, `disk_read_rate`, `disk_write_rate`, `blk_read_rate`, `blk_write_rate`) are derived once, when a `10s` bucket is written: the counter is interpolated at both bucket boundaries and the slope between them is the bucket's rate. Coarser resolutions average those stored `10s` rates.
+- Rate metrics are `null` when the underlying counters could not produce a rate for the bucket — for example the first bucket after a container starts, or a bucket spanning a counter reset. A `null` rate means "unknown", not "zero".
 
 ## 1) Health check
 
@@ -265,7 +266,7 @@ Result:
 
 ## 5) Host metrics
 
-### GET `/api/metrics/host?from={ts}&to={ts}&resolution={r}`
+### GET `/api/metrics/host?from={ts}&to={ts}`
 
 Returns a time series of host metrics.
 
@@ -275,7 +276,7 @@ Metric semantics:
 - `mem_used`, `mem_total`, `storage_used`, `storage_total`, `metrics_size`, and `logs_size` are byte values
 - `metrics_size` is the on-disk size of Vpsiner's metrics database at sample time
 - `logs_size` is the combined on-disk size of Vpsiner's log databases at sample time
-- `net_rx_rate`, `net_tx_rate`, `disk_read_rate`, and `disk_write_rate` are bytes per second; see "Metrics point semantics" above
+- `net_rx_rate`, `net_tx_rate`, `disk_read_rate`, and `disk_write_rate` are bytes per second or `null`; see "Metrics point semantics" above
 
 Ordering:
 - samples MUST be returned in ascending timestamp order: `ts ASC`
@@ -283,36 +284,38 @@ Ordering:
 Downsampling: see "Metrics bucket semantics" above.
 
 Default values:
-- `from`, `to`, and `resolution` are required
+- `from` and `to` are required
 
 Query parameters:
 - `from` (required): start time in ms
 - `to` (required): end time in ms
-- `resolution` (required): returned sample resolution; allowed values: `10s`, `1m`, `5m`, `1h`
 
 Example:
 ```http
-GET /api/metrics/host?from=1720000000000&to=1720003600000&resolution=10s
+GET /api/metrics/host?from=1720000000000&to=1720003600000
 ```
 
 Example response:
 ```json
-[
-  {
-    "ts": 1720000000000,
-    "cpu_pct": 21.4,
-    "mem_used": 2147483648,
-    "mem_total": 8589934592,
-    "storage_used": 104857600,
-    "storage_total": 536870912,
-    "metrics_size": 5242880,
-    "logs_size": 73400320,
-    "net_rx_rate": 15432.0,
-    "net_tx_rate": 9650.0,
-    "disk_read_rate": 2000.0,
-    "disk_write_rate": 1500.0
-  }
-]
+{
+  "resolution": "10s",
+  "data": [
+    {
+      "ts": 1720000000000,
+      "cpu_pct": 21.4,
+      "mem_used": 2147483648,
+      "mem_total": 8589934592,
+      "storage_used": 104857600,
+      "storage_total": 536870912,
+      "metrics_size": 5242880,
+      "logs_size": 73400320,
+      "net_rx_rate": 15432.0,
+      "net_tx_rate": 9650.0,
+      "disk_read_rate": 2000.0,
+      "disk_write_rate": 1500.0
+    }
+  ]
+}
 ```
 
 ---
@@ -422,7 +425,7 @@ Empty response example, valid when nothing has been sampled recently:
 
 ## 7) Metrics for a specific service
 
-### GET `/api/metrics/containers/{service}?from={ts}&to={ts}&resolution={r}`
+### GET `/api/metrics/containers/{service}?from={ts}&to={ts}`
 
 Returns container metrics for a single `service`.
 
@@ -437,10 +440,11 @@ Metric semantics:
 - a container using one full logical CPU on a host with `N` logical CPUs contributes approximately `100 / N` to `cpu_pct`
 - aggregated `cpu_pct` values are summed by timestamp, so service CPU usage is comparable to host CPU usage and normally does not exceed `100`, aside from sampling jitter
 - `mem_used` and `mem_limit` are byte values
-- `net_rx_rate`, `net_tx_rate`, `blk_read_rate`, and `blk_write_rate` are bytes per second; see "Metrics point semantics" above
+- `net_rx_rate`, `net_tx_rate`, `blk_read_rate`, and `blk_write_rate` are bytes per second or `null`; see "Metrics point semantics" above
 
 Aggregation rules:
 - `sum` is computed by grouping the per-container buckets by exact `ts` and summing all numeric fields for that timestamp
+- a summed rate counts only the containers whose rate is known for that timestamp, and is `null` only when every container's rate is `null`
 - a `sum` data point at timestamp `ts` includes only container buckets with that timestamp
 - missing container samples are not interpolated
 - no synthetic zero-valued container samples are generated
@@ -454,61 +458,50 @@ Ordering:
 Downsampling: see "Metrics bucket semantics" above. `sum` is calculated from each container's downsampled series by bucket timestamp.
 
 Default values:
-- `from`, `to`, and `resolution` are required
+- `from` and `to` are required
 
 Parameters:
 - `service` (path): `service` from `/api/containers`
 - `from` (query): start time in ms
 - `to` (query): end time in ms
-- `resolution` (query, required): returned sample resolution; allowed values: `10s`, `1m`, `5m`, `1h`
 
 Example:
 ```http
-GET /api/metrics/containers/project-web?from=1720000000000&to=1720003600000&resolution=10s
+GET /api/metrics/containers/project-web?from=1720000000000&to=1720003600000
 ```
 
 Example response:
 ```json
 {
-  "sum": [
-    {
-      "ts": 1720000000000,
-      "cpu_pct": 20.4,
-      "mem_used": 704643072,
-      "mem_limit": 2147483648,
-      "net_rx_rate": 17500.0,
-      "net_tx_rate": 12600.0,
-      "blk_read_rate": 8800.0,
-      "blk_write_rate": 7400.0
-    }
-  ],
-  "containers": {
-    "8af7d6c1273d": [
+  "resolution": "10s",
+  "data": {
+    "sum": [
       {
         "ts": 1720000000000,
-        "service": "project-web",
-        "cpu_pct": 12.8,
-        "mem_used": 402653184,
-        "mem_limit": 1073741824,
-        "net_rx_rate": 10500.0,
-        "net_tx_rate": 7300.0,
-        "blk_read_rate": 5200.0,
-        "blk_write_rate": 4100.0
+        "cpu_pct": 20.4,
+        "mem_used": 704643072,
+        "mem_limit": 2147483648,
+        "net_rx_rate": 17500.0,
+        "net_tx_rate": 12600.0,
+        "blk_read_rate": 8800.0,
+        "blk_write_rate": 7400.0
       }
     ],
-    "91bc832df407": [
-      {
-        "ts": 1720000000000,
-        "service": "project-web",
-        "cpu_pct": 7.6,
-        "mem_used": 301989888,
-        "mem_limit": 1073741824,
-        "net_rx_rate": 7000.0,
-        "net_tx_rate": 5300.0,
-        "blk_read_rate": 3600.0,
-        "blk_write_rate": 3300.0
-      }
-    ]
+    "containers": {
+      "8af7d6c1273d": [
+        {
+          "ts": 1720000000000,
+          "service": "project-web",
+          "cpu_pct": 12.8,
+          "mem_used": 402653184,
+          "mem_limit": 1073741824,
+          "net_rx_rate": 10500.0,
+          "net_tx_rate": 7300.0,
+          "blk_read_rate": 5200.0,
+          "blk_write_rate": 4100.0
+        }
+      ]
+    }
   }
 }
 ```
@@ -522,7 +515,7 @@ Notes:
 
 ## 8) Aggregate metrics for all container services
 
-### GET `/api/metrics/containers?from={ts}&to={ts}&resolution={r}`
+### GET `/api/metrics/containers?from={ts}&to={ts}`
 
 Returns aggregate container metrics for all `service` values during the given interval.
 
@@ -546,45 +539,47 @@ Ordering:
 Downsampling: see "Metrics bucket semantics" above. Each service series is calculated from downsampled container series by bucket timestamp.
 
 Default values:
-- `from`, `to`, and `resolution` are required
+- `from` and `to` are required
 
 Query parameters:
 - `from` (required): start time in ms
 - `to` (required): end time in ms
-- `resolution` (required): returned sample resolution; allowed values: `10s`, `1m`, `5m`, `1h`
 
 Example:
 ```http
-GET /api/metrics/containers?from=1720000000000&to=1720003600000&resolution=10s
+GET /api/metrics/containers?from=1720000000000&to=1720003600000
 ```
 
 Example response:
 ```json
 {
-  "project-web": [
-    {
-      "ts": 1720000000000,
-      "cpu_pct": 20.4,
-      "mem_used": 704643072,
-      "mem_limit": 2147483648,
-      "net_rx_rate": 17500.0,
-      "net_tx_rate": 12600.0,
-      "blk_read_rate": 8800.0,
-      "blk_write_rate": 7400.0
-    }
-  ],
-  "project-db": [
-    {
-      "ts": 1720000000000,
-      "cpu_pct": 5.2,
-      "mem_used": 671088640,
-      "mem_limit": 1073741824,
-      "net_rx_rate": 3300.0,
-      "net_tx_rate": 2200.0,
-      "blk_read_rate": 7800.0,
-      "blk_write_rate": 9300.0
-    }
-  ]
+  "resolution": "10s",
+  "data": {
+    "project-web": [
+      {
+        "ts": 1720000000000,
+        "cpu_pct": 20.4,
+        "mem_used": 704643072,
+        "mem_limit": 2147483648,
+        "net_rx_rate": 17500.0,
+        "net_tx_rate": 12600.0,
+        "blk_read_rate": 8800.0,
+        "blk_write_rate": 7400.0
+      }
+    ],
+    "project-db": [
+      {
+        "ts": 1720000000000,
+        "cpu_pct": 5.2,
+        "mem_used": 671088640,
+        "mem_limit": 1073741824,
+        "net_rx_rate": 3300.0,
+        "net_tx_rate": 2200.0,
+        "blk_read_rate": 7800.0,
+        "blk_write_rate": 9300.0
+      }
+    ]
+  }
 }
 ```
 
@@ -717,13 +712,16 @@ Every `/api/stream/*` endpoint returns `text/event-stream` and is a push-based a
 
 ### GET `/api/stream/metrics/current`
 
-Push equivalent of `GET /api/metrics/current` for clients that want live updates without polling. The server emits one event per message, each carrying a full `MetricsSnapshot` payload with the same shape and staleness rules as the plain GET endpoint (no diffing — every event is a complete, self-contained snapshot).
+Push equivalent of `GET /api/metrics/current` for clients that want live updates without polling. Host and container metrics are collected by independent tasks at their own rates, so each is pushed as its own named event rather than as one combined payload. Staleness rules are unchanged and applied per half.
 
 Parameters: none.
 
-Behavior:
-- on connect, the server immediately emits the current snapshot, then emits again whenever the underlying host or container data changes
-- host and container updates are collected independently server-side; updates that land within a short window of each other are coalesced into a single emitted event
+Events:
+- `snapshot` — sent once, immediately on connect. Payload is a full `MetricsSnapshot`, identical in shape to `GET /api/metrics/current`.
+- `host` — sent whenever host metrics are recorded. Payload is a `HostPoint`, or `null` if the latest sample is stale.
+- `containers` — sent whenever a container sample batch is recorded. Payload is the `containers` and `services` maps.
+
+Clients merge `host` and `containers` events into the baseline `snapshot` to maintain a full `MetricsSnapshot`.
 
 Example:
 ```http
@@ -731,9 +729,16 @@ GET /api/stream/metrics/current
 Accept: text/event-stream
 ```
 
-Example event (identical payload shape to `GET /api/metrics/current`):
+Example events:
 ```
+event: snapshot
 data: {"host":{"ts":1720003600000,"cpu_pct":21.4,"mem_used":2147483648,"mem_total":8589934592,"storage_used":104857600,"storage_total":536870912,"metrics_size":5242880,"logs_size":73400320,"net_rx_rate":15432.0,"net_tx_rate":9650.0,"disk_read_rate":2000.0,"disk_write_rate":1500.0},"containers":{},"services":{}}
+
+event: host
+data: {"ts":1720003610000,"cpu_pct":24.9,"mem_used":2147483648,"mem_total":8589934592,"storage_used":104857600,"storage_total":536870912,"metrics_size":5242880,"logs_size":73400320,"net_rx_rate":15432.0,"net_tx_rate":9650.0,"disk_read_rate":2000.0,"disk_write_rate":1500.0}
+
+event: containers
+data: {"containers":{},"services":{}}
 
 ```
 
@@ -774,84 +779,81 @@ data: {"added":[],"updated":[{"id":"8af7d6c1273d","name":"web-1","service":"proj
 
 ```
 
-### GET `/api/stream/metrics/host?from={ts}&resolution={r}`
+### GET `/api/stream/metrics/host?from={ts}`
 
-Push equivalent of `GET /api/metrics/host`, parameterized by `from` and `resolution` — each connection tracks its own range and cursor. There is no `to`: a live stream always runs up to the server's own "now" at connect time and keeps appending indefinitely afterward, so a client-supplied `to` would be redundant and a possible source of clock-skew bugs.
+Push equivalent of `GET /api/metrics/host`, parameterized by `from` — each connection tracks its own range and cursor. There is no `to`: a live stream always runs up to the server's own "now" at connect time and keeps appending indefinitely afterward, so a client-supplied `to` would be redundant and a possible source of clock-skew bugs.
 
 Behavior:
-- on connect, emits one `snapshot` event with the exact same payload as `GET /api/metrics/host?from={ts}&to={now}&resolution={r}` would return, using the server's current time as the implicit `to`
-- afterward, emits one `append` event per newly-completed bucket at the requested `resolution` — payload is a single `HostPoint` (not an array), the new bucket's cross-section
+- on connect, computes `resolution` from `from` to the server's current time, then emits one `snapshot` event with the exact same payload as `GET /api/metrics/host?from={ts}&to={now}` would return
+- afterward, emits one `append` event per newly-completed bucket at the selected `resolution` — payload is a single `HostPoint` (not an array), the new bucket's cross-section
 - a bucket with no host sample in it produces no event at all
 - `resolution` bounds how often `append` can occur: at most once per bucket boundary for that resolution (e.g. up to once every 10 seconds at `10s`, once per hour at `1h`)
 - intended for **live/rolling windows only** (see "Metrics bucket semantics" above); for a fixed historical range, use the plain `GET /api/metrics/host` endpoint instead — the client is responsible for evicting points that fall outside its own sliding window as time advances, since the server does not re-enforce `from` after the initial snapshot
 
 Parameters:
 - `from` (required): start time in ms
-- `resolution` (required): returned sample resolution; allowed values: `10s`, `1m`, `5m`, `1h`
 
 Example:
 ```http
-GET /api/stream/metrics/host?from=1720000000000&resolution=10s
+GET /api/stream/metrics/host?from=1720000000000
 Accept: text/event-stream
 ```
 
 Example events:
 ```
 event: snapshot
-data: [{"ts":1720000000000,"cpu_pct":21.4,"mem_used":2147483648,"mem_total":8589934592,"storage_used":104857600,"storage_total":536870912,"metrics_size":5242880,"logs_size":73400320,"net_rx_rate":15432.0,"net_tx_rate":9650.0,"disk_read_rate":2000.0,"disk_write_rate":1500.0}]
+data: {"resolution":"10s","data":[{"ts":1720000000000,"cpu_pct":21.4,"mem_used":2147483648,"mem_total":8589934592,"storage_used":104857600,"storage_total":536870912,"metrics_size":5242880,"logs_size":73400320,"net_rx_rate":15432.0,"net_tx_rate":9650.0,"disk_read_rate":2000.0,"disk_write_rate":1500.0}]}
 
 event: append
 data: {"ts":1720000010000,"cpu_pct":22.1,"mem_used":2148000000,"mem_total":8589934592,"storage_used":104857600,"storage_total":536870912,"metrics_size":5242880,"logs_size":73400320,"net_rx_rate":15900.0,"net_tx_rate":9700.0,"disk_read_rate":2100.0,"disk_write_rate":1600.0}
 
 ```
 
-### GET `/api/stream/metrics/containers?from={ts}&resolution={r}`
+### GET `/api/stream/metrics/containers?from={ts}`
 
 Push equivalent of `GET /api/metrics/containers` (aggregate per `service`); same parameterization (no `to`, see above) and bucket-append behavior as `/api/stream/metrics/host`.
 
 Behavior:
-- `snapshot` payload shape matches `GET /api/metrics/containers` exactly (object keyed by `service`, each an array of `GroupPoint`)
+- `snapshot` payload shape matches `GET /api/metrics/containers` exactly (`{ resolution, data }`, where `data` is keyed by `service`, each an array of `GroupPoint`)
 - `append` payload is an object keyed by `service`, but each value is a single `GroupPoint` (the new bucket's cross-section), not an array — only `service`s with data in that bucket are included
 - a `service` that first appears mid-window can show up as a new key in a later `append` event; clients should treat first sight of a key as starting a new series
 
 Parameters:
 - `from` (required): start time in ms
-- `resolution` (required): returned sample resolution; allowed values: `10s`, `1m`, `5m`, `1h`
 
 Example events:
 ```
 event: snapshot
-data: {"project-web":[{"ts":1720000000000,"cpu_pct":20.4,"mem_used":704643072,"mem_limit":2147483648,"net_rx_rate":17500.0,"net_tx_rate":12600.0,"blk_read_rate":8800.0,"blk_write_rate":7400.0}]}
+data: {"resolution":"10s","data":{"project-web":[{"ts":1720000000000,"cpu_pct":20.4,"mem_used":704643072,"mem_limit":2147483648,"net_rx_rate":17500.0,"net_tx_rate":12600.0,"blk_read_rate":8800.0,"blk_write_rate":7400.0}]}}
 
 event: append
 data: {"project-web":{"ts":1720000010000,"cpu_pct":21.0,"mem_used":705000000,"mem_limit":2147483648,"net_rx_rate":17800.0,"net_tx_rate":12700.0,"blk_read_rate":8900.0,"blk_write_rate":7500.0}}
 
 ```
 
-### GET `/api/stream/metrics/containers/{service}?from={ts}&resolution={r}`
+### GET `/api/stream/metrics/containers/{service}?from={ts}`
 
 Push equivalent of `GET /api/metrics/containers/{service}`; same parameterization (no `to`, see above) and bucket-append behavior as the other metrics streams above.
 
 Behavior:
-- `snapshot` payload shape matches `GET /api/metrics/containers/{service}` exactly (`{ sum: GroupPoint[], containers: { [id]: ContainerPoint[] } }`)
+- `snapshot` payload shape matches `GET /api/metrics/containers/{service}` exactly (`{ resolution, data }`, where `data` is `{ sum: GroupPoint[], containers: { [id]: ContainerPoint[] } }`)
 - `append` payload is `{ sum: GroupPoint | null, containers: { [id]: ContainerPoint } }` — a single cross-section for the newly-completed bucket; an append with `sum: null` and empty `containers` is never sent (skipped instead)
 - a container that starts mid-window appears as a new key under `containers` in a later `append` event
 
 Parameters:
 - `service` (path): `service` from `/api/containers`
 - `from` (required): start time in ms
-- `resolution` (required): returned sample resolution; allowed values: `10s`, `1m`, `5m`, `1h`
 
 Example:
 ```http
-GET /api/stream/metrics/containers/project-web?from=1720000000000&resolution=10s
+GET /api/stream/metrics/containers/project-web?from=1720000000000
 Accept: text/event-stream
 ```
 
 Example events:
 ```
 event: snapshot
-data: {"sum":[{"ts":1720000000000,"cpu_pct":20.4,"mem_used":704643072,"mem_limit":2147483648,"net_rx_rate":17500.0,"net_tx_rate":12600.0,"blk_read_rate":8800.0,"blk_write_rate":7400.0}],"containers":{"8af7d6c1273d":[{"ts":1720000000000,"service":"project-web","cpu_pct":12.8,"mem_used":402653184,"mem_limit":1073741824,"net_rx_rate":10500.0,"net_tx_rate":7300.0,"blk_read_rate":5200.0,"blk_write_rate":4100.0}]}}
+data: {"resolution":"10s","data":{"sum":[{"ts":1720000000000,"cpu_pct":20.4,"mem_used":704643072,"mem_limit":2147483648,"net_rx_rate":17500.0,"net_tx_rate":12600.0,"blk_read_rate":8800.0,"blk_write_rate":7400.0}],"containers":{"8af7d6c1273d":[{"ts":1720000000000,"service":"project-web","cpu_pct":12.8,"mem_used":402653184,"mem_limit":1073741824,"net_rx_rate":10500.0,"net_tx_rate":7300.0,"blk_read_rate":5200.0,"blk_write_rate":4100.0}]}}}
 
 event: append
 data: {"sum":{"ts":1720000010000,"cpu_pct":21.0,"mem_used":705000000,"mem_limit":2147483648,"net_rx_rate":17800.0,"net_tx_rate":12700.0,"blk_read_rate":8900.0,"blk_write_rate":7500.0},"containers":{"8af7d6c1273d":{"ts":1720000010000,"service":"project-web","cpu_pct":13.0,"mem_used":403000000,"mem_limit":1073741824,"net_rx_rate":10600.0,"net_tx_rate":7350.0,"blk_read_rate":5250.0,"blk_write_rate":4150.0}}}
@@ -1054,6 +1056,14 @@ data: {"items":[{"ts":1720003600000,"service":"project-web","cid":"8af7d6c1273d"
 ```json
 {
   "service": ["GroupPoint"]
+}
+```
+
+### `MetricsResponse<T>`
+```json
+{
+  "resolution": "10s | 1m | 5m | 1h",
+  "data": "T"
 }
 ```
 

@@ -4,7 +4,7 @@ import { NCard, NStatistic } from 'naive-ui'
 
 import MetricChart, { type ChartSeries } from './MetricChart.vue'
 import { colorForKey } from '../colors'
-import { formatBytes } from '../format'
+import { formatBytes, formatRate } from '../format'
 import type { ContainerMetricsByService, HostPoint, MetricsSnapshot } from '../types'
 
 const props = defineProps<{
@@ -58,11 +58,11 @@ const containerSeries = computed(() =>
     service,
     color: colorForKey(service),
     cpu: samples.map((sample) => ({
-      ts: Math.floor(sample.ts / 10_000) * 10_000,
+      ts: sample.ts,
       value: sample.cpu_pct,
     })),
     memory: samples.map((sample) => ({
-      ts: Math.floor(sample.ts / 10_000) * 10_000,
+      ts: sample.ts,
       value: sample.mem_used,
     })),
   }))
@@ -91,10 +91,6 @@ const containerMemorySummary = computed(() => {
   const used = latestContainerSamples.value.reduce((total, group) => total + group.mem_used, 0)
   return formatBytes(used)
 })
-
-function formatRate(value: number) {
-  return `${formatBytes(value)}/s`
-}
 
 function formatMemorySummary(sample?: HostPoint | null) {
   return sample ? `${formatBytes(sample.mem_used)} / ${formatBytes(sample.mem_total)}` : '—'

@@ -1,7 +1,8 @@
 //! SSE versions of the time-series metrics endpoints. Unlike `stream.rs`'s snapshot/diff
-//! endpoints, these are parameterized per connection (`from`/`resolution`, and `service`
+//! endpoints, these are parameterized per connection (`from`, and `service`
 //! for the per-service endpoint) and driven by `BucketWatcher`, not a data-change signal: a new
 //! point only exists once wall-clock time crosses the next completed bucket for that resolution.
+//! Each endpoint watches only its own sample source, so the two collectors never wake each other.
 //! There is no `to` — a live stream always runs up to the server's own "now" and keeps going.
 
 use std::collections::HashMap;
@@ -14,11 +15,12 @@ use futures_util::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
-use crate::api::metrics::parse_resolution;
 use crate::error::{AppError, AppResult};
+use crate::metrics::bucket_watcher::MetricsSource;
 use crate::metrics::store::MetricsStore;
 use crate::model::{
-    ContainerGroupMetricsAppend, GroupPoint, MetricsResolution, TimeRange, TimestampMs,
+    ContainerGroupMetricsAppend, GroupPoint, MetricsResolution, MetricsResponse, TimeRange,
+    TimestampMs,
 };
 use crate::state::AppState;
 
@@ -33,7 +35,6 @@ fn now_ms() -> TimestampMs {
 #[derive(Debug, Deserialize)]
 pub struct MetricsStreamQuery {
     pub from: i64,
-    pub resolution: String,
 }
 
 impl MetricsStreamQuery {
@@ -49,7 +50,10 @@ impl MetricsStreamQuery {
                 from: self.from,
                 to,
             },
-            parse_resolution(&self.resolution)?,
+            MetricsResolution::for_range(TimeRange {
+                from: self.from,
+                to,
+            }),
         ))
     }
 }
@@ -75,7 +79,9 @@ pub async fn host(
 ) -> AppResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
     let (range, resolution) = query.parse()?;
     let metrics = state.metrics.clone();
-    let rx = state.bucket_watcher.subscribe(resolution);
+    let rx = state
+        .bucket_watcher
+        .subscribe(MetricsSource::Host, resolution);
 
     let stream = stream::unfold(
         HostStreamState::Initial(metrics, rx, range, resolution),
@@ -87,7 +93,13 @@ pub async fn host(
                         .await
                         .unwrap_or_default();
                     let last_sent = points.last().map(|p| p.ts).unwrap_or(range.from);
-                    let event = to_event(Some("snapshot"), &points);
+                    let event = to_event(
+                        Some("snapshot"),
+                        &MetricsResponse {
+                            resolution: resolution.as_str().to_string(),
+                            data: points,
+                        },
+                    );
                     Some((
                         event,
                         HostStreamState::Waiting(metrics, rx, last_sent, resolution),
@@ -147,19 +159,31 @@ pub async fn containers(
 ) -> AppResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
     let (range, resolution) = query.parse()?;
     let metrics = state.metrics.clone();
-    let rx = state.bucket_watcher.subscribe(resolution);
+    let rx = state
+        .bucket_watcher
+        .subscribe(MetricsSource::Containers, resolution);
 
     let stream = stream::unfold(
         ContainersStreamState::Initial(metrics, rx, range, resolution),
         |current_state| async move {
             match current_state {
                 ContainersStreamState::Initial(metrics, rx, range, resolution) => {
-                    let series = metrics
+                    let by_service = metrics
                         .query_containers(range, resolution)
                         .await
                         .unwrap_or_default();
+                    let series: HashMap<String, Vec<GroupPoint>> = by_service
+                        .into_iter()
+                        .map(|(service, group)| (service, group.sum))
+                        .collect();
                     let last_sent = latest_ts_by_service(&series).unwrap_or(range.from);
-                    let event = to_event(Some("snapshot"), &series);
+                    let event = to_event(
+                        Some("snapshot"),
+                        &MetricsResponse {
+                            resolution: resolution.as_str().to_string(),
+                            data: series,
+                        },
+                    );
                     Some((
                         event,
                         ContainersStreamState::Waiting(metrics, rx, last_sent, resolution),
@@ -178,15 +202,19 @@ pub async fn containers(
                             from: last_sent,
                             to: bucket_end,
                         };
-                        let series = metrics
+                        let by_service = metrics
                             .query_containers(range, resolution)
                             .await
                             .unwrap_or_default();
-                        let cross_section = cross_section_by_service(series);
-                        if cross_section.is_empty() {
+                        let series: HashMap<String, Vec<GroupPoint>> = by_service
+                            .into_iter()
+                            .map(|(service, group)| (service, group.sum))
+                            .collect();
+                        let Some(latest_ts) = latest_ts_by_service(&series) else {
                             continue;
-                        }
-                        last_sent = bucket_end;
+                        };
+                        let cross_section = cross_section_by_service(series);
+                        last_sent = latest_ts;
                         let event = to_event(Some("append"), &cross_section);
                         return Some((
                             event,
@@ -225,22 +253,28 @@ pub async fn container(
 ) -> AppResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
     let (range, resolution) = query.parse()?;
     let metrics = state.metrics.clone();
-    let rx = state.bucket_watcher.subscribe(resolution);
+    let rx = state
+        .bucket_watcher
+        .subscribe(MetricsSource::Containers, resolution);
 
     let stream = stream::unfold(
         ContainerStreamState::Initial(metrics, rx, service, range, resolution),
         |current_state| async move {
             match current_state {
                 ContainerStreamState::Initial(metrics, rx, service, range, resolution) => {
-                    let group_metrics = metrics
-                        .query_container(&service, range, resolution)
+                    let mut by_service = metrics
+                        .query_containers(range, resolution)
                         .await
-                        .unwrap_or(crate::model::ContainerGroupMetrics {
-                            sum: Vec::new(),
-                            containers: HashMap::new(),
-                        });
+                        .unwrap_or_default();
+                    let group_metrics = by_service.remove(&service).unwrap_or_default();
                     let last_sent = latest_ts_in_service(&group_metrics).unwrap_or(range.from);
-                    let event = to_event(Some("snapshot"), &group_metrics);
+                    let event = to_event(
+                        Some("snapshot"),
+                        &MetricsResponse {
+                            resolution: resolution.as_str().to_string(),
+                            data: group_metrics,
+                        },
+                    );
                     Some((
                         event,
                         ContainerStreamState::Waiting(metrics, rx, service, last_sent, resolution),
@@ -264,13 +298,14 @@ pub async fn container(
                         from: last_sent,
                         to: bucket_end,
                     };
-                    let group_metrics = metrics
-                        .query_container(&service, range, resolution)
+                    let mut by_service = metrics
+                        .query_containers(range, resolution)
                         .await
-                        .unwrap_or(crate::model::ContainerGroupMetrics {
-                            sum: Vec::new(),
-                            containers: HashMap::new(),
-                        });
+                        .unwrap_or_default();
+                    let group_metrics = by_service.remove(&service).unwrap_or_default();
+                    let Some(latest_ts) = latest_ts_in_service(&group_metrics) else {
+                        continue;
+                    };
                     let append = ContainerGroupMetricsAppend {
                         sum: group_metrics.sum.into_iter().next_back(),
                         containers: group_metrics
@@ -279,10 +314,7 @@ pub async fn container(
                             .filter_map(|(cid, mut points)| points.pop().map(|point| (cid, point)))
                             .collect(),
                     };
-                    if append.sum.is_none() && append.containers.is_empty() {
-                        continue;
-                    }
-                    last_sent = bucket_end;
+                    last_sent = latest_ts;
                     let event = to_event(Some("append"), &append);
                     return Some((
                         event,

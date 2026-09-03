@@ -7,7 +7,7 @@ import type {
   HostPoint,
   LogPage,
   LogQueryParams,
-  MetricsResolution,
+  MetricsResponse,
   SettingEntry,
   TimeRange,
   UiConfig,
@@ -49,11 +49,10 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return response.status === 204 ? (undefined as T) : response.json()
 }
 
-function metricsRange(range: TimeRange, resolution: MetricsResolution) {
+function metricsRange(range: TimeRange) {
   return new URLSearchParams({
     from: String(range.from),
     to: String(range.to),
-    resolution,
   }).toString()
 }
 
@@ -72,16 +71,16 @@ function queryString(params: LogQueryParams) {
 export const api = {
   containers: {
     list: () => request<ContainerSummary[]>('/api/containers'),
-    metrics: (service: string, range: TimeRange, resolution: MetricsResolution) =>
-      request<ContainerGroupMetrics>(
-        `/api/metrics/containers/${encodeURIComponent(service)}?${metricsRange(range, resolution)}`
+    metrics: (service: string, range: TimeRange) =>
+      request<MetricsResponse<ContainerGroupMetrics>>(
+        `/api/metrics/containers/${encodeURIComponent(service)}?${metricsRange(range)}`
       ),
     action: (id: string, action: 'start' | 'stop' | 'restart') =>
       request<void>(`/api/containers/${encodeURIComponent(id)}/${action}`, { method: 'POST' }),
   },
   host: {
-    metrics: (range: TimeRange, resolution: MetricsResolution) =>
-      request<HostPoint[]>(`/api/metrics/host?${metricsRange(range, resolution)}`),
+    metrics: (range: TimeRange) =>
+      request<MetricsResponse<HostPoint[]>>(`/api/metrics/host?${metricsRange(range)}`),
   },
   logs: {
     query: (service: string, params: LogQueryParams) =>
@@ -94,8 +93,8 @@ export const api = {
   },
 }
 
-export function containerMetricsHistory(range: TimeRange, resolution: MetricsResolution) {
-  return request<ContainerMetricsByService>(
-    `/api/metrics/containers?${metricsRange(range, resolution)}`
+export function containerMetricsHistory(range: TimeRange) {
+  return request<MetricsResponse<ContainerMetricsByService>>(
+    `/api/metrics/containers?${metricsRange(range)}`
   )
 }

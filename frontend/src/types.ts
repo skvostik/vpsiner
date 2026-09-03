@@ -29,10 +29,10 @@ export interface HostPoint {
   storage_total: number
   metrics_size: number
   logs_size: number
-  net_rx_rate: number
-  net_tx_rate: number
-  disk_read_rate: number
-  disk_write_rate: number
+  net_rx_rate: number | null
+  net_tx_rate: number | null
+  disk_read_rate: number | null
+  disk_write_rate: number | null
 }
 
 export interface ContainerPoint {
@@ -41,10 +41,10 @@ export interface ContainerPoint {
   cpu_pct: number
   mem_used: number
   mem_limit: number
-  net_rx_rate: number
-  net_tx_rate: number
-  blk_read_rate: number
-  blk_write_rate: number
+  net_rx_rate: number | null
+  net_tx_rate: number | null
+  blk_read_rate: number | null
+  blk_write_rate: number | null
 }
 
 export interface GroupPoint {
@@ -52,10 +52,10 @@ export interface GroupPoint {
   cpu_pct: number
   mem_used: number
   mem_limit: number
-  net_rx_rate: number
-  net_tx_rate: number
-  blk_read_rate: number
-  blk_write_rate: number
+  net_rx_rate: number | null
+  net_tx_rate: number | null
+  blk_read_rate: number | null
+  blk_write_rate: number | null
 }
 
 export interface ContainerGroupMetrics {
@@ -64,6 +64,12 @@ export interface ContainerGroupMetrics {
 }
 
 export type ContainerMetricsByService = Record<string, GroupPoint[]>
+export type MetricsResolution = '10s' | '1m' | '5m' | '1h'
+
+export interface MetricsResponse<T> {
+  resolution: MetricsResolution
+  data: T
+}
 
 /** One newly-completed bucket's cross-section, pushed by GET /api/stream/metrics/containers/{service}. */
 export interface ContainerGroupMetricsAppend {
@@ -84,7 +90,6 @@ export type LogStream = 'stdout' | 'stderr'
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
 
 export type MetricsWindow = '10m' | '30m' | '1h' | '6h' | '24h' | '7d' | 'custom'
-export type MetricsResolution = '10s' | '1m' | '5m' | '1h'
 
 export interface TimeRange {
   from: number

@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use sysinfo::{CpuRefreshKind, Disks, MemoryRefreshKind, Networks, RefreshKind, System};
 
 use crate::error::{AppError, AppResult};
-use crate::model::HostSample;
+use crate::model::HostRawSample;
 
 /// Only CPU usage and memory are read from `System`, so the (expensive) process list is
 /// never collected.
@@ -18,7 +18,7 @@ fn host_refresh_kind() -> RefreshKind {
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait HostMetricsSource: Send + Sync + 'static {
-    async fn sample(&self) -> AppResult<HostSample>;
+    async fn sample(&self) -> AppResult<HostRawSample>;
 }
 
 /// sysinfo-backed implementation.
@@ -40,7 +40,7 @@ impl Default for SysinfoHost {
 
 #[async_trait]
 impl HostMetricsSource for SysinfoHost {
-    async fn sample(&self) -> AppResult<HostSample> {
+    async fn sample(&self) -> AppResult<HostRawSample> {
         let system = self.system.clone();
         let networks = self.networks.clone();
         let disks = self.disks.clone();
@@ -78,8 +78,8 @@ impl HostMetricsSource for SysinfoHost {
                 disks.list().iter().fold((0_u64, 0_u64), |totals, disk| {
                     let usage = disk.usage();
                     (
-                        totals.0.saturating_add(usage.read_bytes),
-                        totals.1.saturating_add(usage.written_bytes),
+                        totals.0.saturating_add(usage.total_read_bytes),
+                        totals.1.saturating_add(usage.total_written_bytes),
                     )
                 });
 
@@ -88,7 +88,7 @@ impl HostMetricsSource for SysinfoHost {
                 .map_err(|err| AppError::Host(format!("system clock is before unix epoch: {err}")))?
                 .as_millis() as i64;
 
-            Ok(HostSample {
+            Ok(HostRawSample {
                 ts,
                 cpu_pct: f64::from(system.global_cpu_usage()),
                 mem_used: system.used_memory(),

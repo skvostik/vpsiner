@@ -1,20 +1,22 @@
 import { onBeforeUnmount, ref, watch, type Ref } from 'vue'
 
 import { reportSseIssue } from './useBackendHealth'
-import type { HostPoint, MetricsResolution } from '../types'
+import type { HostPoint, MetricsResolution, MetricsResponse } from '../types'
 
 const trimTickMs = 5_000
+const reconnectDelayMs = 3_000
 
 /** Live host metrics history for HostView, pushed instead of polled. */
 export function useHostMetricsStream(
-  resolution: Ref<MetricsResolution>,
   windowMs: Ref<number>,
-  active: Ref<boolean>
+  active: Ref<boolean>,
+  setResolution: (resolution: MetricsResolution) => void
 ) {
   const points = ref<HostPoint[]>([])
 
   let source: EventSource | undefined
   let trimTimer: number | undefined
+  let reconnectTimer: number | undefined
 
   function trim() {
     if (!windowMs.value) return
@@ -27,6 +29,19 @@ export function useHostMetricsStream(
     source = undefined
     if (trimTimer) window.clearInterval(trimTimer)
     trimTimer = undefined
+    if (reconnectTimer) window.clearTimeout(reconnectTimer)
+    reconnectTimer = undefined
+  }
+
+  function reconnect(currentSource: EventSource) {
+    reportSseIssue(currentSource)
+    currentSource.close()
+    if (source === currentSource) source = undefined
+    if (!active.value || !windowMs.value || reconnectTimer) return
+    reconnectTimer = window.setTimeout(() => {
+      reconnectTimer = undefined
+      connect()
+    }, reconnectDelayMs)
   }
 
   function connect() {
@@ -34,11 +49,14 @@ export function useHostMetricsStream(
     if (!active.value || !windowMs.value) return
 
     const from = Date.now() - windowMs.value
-    const params = new URLSearchParams({ from: String(from), resolution: resolution.value })
+    const params = new URLSearchParams({ from: String(from) })
     source = new EventSource(`/api/stream/metrics/host?${params}`)
     source.addEventListener('snapshot', (event) => {
-      points.value = JSON.parse((event as MessageEvent).data) as HostPoint[]
-      console.debug('[host-metrics-stream] snapshot', points.value)
+      const response = JSON.parse((event as MessageEvent).data) as MetricsResponse<HostPoint[]>
+      points.value = response.data
+      trim()
+      setResolution(response.resolution)
+      console.debug('[host-metrics-stream] snapshot', response)
     })
     source.addEventListener('append', (event) => {
       const point = JSON.parse((event as MessageEvent).data) as HostPoint
@@ -46,13 +64,14 @@ export function useHostMetricsStream(
       trim()
       console.debug('[host-metrics-stream] append', point)
     })
-    // The browser retries automatically; only report an outage once the stream is definitively closed.
-    source.onerror = () => reportSseIssue(source)
+    source.onerror = () => {
+      if (source) reconnect(source)
+    }
 
     trimTimer = window.setInterval(trim, trimTickMs)
   }
 
-  watch([resolution, windowMs, active], connect, { immediate: true })
+  watch([windowMs, active], connect, { immediate: true })
   onBeforeUnmount(disconnect)
 
   return { points }

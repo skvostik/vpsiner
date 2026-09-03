@@ -9,7 +9,7 @@ import LiveStatusIcon from '../components/LiveStatusIcon.vue'
 import MetricsWindowPicker from '../components/MetricsWindowPicker.vue'
 import { api } from '../api'
 import { colorForKey } from '../colors'
-import { formatBytes, formatUptime } from '../format'
+import { formatBytes, formatRate, formatUptime } from '../format'
 import { backendOnline, dockerControlsAvailable } from '../composables/useBackendHealth'
 import { useContainerMetricsStream } from '../composables/useContainerMetricsStream'
 import { pendingAction, runContainerAction } from '../composables/useContainerActions'
@@ -18,7 +18,7 @@ import { useMetricsSnapshotStream } from '../composables/useMetricsSnapshotStrea
 import { useMetricsWindow } from '../composables/useMetricsWindow'
 import { useNow } from '../composables/useNow'
 import { usePageTitle } from '../composables/usePageTitle'
-import type { ContainerPoint, MetricsResolution, TimeRange } from '../types'
+import type { ContainerPoint, TimeRange } from '../types'
 
 const route = useRoute()
 const router = useRouter()
@@ -99,10 +99,10 @@ const diskWriteSeries = computed<ChartSeries[]>(() =>
 
 // Aggregate rates (service sum) power only the header stat numbers, not the per-container charts.
 const latest = computed(() => snapshot.value.services[service.value])
-const latestNetworkIn = computed(() => latest.value?.net_rx_rate ?? 0)
-const latestNetworkOut = computed(() => latest.value?.net_tx_rate ?? 0)
-const latestDiskRead = computed(() => latest.value?.blk_read_rate ?? 0)
-const latestDiskWrite = computed(() => latest.value?.blk_write_rate ?? 0)
+const latestNetworkIn = computed(() => latest.value?.net_rx_rate ?? null)
+const latestNetworkOut = computed(() => latest.value?.net_tx_rate ?? null)
+const latestDiskRead = computed(() => latest.value?.blk_read_rate ?? null)
+const latestDiskWrite = computed(() => latest.value?.blk_write_rate ?? null)
 
 const canStart = computed(
   () =>
@@ -123,14 +123,11 @@ const canRestart = computed(
     ['running', 'paused'].includes(container.value.state)
 )
 
-function formatRate(value: number) {
-  return `${formatBytes(value)}/s`
-}
-
-async function loadMetrics(range: TimeRange, resolution: MetricsResolution) {
+async function loadMetrics(range: TimeRange) {
   if (!service.value || isLive.value) return
-  const next = await api.containers.metrics(service.value, range, resolution)
-  restContainerSamples.value = next.containers
+  const next = await api.containers.metrics(service.value, range)
+  restContainerSamples.value = next.data.containers
+  return next.resolution
 }
 
 const {
@@ -138,9 +135,9 @@ const {
   customFrom,
   customTo,
   isLive,
-  resolution,
   resolutionLabel,
   liveWindowMs,
+  setResolution,
   updateWindow,
   updateCustomFrom,
   updateCustomTo,
@@ -148,9 +145,9 @@ const {
 } = useMetricsWindow(loadMetrics)
 const { containers: liveContainerSamples } = useContainerMetricsStream(
   service,
-  resolution,
   liveWindowMs,
-  isLive
+  isLive,
+  setResolution
 )
 const containerSamples = computed(() =>
   isLive.value ? liveContainerSamples.value : restContainerSamples.value
@@ -321,7 +318,7 @@ usePageTitle(() => container.value?.name || service.value || 'Container')
           @update:custom-from="updateCustomFrom"
           @update:custom-to="updateCustomTo"
         />
-        <n-empty v-if="!containerSeriesEntries.length" description="No metrics found" />
+        <n-empty v-if="!containerSeriesEntries.length" description="Not enough data yet" />
         <div v-else class="grid min-w-0 gap-4 lg:grid-cols-2">
           <n-card
             size="small"

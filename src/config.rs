@@ -28,6 +28,7 @@ const ENV_DOCKER_EVENTS_CHANNEL_CAPACITY: &str = "VPSINER_DOCKER_EVENTS_CHANNEL_
 const ENV_SQLITE_CACHE_SIZE_KB: &str = "VPSINER_SQLITE_CACHE_SIZE_KB";
 const ENV_SQLITE_BUSY_TIMEOUT_MS: &str = "VPSINER_SQLITE_BUSY_TIMEOUT_MS";
 const ENV_SQLITE_KEEP_ALIVE_SECS: &str = "VPSINER_SQLITE_KEEP_ALIVE_SECS";
+const ENV_DOWNSAMPLE_MAX_GAP_PCT: &str = "VPSINER_DOWNSAMPLE_MAX_GAP_PCT";
 /// Read by the Tokio runtime builder in `main`, not stored on [`Config`].
 const ENV_WORKER_THREADS: &str = "VPSINER_WORKER_THREADS";
 /// Read by the tracing subscriber in `main`, not stored on [`Config`].
@@ -41,7 +42,9 @@ const DEFAULT_DATA_PATH: &str = "data";
 const DEFAULT_CONFIG_PATH: &str = "config";
 const DEFAULT_PORT: u16 = 3000;
 const DEFAULT_RETENTION_WEEKS: u32 = 4;
-const DEFAULT_COLLECT_INTERVAL_SECS: u64 = 10;
+const DEFAULT_COLLECT_INTERVAL_SECS: u64 = 5;
+/// Matches the finest stored bucket: a slower interval would leave buckets with no samples.
+const MAX_COLLECT_INTERVAL_SECS: u64 = 10;
 const DEFAULT_LOG_FLUSH_DEBOUNCE_MS: u64 = 500;
 const DEFAULT_LOG_FLUSH_KEEP_ALIVE_SECS: u64 = 60;
 const DEFAULT_DOCKER_CONTROLS: DockerControlsMode = DockerControlsMode::Auto;
@@ -55,6 +58,8 @@ const DEFAULT_DOCKER_EVENTS_CHANNEL_CAPACITY: usize = 256;
 const DEFAULT_SQLITE_CACHE_SIZE_KB: u64 = 1_024;
 const DEFAULT_SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_SQLITE_KEEP_ALIVE_SECS: u64 = 300;
+/// A bucket is discarded when its largest sample gap exceeds this share of the bucket length.
+const DEFAULT_DOWNSAMPLE_MAX_GAP_PCT: u8 = 40;
 
 /// Whether container start/stop/restart endpoints are exposed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,6 +133,7 @@ pub struct Config {
     pub sqlite_cache_size_kb: u64,
     pub sqlite_busy_timeout: Duration,
     pub sqlite_keep_alive: Duration,
+    pub downsample_max_gap_pct: u8,
 }
 
 impl Config {
@@ -147,9 +153,10 @@ impl Config {
             static_dir: env::var_os(ENV_STATIC_DIR).map(PathBuf::from),
             port: parse_positive_u16_or(ENV_PORT, DEFAULT_PORT),
             retention_weeks: parse_or(ENV_RETENTION_WEEKS, DEFAULT_RETENTION_WEEKS),
-            collect_interval: Duration::from_secs(parse_positive_u64_or(
+            collect_interval: Duration::from_secs(parse_bounded_u64_or(
                 ENV_COLLECT_INTERVAL_SECS,
                 DEFAULT_COLLECT_INTERVAL_SECS,
+                MAX_COLLECT_INTERVAL_SECS,
             )),
             log_flush_debounce: Duration::from_millis(parse_or(
                 ENV_LOG_FLUSH_DEBOUNCE_MS,
@@ -200,6 +207,10 @@ impl Config {
                 ENV_SQLITE_KEEP_ALIVE_SECS,
                 DEFAULT_SQLITE_KEEP_ALIVE_SECS,
             )),
+            downsample_max_gap_pct: parse_percent_or(
+                ENV_DOWNSAMPLE_MAX_GAP_PCT,
+                DEFAULT_DOWNSAMPLE_MAX_GAP_PCT,
+            ),
         }
     }
 
@@ -273,7 +284,7 @@ impl Config {
                 ENV_COLLECT_INTERVAL_SECS,
                 self.collect_interval.as_secs().to_string(),
                 DEFAULT_COLLECT_INTERVAL_SECS.to_string(),
-                "Host and container metrics collection interval",
+                "Host and container metrics collection interval, at most 10 seconds",
                 "advanced",
             ),
             entry(
@@ -375,6 +386,13 @@ impl Config {
                 "advanced",
             ),
             entry(
+                ENV_DOWNSAMPLE_MAX_GAP_PCT,
+                self.downsample_max_gap_pct.to_string(),
+                DEFAULT_DOWNSAMPLE_MAX_GAP_PCT.to_string(),
+                "Discard a rolled-up 1m/5m/1h bucket (0-100) if its largest sample gap exceeds this percentage of the bucket length",
+                "advanced",
+            ),
+            entry(
                 ENV_STATIC_DIR,
                 self.static_dir.as_ref().map(path).unwrap_or_default(),
                 String::new(),
@@ -414,6 +432,21 @@ fn parse_positive_u64_or(key: &str, default: u64) -> u64 {
     assert!(
         parsed > 0,
         "{key} must be a positive integer, got: {parsed}"
+    );
+    parsed
+}
+
+fn parse_bounded_u64_or(key: &str, default: u64, max: u64) -> u64 {
+    let parsed = parse_positive_u64_or(key, default);
+    assert!(parsed <= max, "{key} must be at most {max}, got: {parsed}");
+    parsed
+}
+
+fn parse_percent_or(key: &str, default: u8) -> u8 {
+    let parsed = parse_or(key, default);
+    assert!(
+        parsed <= 100,
+        "{key} must be between 0 and 100, got: {parsed}"
     );
     parsed
 }
@@ -465,6 +498,7 @@ mod tests {
             sqlite_cache_size_kb: DEFAULT_SQLITE_CACHE_SIZE_KB,
             sqlite_busy_timeout: Duration::from_millis(DEFAULT_SQLITE_BUSY_TIMEOUT_MS),
             sqlite_keep_alive: Duration::from_secs(DEFAULT_SQLITE_KEEP_ALIVE_SECS),
+            downsample_max_gap_pct: DEFAULT_DOWNSAMPLE_MAX_GAP_PCT,
         }
     }
 
@@ -474,7 +508,7 @@ mod tests {
         let names: HashSet<_> = entries.iter().map(|entry| entry.name).collect();
 
         assert_eq!(names.len(), entries.len(), "duplicate setting names");
-        assert_eq!(entries.len(), 24);
+        assert_eq!(entries.len(), 25);
         assert!(names.contains(ENV_WORKER_THREADS));
         assert!(names.contains(ENV_RUST_LOG));
         assert!(names.contains(ENV_DOCKER_HOST));
