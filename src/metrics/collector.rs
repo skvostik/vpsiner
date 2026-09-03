@@ -5,42 +5,10 @@ use std::time::Duration;
 use crate::docker::DockerService;
 use crate::logs::store::LogStore;
 use crate::metrics::bucket_watcher::{BucketWatcher, MetricsSource};
+use crate::metrics::collector_host::collect_host_once;
 use crate::metrics::host::HostMetricsSource;
 use crate::metrics::snapshot::MetricsSnapshotState;
 use crate::metrics::store::MetricsStore;
-
-pub async fn collect_once(
-    host: &Arc<dyn HostMetricsSource>,
-    metrics: &Arc<dyn MetricsStore>,
-    logs: &Arc<dyn LogStore>,
-    snapshot: &Arc<MetricsSnapshotState>,
-    bucket_watcher: &Arc<BucketWatcher>,
-) {
-    match host.sample().await {
-        Ok(mut sample) => {
-            sample.metrics_size = match metrics.database_size_bytes().await {
-                Ok(size) => size,
-                Err(err) => {
-                    tracing::error!(error = %err, "failed to measure metrics database size");
-                    return;
-                }
-            };
-            sample.logs_size = match logs.database_size_bytes().await {
-                Ok(size) => size,
-                Err(err) => {
-                    tracing::error!(error = %err, "failed to measure logs database size");
-                    return;
-                }
-            };
-            snapshot.record_host(&sample);
-            match metrics.insert_host(sample).await {
-                Ok(()) => bucket_watcher.observe_sample(MetricsSource::Host, sample.ts),
-                Err(err) => tracing::error!(error = %err, "failed to persist host metrics"),
-            }
-        }
-        Err(err) => tracing::error!(error = %err, "failed to sample host metrics"),
-    }
-}
 
 pub async fn run_containers(
     docker: Arc<dyn DockerService>,
@@ -66,7 +34,7 @@ pub async fn run_containers(
     tracing::warn!("container metrics stream ended");
 }
 
-pub async fn run(
+pub async fn run_host(
     host: Arc<dyn HostMetricsSource>,
     metrics: Arc<dyn MetricsStore>,
     logs: Arc<dyn LogStore>,
@@ -77,7 +45,7 @@ pub async fn run(
     let mut ticker = tokio::time::interval(interval);
     loop {
         ticker.tick().await;
-        collect_once(&host, &metrics, &logs, &snapshot, &bucket_watcher).await;
+        collect_host_once(&host, &metrics, &logs, &snapshot, &bucket_watcher).await;
     }
 }
 
@@ -130,7 +98,7 @@ mod tests {
         let logs: Arc<dyn LogStore> = Arc::new(logs);
         let snapshot = Arc::new(MetricsSnapshotState::new(Duration::from_secs(10)));
         let bucket_watcher = Arc::new(BucketWatcher::new());
-        collect_once(&host, &metrics, &logs, &snapshot, &bucket_watcher).await;
+        collect_host_once(&host, &metrics, &logs, &snapshot, &bucket_watcher).await;
     }
 
     #[tokio::test]

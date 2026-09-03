@@ -143,7 +143,7 @@ async fn async_main() {
         config.retention_weeks,
     ));
 
-    let host_metrics_task = tokio::spawn(metrics::collector::run(
+    let host_metrics_task = tokio::spawn(metrics::collector::run_host(
         state.host.clone(),
         state.metrics.clone(),
         state.logs.clone(),
