@@ -10,7 +10,7 @@ use sqlx::sqlite::{
 };
 
 use crate::error::{AppError, AppResult};
-use crate::metrics::downsampling::{downsample_container, downsample_host, sum_by_bucket};
+use crate::metrics::downsampling::sum_by_bucket;
 use crate::metrics::{rollup, schema};
 use crate::model::{
     ContainerGroupMetrics, ContainerPoint, ContainerSample, HostPoint, HostSample,
@@ -183,31 +183,6 @@ fn storage(err: impl std::fmt::Display) -> AppError {
     AppError::Storage(err.to_string())
 }
 
-/// The head of `range` that predates the rollup table and must come from the `10s` rows.
-///
-/// Rollups only run forwards, so a range reaching back before the first rolled-up bucket
-/// would otherwise come back short until retention drops that older data.
-fn uncovered_head(
-    stored_min_ts: Option<i64>,
-    range: TimeRange,
-    resolution: MetricsResolution,
-) -> Option<TimeRange> {
-    if resolution == MetricsResolution::TenSeconds {
-        return None;
-    }
-
-    let bucket_ms = i64::try_from(resolution.bucket_ms()).expect("bucket size exceeds i64");
-    let uncovered_to = match stored_min_ts {
-        Some(min_ts) => min_ts - bucket_ms,
-        None => range.to,
-    };
-
-    (uncovered_to >= range.from).then_some(TimeRange {
-        from: range.from,
-        to: uncovered_to.min(range.to),
-    })
-}
-
 async fn file_size_bytes(path: &Path) -> AppResult<u64> {
     match tokio::fs::metadata(path).await {
         Ok(metadata) => Ok(metadata.len()),
@@ -277,25 +252,9 @@ impl MetricsStore for SqliteMetricsStore {
         range: TimeRange,
         resolution: MetricsResolution,
     ) -> AppResult<Vec<HostPoint>> {
-        let stored = schema::select_host(&self.pool, resolution, range).await?;
-
-        let mut samples = match uncovered_head(
-            schema::select_host_min_ts(&self.pool, resolution).await?,
-            range,
-            resolution,
-        ) {
-            Some(uncovered) => {
-                let raw = schema::select_host(&self.pool, MetricsResolution::TenSeconds, uncovered)
-                    .await?;
-                downsample_host(&raw, resolution, self.downsample_max_gap_pct)
-            }
-            None => Vec::new(),
-        };
-        samples.extend(stored);
-
-        Ok(samples
+        Ok(schema::select_host(&self.pool, resolution, range)
+            .await?
             .into_iter()
-            .filter(|sample| sample.ts >= range.from)
             .map(HostPoint::from)
             .collect())
     }
@@ -305,43 +264,16 @@ impl MetricsStore for SqliteMetricsStore {
         range: TimeRange,
         resolution: MetricsResolution,
     ) -> AppResult<HashMap<String, ContainerGroupMetrics>> {
-        let stored = schema::select_containers(&self.pool, resolution, range).await?;
-
-        let uncovered = uncovered_head(
-            schema::select_containers_min_ts(&self.pool, resolution).await?,
-            range,
-            resolution,
-        );
-
         let mut by_service_and_container: HashMap<String, HashMap<String, Vec<ContainerSample>>> =
             HashMap::new();
-        let mut group = |sample: ContainerSample| {
+        for sample in schema::select_containers(&self.pool, resolution, range).await? {
             by_service_and_container
                 .entry(sample.service.clone())
                 .or_default()
                 .entry(sample.cid.clone())
                 .or_default()
                 .push(sample);
-        };
-
-        if let Some(uncovered) = uncovered {
-            let raw =
-                schema::select_containers(&self.pool, MetricsResolution::TenSeconds, uncovered)
-                    .await?;
-            let mut raw_by_container: HashMap<String, Vec<ContainerSample>> = HashMap::new();
-            for sample in raw {
-                raw_by_container
-                    .entry(sample.cid.clone())
-                    .or_default()
-                    .push(sample);
-            }
-            for samples in raw_by_container.into_values() {
-                downsample_container(&samples, resolution, self.downsample_max_gap_pct)
-                    .into_iter()
-                    .for_each(&mut group);
-            }
         }
-        stored.into_iter().for_each(&mut group);
 
         let mut by_service = HashMap::new();
         for (service, by_container) in by_service_and_container {
@@ -706,11 +638,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn coarse_queries_fall_back_to_raw_rows_predating_the_rollup() {
-        let directory = test_directory("rollup-fallback");
+    async fn coarse_queries_return_empty_without_persisted_rollups() {
+        let directory = test_directory("rollup-empty");
         let store = test_store(directory.join("metrics.db")).await;
 
-        // Written straight to the 10s table, as an upgraded database would already hold.
         for bucket in 1..=6 {
             schema::insert_host(
                 &store.pool,
@@ -732,9 +663,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(minutes.len(), 1);
-        assert_eq!(minutes[0].ts, 60_000);
-        assert_eq!(minutes[0].cpu_pct, 12.5);
+        assert!(minutes.is_empty());
         let _ = tokio::fs::remove_dir_all(directory).await;
     }
 

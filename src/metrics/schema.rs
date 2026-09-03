@@ -296,30 +296,6 @@ pub async fn select_containers_max_ts(
     .await
 }
 
-/// Oldest stored bucket in the host table for `resolution`, or `None` when it is empty.
-pub async fn select_host_min_ts(
-    pool: &SqlitePool,
-    resolution: MetricsResolution,
-) -> AppResult<Option<i64>> {
-    select_bound(
-        pool,
-        format!("SELECT MIN(ts) FROM {}", host_table(resolution)),
-    )
-    .await
-}
-
-/// Oldest stored bucket in the container table for `resolution`, or `None` when it is empty.
-pub async fn select_containers_min_ts(
-    pool: &SqlitePool,
-    resolution: MetricsResolution,
-) -> AppResult<Option<i64>> {
-    select_bound(
-        pool,
-        format!("SELECT MIN(ts) FROM {}", container_table(resolution)),
-    )
-    .await
-}
-
 /// Deletes rows older than `cutoff_ms` from the host table for `resolution`.
 pub async fn delete_host_before(
     pool: &SqlitePool,

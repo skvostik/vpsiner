@@ -317,7 +317,7 @@ usePageTitle(() => container.value?.name || service.value || 'Container')
           @update:custom-from="updateCustomFrom"
           @update:custom-to="updateCustomTo"
         />
-        <n-empty v-if="!containerSeriesEntries.length" description="No metrics found" />
+        <n-empty v-if="!containerSeriesEntries.length" description="Not enough data yet" />
         <div v-else class="grid min-w-0 gap-4 lg:grid-cols-2">
           <n-card
             size="small"

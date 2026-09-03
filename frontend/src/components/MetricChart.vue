@@ -23,10 +23,12 @@ const props = withDefaults(
     series?: ChartSeries[]
     color?: string
     formatValue?: (value: number) => string
+    emptyMessage?: string
   }>(),
   {
     color: '#0891b2',
     formatValue: (value: number) => value.toFixed(1),
+    emptyMessage: 'Not enough data yet',
   }
 )
 
@@ -35,6 +37,7 @@ use([CanvasRenderer, LineChart, GridComponent, TooltipComponent, LegendComponent
 const chartSeries = computed(
   () => props.series ?? [{ name: 'Value', points: props.points ?? [], color: props.color }]
 )
+const hasData = computed(() => chartSeries.value.some((entry) => entry.points.length >= 2))
 
 function escapeHtml(value: string) {
   return value.replace(
@@ -121,7 +124,16 @@ const option = computed(() => ({
 </script>
 
 <template>
-  <div class="mt-4 min-w-0 h-40">
-    <v-chart :option="option" autoresize class="h-full w-full" aria-label="Metric history chart" />
+  <div class="mt-4 flex h-40 min-w-0 items-center justify-center">
+    <v-chart
+      v-if="hasData"
+      :option="option"
+      autoresize
+      class="h-full w-full"
+      aria-label="Metric history chart"
+    />
+    <p v-else class="px-4 text-center text-sm text-neutral-500 dark:text-neutral-400">
+      {{ props.emptyMessage }}
+    </p>
   </div>
 </template>
