@@ -14,6 +14,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use futures_util::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 
 use crate::error::{AppError, AppResult};
 use crate::metrics::bucket_watcher::MetricsSource;
@@ -64,12 +65,14 @@ enum HostStreamState {
         watch::Receiver<TimestampMs>,
         TimeRange,
         MetricsResolution,
+        CancellationToken,
     ),
     Waiting(
         Arc<dyn MetricsStore>,
         watch::Receiver<TimestampMs>,
         TimestampMs,
         MetricsResolution,
+        CancellationToken,
     ),
 }
 
@@ -82,12 +85,13 @@ pub async fn host(
     let rx = state
         .bucket_watcher
         .subscribe(MetricsSource::Host, resolution);
+    let shutdown = state.shutdown.clone();
 
     let stream = stream::unfold(
-        HostStreamState::Initial(metrics, rx, range, resolution),
+        HostStreamState::Initial(metrics, rx, range, resolution, shutdown),
         |current_state| async move {
             match current_state {
-                HostStreamState::Initial(metrics, rx, range, resolution) => {
+                HostStreamState::Initial(metrics, rx, range, resolution, shutdown) => {
                     let points = metrics
                         .query_host(range, resolution)
                         .await
@@ -102,35 +106,42 @@ pub async fn host(
                     );
                     Some((
                         event,
-                        HostStreamState::Waiting(metrics, rx, last_sent, resolution),
+                        HostStreamState::Waiting(metrics, rx, last_sent, resolution, shutdown),
                     ))
                 }
-                HostStreamState::Waiting(metrics, mut rx, mut last_sent, resolution) => loop {
-                    if rx.changed().await.is_err() {
-                        return None;
+                HostStreamState::Waiting(metrics, mut rx, mut last_sent, resolution, shutdown) => {
+                    loop {
+                        tokio::select! {
+                            _ = shutdown.cancelled() => return None,
+                            changed = rx.changed() => {
+                                if changed.is_err() {
+                                    return None;
+                                }
+                            }
+                        }
+                        let bucket_end = *rx.borrow_and_update();
+                        if bucket_end <= last_sent {
+                            continue;
+                        }
+                        let range = TimeRange {
+                            from: last_sent,
+                            to: bucket_end,
+                        };
+                        let points = metrics
+                            .query_host(range, resolution)
+                            .await
+                            .unwrap_or_default();
+                        let Some(point) = points.into_iter().next_back() else {
+                            continue;
+                        };
+                        last_sent = point.ts;
+                        let event = to_event(Some("append"), &point);
+                        return Some((
+                            event,
+                            HostStreamState::Waiting(metrics, rx, last_sent, resolution, shutdown),
+                        ));
                     }
-                    let bucket_end = *rx.borrow_and_update();
-                    if bucket_end <= last_sent {
-                        continue;
-                    }
-                    let range = TimeRange {
-                        from: last_sent,
-                        to: bucket_end,
-                    };
-                    let points = metrics
-                        .query_host(range, resolution)
-                        .await
-                        .unwrap_or_default();
-                    let Some(point) = points.into_iter().next_back() else {
-                        continue;
-                    };
-                    last_sent = point.ts;
-                    let event = to_event(Some("append"), &point);
-                    return Some((
-                        event,
-                        HostStreamState::Waiting(metrics, rx, last_sent, resolution),
-                    ));
-                },
+                }
             }
         },
     );
@@ -144,12 +155,14 @@ enum ContainersStreamState {
         watch::Receiver<TimestampMs>,
         TimeRange,
         MetricsResolution,
+        CancellationToken,
     ),
     Waiting(
         Arc<dyn MetricsStore>,
         watch::Receiver<TimestampMs>,
         TimestampMs,
         MetricsResolution,
+        CancellationToken,
     ),
 }
 
@@ -162,12 +175,13 @@ pub async fn containers(
     let rx = state
         .bucket_watcher
         .subscribe(MetricsSource::Containers, resolution);
+    let shutdown = state.shutdown.clone();
 
     let stream = stream::unfold(
-        ContainersStreamState::Initial(metrics, rx, range, resolution),
+        ContainersStreamState::Initial(metrics, rx, range, resolution, shutdown),
         |current_state| async move {
             match current_state {
-                ContainersStreamState::Initial(metrics, rx, range, resolution) => {
+                ContainersStreamState::Initial(metrics, rx, range, resolution, shutdown) => {
                     let by_service = metrics
                         .query_containers(range, resolution)
                         .await
@@ -186,42 +200,55 @@ pub async fn containers(
                     );
                     Some((
                         event,
-                        ContainersStreamState::Waiting(metrics, rx, last_sent, resolution),
+                        ContainersStreamState::Waiting(
+                            metrics, rx, last_sent, resolution, shutdown,
+                        ),
                     ))
                 }
-                ContainersStreamState::Waiting(metrics, mut rx, mut last_sent, resolution) => {
-                    loop {
-                        if rx.changed().await.is_err() {
-                            return None;
+                ContainersStreamState::Waiting(
+                    metrics,
+                    mut rx,
+                    mut last_sent,
+                    resolution,
+                    shutdown,
+                ) => loop {
+                    tokio::select! {
+                        _ = shutdown.cancelled() => return None,
+                        changed = rx.changed() => {
+                            if changed.is_err() {
+                                return None;
+                            }
                         }
-                        let bucket_end = *rx.borrow_and_update();
-                        if bucket_end <= last_sent {
-                            continue;
-                        }
-                        let range = TimeRange {
-                            from: last_sent,
-                            to: bucket_end,
-                        };
-                        let by_service = metrics
-                            .query_containers(range, resolution)
-                            .await
-                            .unwrap_or_default();
-                        let series: HashMap<String, Vec<GroupPoint>> = by_service
-                            .into_iter()
-                            .map(|(service, group)| (service, group.sum))
-                            .collect();
-                        let Some(latest_ts) = latest_ts_by_service(&series) else {
-                            continue;
-                        };
-                        let cross_section = cross_section_by_service(series);
-                        last_sent = latest_ts;
-                        let event = to_event(Some("append"), &cross_section);
-                        return Some((
-                            event,
-                            ContainersStreamState::Waiting(metrics, rx, last_sent, resolution),
-                        ));
                     }
-                }
+                    let bucket_end = *rx.borrow_and_update();
+                    if bucket_end <= last_sent {
+                        continue;
+                    }
+                    let range = TimeRange {
+                        from: last_sent,
+                        to: bucket_end,
+                    };
+                    let by_service = metrics
+                        .query_containers(range, resolution)
+                        .await
+                        .unwrap_or_default();
+                    let series: HashMap<String, Vec<GroupPoint>> = by_service
+                        .into_iter()
+                        .map(|(service, group)| (service, group.sum))
+                        .collect();
+                    let Some(latest_ts) = latest_ts_by_service(&series) else {
+                        continue;
+                    };
+                    let cross_section = cross_section_by_service(series);
+                    last_sent = latest_ts;
+                    let event = to_event(Some("append"), &cross_section);
+                    return Some((
+                        event,
+                        ContainersStreamState::Waiting(
+                            metrics, rx, last_sent, resolution, shutdown,
+                        ),
+                    ));
+                },
             }
         },
     );
@@ -236,6 +263,7 @@ enum ContainerStreamState {
         String,
         TimeRange,
         MetricsResolution,
+        CancellationToken,
     ),
     Waiting(
         Arc<dyn MetricsStore>,
@@ -243,6 +271,7 @@ enum ContainerStreamState {
         String,
         TimestampMs,
         MetricsResolution,
+        CancellationToken,
     ),
 }
 
@@ -256,12 +285,20 @@ pub async fn container(
     let rx = state
         .bucket_watcher
         .subscribe(MetricsSource::Containers, resolution);
+    let shutdown = state.shutdown.clone();
 
     let stream = stream::unfold(
-        ContainerStreamState::Initial(metrics, rx, service, range, resolution),
+        ContainerStreamState::Initial(metrics, rx, service, range, resolution, shutdown),
         |current_state| async move {
             match current_state {
-                ContainerStreamState::Initial(metrics, rx, service, range, resolution) => {
+                ContainerStreamState::Initial(
+                    metrics,
+                    rx,
+                    service,
+                    range,
+                    resolution,
+                    shutdown,
+                ) => {
                     let mut by_service = metrics
                         .query_containers(range, resolution)
                         .await
@@ -277,7 +314,9 @@ pub async fn container(
                     );
                     Some((
                         event,
-                        ContainerStreamState::Waiting(metrics, rx, service, last_sent, resolution),
+                        ContainerStreamState::Waiting(
+                            metrics, rx, service, last_sent, resolution, shutdown,
+                        ),
                     ))
                 }
                 ContainerStreamState::Waiting(
@@ -286,9 +325,15 @@ pub async fn container(
                     service,
                     mut last_sent,
                     resolution,
+                    shutdown,
                 ) => loop {
-                    if rx.changed().await.is_err() {
-                        return None;
+                    tokio::select! {
+                        _ = shutdown.cancelled() => return None,
+                        changed = rx.changed() => {
+                            if changed.is_err() {
+                                return None;
+                            }
+                        }
                     }
                     let bucket_end = *rx.borrow_and_update();
                     if bucket_end <= last_sent {
@@ -318,7 +363,9 @@ pub async fn container(
                     let event = to_event(Some("append"), &append);
                     return Some((
                         event,
-                        ContainerStreamState::Waiting(metrics, rx, service, last_sent, resolution),
+                        ContainerStreamState::Waiting(
+                            metrics, rx, service, last_sent, resolution, shutdown,
+                        ),
                     ));
                 },
             }
