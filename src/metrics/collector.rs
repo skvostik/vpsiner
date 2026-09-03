@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use crate::docker::DockerService;
 use crate::logs::store::LogStore;
-use crate::metrics::bucket_watcher::BucketWatcher;
+use crate::metrics::bucket_watcher::{BucketWatcher, MetricsSource};
 use crate::metrics::host::HostMetricsSource;
 use crate::metrics::snapshot::MetricsSnapshotState;
 use crate::metrics::store::MetricsStore;
@@ -34,7 +34,7 @@ pub async fn collect_once(
             };
             snapshot.record_host(&sample);
             match metrics.insert_host(sample).await {
-                Ok(()) => bucket_watcher.observe_sample(sample.ts),
+                Ok(()) => bucket_watcher.observe_sample(MetricsSource::Host, sample.ts),
                 Err(err) => tracing::error!(error = %err, "failed to persist host metrics"),
             }
         }
@@ -56,7 +56,7 @@ pub async fn run_containers(
         match metrics.insert_containers(samples).await {
             Ok(()) => {
                 if let Some(ts) = latest_ts {
-                    bucket_watcher.observe_sample(ts);
+                    bucket_watcher.observe_sample(MetricsSource::Containers, ts);
                 }
             }
             Err(err) => tracing::error!(error = %err, "failed to persist container metrics"),

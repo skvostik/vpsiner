@@ -2,6 +2,7 @@
 //! endpoints, these are parameterized per connection (`from`/`resolution`, and `service`
 //! for the per-service endpoint) and driven by `BucketWatcher`, not a data-change signal: a new
 //! point only exists once wall-clock time crosses the next completed bucket for that resolution.
+//! Each endpoint watches only its own sample source, so the two collectors never wake each other.
 //! There is no `to` — a live stream always runs up to the server's own "now" and keeps going.
 
 use std::collections::HashMap;
@@ -16,6 +17,7 @@ use tokio::sync::watch;
 
 use crate::api::metrics::parse_resolution;
 use crate::error::{AppError, AppResult};
+use crate::metrics::bucket_watcher::MetricsSource;
 use crate::metrics::store::MetricsStore;
 use crate::model::{
     ContainerGroupMetricsAppend, GroupPoint, MetricsResolution, TimeRange, TimestampMs,
@@ -75,7 +77,9 @@ pub async fn host(
 ) -> AppResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
     let (range, resolution) = query.parse()?;
     let metrics = state.metrics.clone();
-    let rx = state.bucket_watcher.subscribe(resolution);
+    let rx = state
+        .bucket_watcher
+        .subscribe(MetricsSource::Host, resolution);
 
     let stream = stream::unfold(
         HostStreamState::Initial(metrics, rx, range, resolution),
@@ -147,7 +151,9 @@ pub async fn containers(
 ) -> AppResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
     let (range, resolution) = query.parse()?;
     let metrics = state.metrics.clone();
-    let rx = state.bucket_watcher.subscribe(resolution);
+    let rx = state
+        .bucket_watcher
+        .subscribe(MetricsSource::Containers, resolution);
 
     let stream = stream::unfold(
         ContainersStreamState::Initial(metrics, rx, range, resolution),
@@ -182,11 +188,11 @@ pub async fn containers(
                             .query_containers(range, resolution)
                             .await
                             .unwrap_or_default();
-                        let cross_section = cross_section_by_service(series);
-                        if cross_section.is_empty() {
+                        let Some(latest_ts) = latest_ts_by_service(&series) else {
                             continue;
-                        }
-                        last_sent = bucket_end;
+                        };
+                        let cross_section = cross_section_by_service(series);
+                        last_sent = latest_ts;
                         let event = to_event(Some("append"), &cross_section);
                         return Some((
                             event,
@@ -225,7 +231,9 @@ pub async fn container(
 ) -> AppResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
     let (range, resolution) = query.parse()?;
     let metrics = state.metrics.clone();
-    let rx = state.bucket_watcher.subscribe(resolution);
+    let rx = state
+        .bucket_watcher
+        .subscribe(MetricsSource::Containers, resolution);
 
     let stream = stream::unfold(
         ContainerStreamState::Initial(metrics, rx, service, range, resolution),
@@ -271,6 +279,9 @@ pub async fn container(
                             sum: Vec::new(),
                             containers: HashMap::new(),
                         });
+                    let Some(latest_ts) = latest_ts_in_service(&group_metrics) else {
+                        continue;
+                    };
                     let append = ContainerGroupMetricsAppend {
                         sum: group_metrics.sum.into_iter().next_back(),
                         containers: group_metrics
@@ -279,10 +290,7 @@ pub async fn container(
                             .filter_map(|(cid, mut points)| points.pop().map(|point| (cid, point)))
                             .collect(),
                     };
-                    if append.sum.is_none() && append.containers.is_empty() {
-                        continue;
-                    }
-                    last_sent = bucket_end;
+                    last_sent = latest_ts;
                     let event = to_event(Some("append"), &append);
                     return Some((
                         event,
