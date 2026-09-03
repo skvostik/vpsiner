@@ -41,10 +41,10 @@ export interface ContainerPoint {
   cpu_pct: number
   mem_used: number
   mem_limit: number
-  net_rx_rate: number
-  net_tx_rate: number
-  blk_read_rate: number
-  blk_write_rate: number
+  net_rx_rate: number | null
+  net_tx_rate: number | null
+  blk_read_rate: number | null
+  blk_write_rate: number | null
 }
 
 export interface GroupPoint {
@@ -52,10 +52,10 @@ export interface GroupPoint {
   cpu_pct: number
   mem_used: number
   mem_limit: number
-  net_rx_rate: number
-  net_tx_rate: number
-  blk_read_rate: number
-  blk_write_rate: number
+  net_rx_rate: number | null
+  net_tx_rate: number | null
+  blk_read_rate: number | null
+  blk_write_rate: number | null
 }
 
 export interface ContainerGroupMetrics {

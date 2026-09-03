@@ -103,7 +103,7 @@ pub struct HostSample {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ContainerSample {
+pub struct ContainerRawSample {
     pub ts: TimestampMs,
     pub service: String,
     pub cid: String,
@@ -114,6 +114,20 @@ pub struct ContainerSample {
     pub net_tx: u64,
     pub blk_read: u64,
     pub blk_write: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContainerSample {
+    pub ts: TimestampMs,
+    pub service: String,
+    pub cid: String,
+    pub cpu_pct_mill: u64,
+    pub mem_used: u64,
+    pub mem_limit: u64,
+    pub net_rx_rate_mill: Option<u64>,
+    pub net_tx_rate_mill: Option<u64>,
+    pub blk_read_rate_mill: Option<u64>,
+    pub blk_write_rate_mill: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -154,10 +168,10 @@ pub struct ContainerPoint {
     pub cpu_pct: f64,
     pub mem_used: u64,
     pub mem_limit: u64,
-    pub net_rx_rate: f64,
-    pub net_tx_rate: f64,
-    pub blk_read_rate: f64,
-    pub blk_write_rate: f64,
+    pub net_rx_rate: Option<f64>,
+    pub net_tx_rate: Option<f64>,
+    pub blk_read_rate: Option<f64>,
+    pub blk_write_rate: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
@@ -166,10 +180,10 @@ pub struct GroupPoint {
     pub cpu_pct: f64,
     pub mem_used: u64,
     pub mem_limit: u64,
-    pub net_rx_rate: f64,
-    pub net_tx_rate: f64,
-    pub blk_read_rate: f64,
-    pub blk_write_rate: f64,
+    pub net_rx_rate: Option<f64>,
+    pub net_tx_rate: Option<f64>,
+    pub blk_read_rate: Option<f64>,
+    pub blk_write_rate: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]

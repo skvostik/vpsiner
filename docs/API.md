@@ -29,8 +29,8 @@ Applies to the three time-series endpoints (`/api/metrics/host`, `/api/metrics/c
 - Only fully elapsed buckets (`ts <= now` at request time) are returned. An open trailing bucket is omitted, even if `to` extends past it.
 - Empty buckets are omitted.
 - Gauge metrics (e.g. `cpu_pct`, `mem_used`, `mem_total`, `storage_used`, `storage_total`, `metrics_size`, `logs_size`, `mem_limit`) are averaged across the samples within a bucket.
-- Rate metrics (e.g. `net_rx_rate`, `net_tx_rate`, `disk_read_rate`, `disk_write_rate`, `blk_read_rate`, `blk_write_rate`) are the **time-weighted** average rate across the bucket: the total observed byte delta divided by the total observed elapsed time. Sampling gaps therefore do not distort a bucket's rate — a longer interval simply carries proportionally more weight.
-- An interval is attributed to the bucket containing its later sample. The server reads one sample from before `from` so the first returned bucket has a real rate rather than `0`.
+- Rate metrics (e.g. `net_rx_rate`, `net_tx_rate`, `disk_read_rate`, `disk_write_rate`, `blk_read_rate`, `blk_write_rate`) are derived once, when a `10s` bucket is written: the counter is interpolated at both bucket boundaries and the slope between them is the bucket's rate. Coarser resolutions average those stored `10s` rates.
+- Rate metrics are `null` when the underlying counters could not produce a rate for the bucket — for example the first bucket after a container starts, or a bucket spanning a counter reset. A `null` rate means "unknown", not "zero".
 
 ## 1) Health check
 
@@ -275,7 +275,7 @@ Metric semantics:
 - `mem_used`, `mem_total`, `storage_used`, `storage_total`, `metrics_size`, and `logs_size` are byte values
 - `metrics_size` is the on-disk size of Vpsiner's metrics database at sample time
 - `logs_size` is the combined on-disk size of Vpsiner's log databases at sample time
-- `net_rx_rate`, `net_tx_rate`, `disk_read_rate`, and `disk_write_rate` are bytes per second; see "Metrics point semantics" above
+- `net_rx_rate`, `net_tx_rate`, `disk_read_rate`, and `disk_write_rate` are bytes per second or `null`; see "Metrics point semantics" above
 
 Ordering:
 - samples MUST be returned in ascending timestamp order: `ts ASC`
@@ -437,10 +437,11 @@ Metric semantics:
 - a container using one full logical CPU on a host with `N` logical CPUs contributes approximately `100 / N` to `cpu_pct`
 - aggregated `cpu_pct` values are summed by timestamp, so service CPU usage is comparable to host CPU usage and normally does not exceed `100`, aside from sampling jitter
 - `mem_used` and `mem_limit` are byte values
-- `net_rx_rate`, `net_tx_rate`, `blk_read_rate`, and `blk_write_rate` are bytes per second; see "Metrics point semantics" above
+- `net_rx_rate`, `net_tx_rate`, `blk_read_rate`, and `blk_write_rate` are bytes per second or `null`; see "Metrics point semantics" above
 
 Aggregation rules:
 - `sum` is computed by grouping the per-container buckets by exact `ts` and summing all numeric fields for that timestamp
+- a summed rate counts only the containers whose rate is known for that timestamp, and is `null` only when every container's rate is `null`
 - a `sum` data point at timestamp `ts` includes only container buckets with that timestamp
 - missing container samples are not interpolated
 - no synthetic zero-valued container samples are generated

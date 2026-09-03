@@ -5,6 +5,7 @@ use std::time::Duration;
 use crate::docker::DockerService;
 use crate::logs::store::LogStore;
 use crate::metrics::bucket_watcher::{BucketWatcher, MetricsSource};
+use crate::metrics::collector_containers::ContainerCollectorState;
 use crate::metrics::collector_host::{HostCollectorState, collect_host_once};
 use crate::metrics::host::HostMetricsSource;
 use crate::metrics::snapshot::MetricsSnapshotState;
@@ -15,18 +16,18 @@ pub async fn run_containers(
     metrics: Arc<dyn MetricsStore>,
     snapshot: Arc<MetricsSnapshotState>,
     bucket_watcher: Arc<BucketWatcher>,
-    _interval: Duration,
+    interval: Duration,
 ) {
     let mut samples = docker.container_samples();
-    while let Some(samples) = samples.next().await {
-        snapshot.record_containers(&samples);
-        let latest_ts = samples.iter().map(|sample| sample.ts).max();
-        match metrics.insert_containers(samples).await {
-            Ok(()) => {
-                if let Some(ts) = latest_ts {
-                    bucket_watcher.observe_sample(MetricsSource::Containers, ts);
-                }
-            }
+    let mut state = ContainerCollectorState::new(interval);
+    while let Some(batch) = samples.next().await {
+        snapshot.record_containers(&batch);
+        let bucketed = state.observe(&batch);
+        let Some(latest_ts) = bucketed.iter().map(|sample| sample.ts).max() else {
+            continue;
+        };
+        match metrics.insert_containers(bucketed).await {
+            Ok(()) => bucket_watcher.observe_sample(MetricsSource::Containers, latest_ts),
             Err(err) => tracing::error!(error = %err, "failed to persist container metrics"),
         }
     }
@@ -68,7 +69,7 @@ mod tests {
     use crate::logs::store::MockLogStore;
     use crate::metrics::host::MockHostMetricsSource;
     use crate::metrics::store::MockMetricsStore;
-    use crate::model::{ContainerSample, HostRawSample};
+    use crate::model::{ContainerRawSample, HostRawSample};
 
     #[tokio::test]
     async fn adds_database_sizes_to_host_samples() {
@@ -163,43 +164,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn persists_container_sample_batches() {
+    async fn persists_container_batches_once_a_bucket_completes() {
         let mut docker = MockDockerService::new();
         docker.expect_container_samples().returning(|| {
-            Box::pin(stream::iter(vec![vec![ContainerSample {
-                ts: 123,
-                service: "shop-web".into(),
-                cid: "short-id".into(),
-                cpu_pct: 12.5,
-                mem_used: 100,
-                mem_limit: 200,
-                net_rx: 300,
-                net_tx: 400,
-                blk_read: 500,
-                blk_write: 600,
-            }]])) as BoxStream<'static, _>
+            // Runs one second past the bucket end, which is what closes the bucket.
+            let batches: Vec<Vec<ContainerRawSample>> = (0..=11)
+                .map(|second: i64| {
+                    vec![ContainerRawSample {
+                        ts: second * 1_000,
+                        service: "shop-web".into(),
+                        cid: "short-id".into(),
+                        cpu_pct: 12.5,
+                        mem_used: 100,
+                        mem_limit: 200,
+                        net_rx: second as u64 * 1_000,
+                        net_tx: second as u64 * 1_000,
+                        blk_read: second as u64 * 1_000,
+                        blk_write: second as u64 * 1_000,
+                    }]
+                })
+                .collect();
+            Box::pin(stream::iter(batches)) as BoxStream<'static, _>
         });
 
         let mut metrics = MockMetricsStore::new();
         metrics
             .expect_insert_containers()
+            .times(1)
             .withf(|samples| {
                 samples.len() == 1
+                    && samples[0].ts == 10_000
                     && samples[0].service == "shop-web"
                     && samples[0].cid == "short-id"
+                    && samples[0].cpu_pct_mill == 12_500
+                    && samples[0].net_rx_rate_mill == Some(1_000_000)
             })
             .returning(|_| Ok(()));
 
         let docker: Arc<dyn DockerService> = Arc::new(docker);
         let metrics: Arc<dyn MetricsStore> = Arc::new(metrics);
-        let snapshot = Arc::new(MetricsSnapshotState::new(Duration::from_secs(10)));
+        let snapshot = Arc::new(MetricsSnapshotState::new(Duration::from_secs(1)));
         let bucket_watcher = Arc::new(BucketWatcher::new());
+        // Must match the fixture's cadence, or the buffers are sized for far fewer samples.
         run_containers(
             docker,
             metrics,
             snapshot,
             bucket_watcher,
-            Duration::from_secs(10),
+            Duration::from_secs(1),
         )
         .await;
     }

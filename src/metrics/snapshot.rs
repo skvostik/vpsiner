@@ -6,9 +6,10 @@ use std::time::Duration;
 
 use tokio::sync::watch;
 
-use crate::metrics::rate::rate;
+use crate::metrics::downsampling::add_optional;
+use crate::metrics::rate::optional_rate;
 use crate::model::{
-    ContainerPoint, ContainerSample, ContainersSnapshot, GroupPoint, HostPoint, HostSample,
+    ContainerPoint, ContainerRawSample, ContainersSnapshot, GroupPoint, HostPoint, HostRawSample,
     MetricsSnapshot, TimestampMs,
 };
 
@@ -26,12 +27,13 @@ fn now_ms() -> TimestampMs {
 #[derive(Default)]
 struct HostState {
     current: Option<HostPoint>,
+    previous: Option<HostRawSample>,
 }
 
 #[derive(Default)]
 struct ContainersState {
     current: HashMap<String, ContainerPoint>,
-    previous: HashMap<String, ContainerSample>,
+    previous: HashMap<String, ContainerRawSample>,
 }
 
 /// Host and container samples are recorded by independent tasks, so each half keeps its own
@@ -65,30 +67,42 @@ impl MetricsSnapshotState {
         self.containers_revision_tx.subscribe()
     }
 
-    pub fn record_host(&self, sample: &HostSample) {
+    pub fn record_host(&self, sample: &HostRawSample) {
         let mut state = self.host.lock().expect("snapshot state poisoned");
+        let (net_rx_rate, net_tx_rate, disk_read_rate, disk_write_rate) = match state.previous {
+            Some(previous) => {
+                let dt_ms = sample.ts - previous.ts;
+                (
+                    optional_rate(sample.net_rx, previous.net_rx, dt_ms),
+                    optional_rate(sample.net_tx, previous.net_tx, dt_ms),
+                    optional_rate(sample.disk_read, previous.disk_read, dt_ms),
+                    optional_rate(sample.disk_write, previous.disk_write, dt_ms),
+                )
+            }
+            None => (None, None, None, None),
+        };
+
         state.current = Some(HostPoint {
             ts: sample.ts,
-            cpu_pct: sample.cpu_pct_mill as f64 / 1_000.0,
+            cpu_pct: sample.cpu_pct,
             mem_used: sample.mem_used,
             mem_total: sample.mem_total,
             storage_used: sample.storage_used,
             storage_total: sample.storage_total,
             metrics_size: sample.metrics_size,
             logs_size: sample.logs_size,
-            net_rx_rate: sample.net_rx_rate_mill.map(|rate| rate as f64 / 1_000.0),
-            net_tx_rate: sample.net_tx_rate_mill.map(|rate| rate as f64 / 1_000.0),
-            disk_read_rate: sample.disk_read_rate_mill.map(|rate| rate as f64 / 1_000.0),
-            disk_write_rate: sample
-                .disk_write_rate_mill
-                .map(|rate| rate as f64 / 1_000.0),
+            net_rx_rate,
+            net_tx_rate,
+            disk_read_rate,
+            disk_write_rate,
         });
+        state.previous = Some(*sample);
         drop(state);
         self.host_revision_tx.send_modify(|revision| *revision += 1);
     }
 
     /// Each batch carries the full set of sampled containers, so the map is replaced wholesale.
-    pub fn record_containers(&self, samples: &[ContainerSample]) {
+    pub fn record_containers(&self, samples: &[ContainerRawSample]) {
         let mut state = self.containers.lock().expect("snapshot state poisoned");
         let mut current = HashMap::with_capacity(samples.len());
         let mut previous = HashMap::with_capacity(samples.len());
@@ -99,13 +113,13 @@ impl MetricsSnapshotState {
                     Some(previous) => {
                         let dt_ms = sample.ts - previous.ts;
                         (
-                            rate(sample.net_rx, previous.net_rx, dt_ms),
-                            rate(sample.net_tx, previous.net_tx, dt_ms),
-                            rate(sample.blk_read, previous.blk_read, dt_ms),
-                            rate(sample.blk_write, previous.blk_write, dt_ms),
+                            optional_rate(sample.net_rx, previous.net_rx, dt_ms),
+                            optional_rate(sample.net_tx, previous.net_tx, dt_ms),
+                            optional_rate(sample.blk_read, previous.blk_read, dt_ms),
+                            optional_rate(sample.blk_write, previous.blk_write, dt_ms),
                         )
                     }
-                    None => (0.0, 0.0, 0.0, 0.0),
+                    None => (None, None, None, None),
                 };
 
             current.insert(
@@ -181,10 +195,10 @@ impl MetricsSnapshotState {
             service.cpu_pct += point.cpu_pct;
             service.mem_used = service.mem_used.saturating_add(point.mem_used);
             service.mem_limit = service.mem_limit.saturating_add(point.mem_limit);
-            service.net_rx_rate += point.net_rx_rate;
-            service.net_tx_rate += point.net_tx_rate;
-            service.blk_read_rate += point.blk_read_rate;
-            service.blk_write_rate += point.blk_write_rate;
+            add_optional(&mut service.net_rx_rate, point.net_rx_rate);
+            add_optional(&mut service.net_tx_rate, point.net_tx_rate);
+            add_optional(&mut service.blk_read_rate, point.blk_read_rate);
+            add_optional(&mut service.blk_write_rate, point.blk_write_rate);
         }
 
         ContainersSnapshot {
@@ -215,25 +229,30 @@ mod tests {
         MetricsSnapshotState::new(Duration::from_secs(10))
     }
 
-    fn host_sample(ts: TimestampMs, net_rx: u64) -> HostSample {
-        HostSample {
+    fn host_sample(ts: TimestampMs, net_rx: u64) -> HostRawSample {
+        HostRawSample {
             ts,
-            cpu_pct_mill: 12_500,
+            cpu_pct: 12.5,
             mem_used: 100,
             mem_total: 200,
             storage_used: 300,
             storage_total: 400,
             metrics_size: 500,
             logs_size: 600,
-            net_rx_rate_mill: Some(net_rx),
-            net_tx_rate_mill: Some(0),
-            disk_read_rate_mill: Some(0),
-            disk_write_rate_mill: Some(0),
+            net_rx,
+            net_tx: 0,
+            disk_read: 0,
+            disk_write: 0,
         }
     }
 
-    fn container_sample(ts: TimestampMs, cid: &str, service: &str, net_rx: u64) -> ContainerSample {
-        ContainerSample {
+    fn container_sample(
+        ts: TimestampMs,
+        cid: &str,
+        service: &str,
+        net_rx: u64,
+    ) -> ContainerRawSample {
+        ContainerRawSample {
             ts,
             service: service.into(),
             cid: cid.into(),
@@ -248,20 +267,17 @@ mod tests {
     }
 
     #[test]
-    fn host_snapshot_uses_stored_bucketed_rate() {
+    fn host_rate_is_unknown_until_a_second_sample() {
         let state = state();
         state.record_host(&host_sample(10_000, 5_000));
-        assert_eq!(
-            state.current_at(10_000).host.unwrap().net_rx_rate,
-            Some(5.0)
-        );
+        assert_eq!(state.current_at(10_000).host.unwrap().net_rx_rate, None);
     }
 
     #[test]
-    fn host_snapshot_replaces_previous_bucket() {
+    fn host_rate_is_derived_from_consecutive_samples() {
         let state = state();
         state.record_host(&host_sample(10_000, 5_000));
-        state.record_host(&host_sample(20_000, 2_000_000));
+        state.record_host(&host_sample(20_000, 25_000));
         assert_eq!(
             state.current_at(20_000).host.unwrap().net_rx_rate,
             Some(2_000.0)
@@ -269,14 +285,11 @@ mod tests {
     }
 
     #[test]
-    fn host_snapshot_does_not_recompute_rates() {
+    fn host_counter_reset_reads_as_unknown() {
         let state = state();
         state.record_host(&host_sample(10_000, 25_000));
         state.record_host(&host_sample(20_000, 5_000));
-        assert_eq!(
-            state.current_at(20_000).host.unwrap().net_rx_rate,
-            Some(5.0)
-        );
+        assert_eq!(state.current_at(20_000).host.unwrap().net_rx_rate, None);
     }
 
     #[test]
@@ -323,8 +336,18 @@ mod tests {
         ]);
 
         let snapshot = state.current_at(20_000);
-        assert_eq!(snapshot.containers["abc"].net_rx_rate, 100.0);
-        assert_eq!(snapshot.containers["def"].net_rx_rate, 2_000.0);
+        assert_eq!(snapshot.containers["abc"].net_rx_rate, Some(100.0));
+        assert_eq!(snapshot.containers["def"].net_rx_rate, Some(2_000.0));
+    }
+
+    #[test]
+    fn container_rate_is_unknown_until_a_second_sample() {
+        let state = state();
+        state.record_containers(&[container_sample(10_000, "abc", "web", 1_000)]);
+
+        let snapshot = state.current_at(10_000);
+        assert_eq!(snapshot.containers["abc"].net_rx_rate, None);
+        assert_eq!(snapshot.services["web"].net_rx_rate, None);
     }
 
     #[test]

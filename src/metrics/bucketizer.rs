@@ -1,6 +1,5 @@
-#![allow(dead_code)]
-
 use std::collections::VecDeque;
+use std::time::Duration;
 
 use crate::model::TimestampMs;
 
@@ -10,6 +9,16 @@ use crate::model::TimestampMs;
 /// second. For example, if samples count bytes, `1_234` represents
 /// `1.234 bytes/s`.
 const COUNTER_RATE_SCALE: u64 = 1_000;
+
+/// Buckets of samples a bucketizer keeps buffered. Only the target bucket and its two
+/// neighbours are ever read, so the surplus is margin against a stalled collector.
+const BUFFERED_BUCKETS: u128 = 8;
+
+/// Sample capacity one bucketizer needs to close a bucket at the given collection rate.
+pub(crate) fn buffer_capacity(collect_interval: Duration, bucket_len_ms: u64) -> usize {
+    let interval_ms = collect_interval.as_millis().max(1);
+    ((BUFFERED_BUCKETS * bucket_len_ms as u128) / interval_ms).max(4) as usize
+}
 
 /// One raw metric sample captured at an arbitrary timestamp.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -9,7 +9,7 @@ import LiveStatusIcon from '../components/LiveStatusIcon.vue'
 import MetricsWindowPicker from '../components/MetricsWindowPicker.vue'
 import { api } from '../api'
 import { colorForKey } from '../colors'
-import { formatBytes, formatUptime } from '../format'
+import { formatBytes, formatRate, formatUptime } from '../format'
 import { backendOnline, dockerControlsAvailable } from '../composables/useBackendHealth'
 import { useContainerMetricsStream } from '../composables/useContainerMetricsStream'
 import { pendingAction, runContainerAction } from '../composables/useContainerActions'
@@ -99,10 +99,10 @@ const diskWriteSeries = computed<ChartSeries[]>(() =>
 
 // Aggregate rates (service sum) power only the header stat numbers, not the per-container charts.
 const latest = computed(() => snapshot.value.services[service.value])
-const latestNetworkIn = computed(() => latest.value?.net_rx_rate ?? 0)
-const latestNetworkOut = computed(() => latest.value?.net_tx_rate ?? 0)
-const latestDiskRead = computed(() => latest.value?.blk_read_rate ?? 0)
-const latestDiskWrite = computed(() => latest.value?.blk_write_rate ?? 0)
+const latestNetworkIn = computed(() => latest.value?.net_rx_rate ?? null)
+const latestNetworkOut = computed(() => latest.value?.net_tx_rate ?? null)
+const latestDiskRead = computed(() => latest.value?.blk_read_rate ?? null)
+const latestDiskWrite = computed(() => latest.value?.blk_write_rate ?? null)
 
 const canStart = computed(
   () =>
@@ -122,10 +122,6 @@ const canRestart = computed(
     container.value &&
     ['running', 'paused'].includes(container.value.state)
 )
-
-function formatRate(value: number) {
-  return `${formatBytes(value)}/s`
-}
 
 async function loadMetrics(range: TimeRange, resolution: MetricsResolution) {
   if (!service.value || isLive.value) return

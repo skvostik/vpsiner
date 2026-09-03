@@ -42,6 +42,8 @@ const DEFAULT_CONFIG_PATH: &str = "config";
 const DEFAULT_PORT: u16 = 3000;
 const DEFAULT_RETENTION_WEEKS: u32 = 4;
 const DEFAULT_COLLECT_INTERVAL_SECS: u64 = 5;
+/// Matches the finest stored bucket: a slower interval would leave buckets with no samples.
+const MAX_COLLECT_INTERVAL_SECS: u64 = 10;
 const DEFAULT_LOG_FLUSH_DEBOUNCE_MS: u64 = 500;
 const DEFAULT_LOG_FLUSH_KEEP_ALIVE_SECS: u64 = 60;
 const DEFAULT_DOCKER_CONTROLS: DockerControlsMode = DockerControlsMode::Auto;
@@ -147,9 +149,10 @@ impl Config {
             static_dir: env::var_os(ENV_STATIC_DIR).map(PathBuf::from),
             port: parse_positive_u16_or(ENV_PORT, DEFAULT_PORT),
             retention_weeks: parse_or(ENV_RETENTION_WEEKS, DEFAULT_RETENTION_WEEKS),
-            collect_interval: Duration::from_secs(parse_positive_u64_or(
+            collect_interval: Duration::from_secs(parse_bounded_u64_or(
                 ENV_COLLECT_INTERVAL_SECS,
                 DEFAULT_COLLECT_INTERVAL_SECS,
+                MAX_COLLECT_INTERVAL_SECS,
             )),
             log_flush_debounce: Duration::from_millis(parse_or(
                 ENV_LOG_FLUSH_DEBOUNCE_MS,
@@ -273,7 +276,7 @@ impl Config {
                 ENV_COLLECT_INTERVAL_SECS,
                 self.collect_interval.as_secs().to_string(),
                 DEFAULT_COLLECT_INTERVAL_SECS.to_string(),
-                "Host and container metrics collection interval",
+                "Host and container metrics collection interval, at most 10 seconds",
                 "advanced",
             ),
             entry(
@@ -415,6 +418,12 @@ fn parse_positive_u64_or(key: &str, default: u64) -> u64 {
         parsed > 0,
         "{key} must be a positive integer, got: {parsed}"
     );
+    parsed
+}
+
+fn parse_bounded_u64_or(key: &str, default: u64, max: u64) -> u64 {
+    let parsed = parse_positive_u64_or(key, default);
+    assert!(parsed <= max, "{key} must be at most {max}, got: {parsed}");
     parsed
 }
 

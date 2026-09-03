@@ -54,8 +54,6 @@ pub trait MetricsStore: Send + Sync + 'static {
 const STATEMENT_CACHE_CAPACITY: usize = 32;
 /// Recommended by SQLite for `PRAGMA optimize`.
 const ANALYSIS_LIMIT: u32 = 400;
-/// Value reported by `PRAGMA auto_vacuum` when incremental vacuuming is active.
-const AUTO_VACUUM_INCREMENTAL: i64 = 2;
 /// Free pages returned per `incremental_vacuum` step; must match [`VACUUM_STEP`].
 const VACUUM_CHUNK_PAGES: u64 = 1_000;
 const VACUUM_STEP: &str = "PRAGMA incremental_vacuum(1000)";
@@ -109,7 +107,6 @@ impl SqliteMetricsStore {
 
         let store = Self { db_path, pool };
         store.create_schema().await?;
-        store.apply_incremental_vacuum().await?;
         Ok(store)
     }
 
@@ -135,59 +132,34 @@ impl SqliteMetricsStore {
         .map_err(storage)?;
 
         sqlx::query(
-            "CREATE TABLE IF NOT EXISTS container_metrics (
+            "CREATE TABLE IF NOT EXISTS container_metrics_10s (
                 ts INTEGER NOT NULL,
-                service TEXT NOT NULL,
                 cid TEXT NOT NULL,
-                cpu_pct REAL NOT NULL,
+                service TEXT NOT NULL,
+                cpu_pct_mill INTEGER NOT NULL,
                 mem_used INTEGER NOT NULL,
                 mem_limit INTEGER NOT NULL,
-                net_rx INTEGER NOT NULL,
-                net_tx INTEGER NOT NULL,
-                blk_read INTEGER NOT NULL,
-                blk_write INTEGER NOT NULL
-            )",
+                net_rx_rate_mill INTEGER,
+                net_tx_rate_mill INTEGER,
+                blk_read_rate_mill INTEGER,
+                blk_write_rate_mill INTEGER,
+                PRIMARY KEY (ts, cid)
+            ) WITHOUT ROWID",
         )
         .execute(&self.pool)
         .await
         .map_err(storage)?;
 
         // Used by per-service container metrics queries: filter by service, then walk the
-        // matching samples in timestamp order for a time range.
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_ctr_ts ON container_metrics(service, ts)")
-            .execute(&self.pool)
-            .await
-            .map_err(storage)?;
-        // Used by retention deletes and by aggregate container queries that span all services
-        // without a service filter; the timestamp-only index keeps those scans narrow.
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_ctr_ts_only ON container_metrics(ts)")
-            .execute(&self.pool)
-            .await
-            .map_err(storage)?;
+        // matching samples in timestamp order for a time range. Queries without a service
+        // filter, and retention deletes, use the timestamp-ordered primary key instead.
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_ctr_service_ts ON container_metrics_10s(service, ts)",
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(storage)?;
 
-        Ok(())
-    }
-
-    /// Databases created before incremental auto-vacuum was enabled only pick the
-    /// setting up through a full `VACUUM`.
-    async fn apply_incremental_vacuum(&self) -> AppResult<()> {
-        let mode: i64 = sqlx::query_scalar("PRAGMA auto_vacuum")
-            .fetch_one(&self.pool)
-            .await
-            .map_err(storage)?;
-        if mode == AUTO_VACUUM_INCREMENTAL {
-            return Ok(());
-        }
-
-        tracing::info!("migrating metrics database to incremental auto-vacuum");
-        sqlx::query("PRAGMA auto_vacuum = INCREMENTAL")
-            .execute(&self.pool)
-            .await
-            .map_err(storage)?;
-        sqlx::query("VACUUM")
-            .execute(&self.pool)
-            .await
-            .map_err(storage)?;
         Ok(())
     }
 
@@ -237,6 +209,32 @@ async fn file_size_bytes(path: &Path) -> AppResult<u64> {
     }
 }
 
+fn container_sample_from_row(row: sqlx::sqlite::SqliteRow) -> AppResult<ContainerSample> {
+    fn count(row: &sqlx::sqlite::SqliteRow, column: &str) -> AppResult<u64> {
+        Ok(row.try_get::<i64, _>(column).map_err(storage)? as u64)
+    }
+
+    fn rate(row: &sqlx::sqlite::SqliteRow, column: &str) -> AppResult<Option<u64>> {
+        Ok(row
+            .try_get::<Option<i64>, _>(column)
+            .map_err(storage)?
+            .map(|rate| rate as u64))
+    }
+
+    Ok(ContainerSample {
+        ts: row.try_get("ts").map_err(storage)?,
+        cid: row.try_get("cid").map_err(storage)?,
+        service: row.try_get("service").map_err(storage)?,
+        cpu_pct_mill: count(&row, "cpu_pct_mill")?,
+        mem_used: count(&row, "mem_used")?,
+        mem_limit: count(&row, "mem_limit")?,
+        net_rx_rate_mill: rate(&row, "net_rx_rate_mill")?,
+        net_tx_rate_mill: rate(&row, "net_tx_rate_mill")?,
+        blk_read_rate_mill: rate(&row, "blk_read_rate_mill")?,
+        blk_write_rate_mill: rate(&row, "blk_write_rate_mill")?,
+    })
+}
+
 #[async_trait]
 impl MetricsStore for SqliteMetricsStore {
     async fn database_size_bytes(&self) -> AppResult<u64> {
@@ -252,7 +250,7 @@ impl MetricsStore for SqliteMetricsStore {
             .await
             .map_err(storage)?
             .rows_affected();
-        let containers = sqlx::query("DELETE FROM container_metrics WHERE ts < ?")
+        let containers = sqlx::query("DELETE FROM container_metrics_10s WHERE ts < ?")
             .bind(cutoff_ms)
             .execute(&mut *transaction)
             .await
@@ -296,20 +294,20 @@ impl MetricsStore for SqliteMetricsStore {
         let mut transaction = self.pool.begin().await.map_err(storage)?;
         for chunk in samples.chunks(INSERT_CHUNK_ROWS) {
             let mut builder = QueryBuilder::new(
-                "INSERT INTO container_metrics
-                    (ts, service, cid, cpu_pct, mem_used, mem_limit, net_rx, net_tx, blk_read, blk_write) ",
+                "INSERT INTO container_metrics_10s
+                    (ts, cid, service, cpu_pct_mill, mem_used, mem_limit, net_rx_rate_mill, net_tx_rate_mill, blk_read_rate_mill, blk_write_rate_mill) ",
             );
             builder.push_values(chunk, |mut row, sample| {
                 row.push_bind(sample.ts)
-                    .push_bind(sample.service.clone())
                     .push_bind(sample.cid.clone())
-                    .push_bind(sample.cpu_pct)
+                    .push_bind(sample.service.clone())
+                    .push_bind(sample.cpu_pct_mill as i64)
                     .push_bind(sample.mem_used as i64)
                     .push_bind(sample.mem_limit as i64)
-                    .push_bind(sample.net_rx as i64)
-                    .push_bind(sample.net_tx as i64)
-                    .push_bind(sample.blk_read as i64)
-                    .push_bind(sample.blk_write as i64);
+                    .push_bind(sample.net_rx_rate_mill.map(|rate| rate as i64))
+                    .push_bind(sample.net_tx_rate_mill.map(|rate| rate as i64))
+                    .push_bind(sample.blk_read_rate_mill.map(|rate| rate as i64))
+                    .push_bind(sample.blk_write_rate_mill.map(|rate| rate as i64));
             });
             builder
                 .build()
@@ -404,70 +402,26 @@ impl MetricsStore for SqliteMetricsStore {
         range: TimeRange,
         resolution: MetricsResolution,
     ) -> AppResult<ContainerGroupMetrics> {
-        // Reach one sample before `from` so the first in-range bucket has a rate.
         let rows = sqlx::query(
-            "SELECT ts, service, cid, cpu_pct, mem_used, mem_limit, net_rx, net_tx, blk_read, blk_write
-             FROM container_metrics
-             WHERE service = ?
-               AND ts >= COALESCE((SELECT MAX(ts) FROM container_metrics WHERE service = ? AND ts < ?), ?)
-               AND ts <= ?
+            "SELECT ts, cid, service, cpu_pct_mill, mem_used, mem_limit, net_rx_rate_mill, net_tx_rate_mill, blk_read_rate_mill, blk_write_rate_mill
+             FROM container_metrics_10s
+             WHERE service = ? AND ts >= ? AND ts <= ?
              ORDER BY ts ASC",
         )
         .bind(service)
-        .bind(service)
-        .bind(range.from)
         .bind(range.from)
         .bind(range.to)
         .fetch_all(&self.pool)
         .await
         .map_err(|err| AppError::Storage(err.to_string()))?;
 
-        let raw_samples: Vec<ContainerSample> = rows
+        let samples: Vec<ContainerSample> = rows
             .into_iter()
-            .map(|row| {
-                Ok(ContainerSample {
-                    ts: row
-                        .try_get("ts")
-                        .map_err(|err| AppError::Storage(err.to_string()))?,
-                    service: row
-                        .try_get("service")
-                        .map_err(|err| AppError::Storage(err.to_string()))?,
-                    cid: row
-                        .try_get("cid")
-                        .map_err(|err| AppError::Storage(err.to_string()))?,
-                    cpu_pct: row
-                        .try_get("cpu_pct")
-                        .map_err(|err| AppError::Storage(err.to_string()))?,
-                    mem_used: row
-                        .try_get::<i64, _>("mem_used")
-                        .map_err(|err| AppError::Storage(err.to_string()))?
-                        as u64,
-                    mem_limit: row
-                        .try_get::<i64, _>("mem_limit")
-                        .map_err(|err| AppError::Storage(err.to_string()))?
-                        as u64,
-                    net_rx: row
-                        .try_get::<i64, _>("net_rx")
-                        .map_err(|err| AppError::Storage(err.to_string()))?
-                        as u64,
-                    net_tx: row
-                        .try_get::<i64, _>("net_tx")
-                        .map_err(|err| AppError::Storage(err.to_string()))?
-                        as u64,
-                    blk_read: row
-                        .try_get::<i64, _>("blk_read")
-                        .map_err(|err| AppError::Storage(err.to_string()))?
-                        as u64,
-                    blk_write: row
-                        .try_get::<i64, _>("blk_write")
-                        .map_err(|err| AppError::Storage(err.to_string()))?
-                        as u64,
-                })
-            })
+            .map(container_sample_from_row)
             .collect::<AppResult<Vec<_>>>()?;
 
         let mut by_container: HashMap<String, Vec<ContainerSample>> = HashMap::new();
-        for sample in raw_samples {
+        for sample in samples {
             by_container
                 .entry(sample.cid.clone())
                 .or_default()
@@ -490,67 +444,26 @@ impl MetricsStore for SqliteMetricsStore {
         range: TimeRange,
         resolution: MetricsResolution,
     ) -> AppResult<ContainerMetricsByService> {
-        // Reach one sample before `from` so the first in-range bucket has a rate.
         let rows = sqlx::query(
-            "SELECT ts, service, cid, cpu_pct, mem_used, mem_limit, net_rx, net_tx, blk_read, blk_write
-             FROM container_metrics
-             WHERE ts >= COALESCE((SELECT MAX(ts) FROM container_metrics WHERE ts < ?), ?) AND ts <= ?
+            "SELECT ts, cid, service, cpu_pct_mill, mem_used, mem_limit, net_rx_rate_mill, net_tx_rate_mill, blk_read_rate_mill, blk_write_rate_mill
+             FROM container_metrics_10s
+             WHERE ts >= ? AND ts <= ?
              ORDER BY ts ASC",
         )
-        .bind(range.from)
         .bind(range.from)
         .bind(range.to)
         .fetch_all(&self.pool)
         .await
         .map_err(|err| AppError::Storage(err.to_string()))?;
 
-        let raw_samples: Vec<ContainerSample> = rows
+        let samples: Vec<ContainerSample> = rows
             .into_iter()
-            .map(|row| {
-                Ok(ContainerSample {
-                    ts: row
-                        .try_get("ts")
-                        .map_err(|err| AppError::Storage(err.to_string()))?,
-                    service: row
-                        .try_get("service")
-                        .map_err(|err| AppError::Storage(err.to_string()))?,
-                    cid: row
-                        .try_get("cid")
-                        .map_err(|err| AppError::Storage(err.to_string()))?,
-                    cpu_pct: row
-                        .try_get("cpu_pct")
-                        .map_err(|err| AppError::Storage(err.to_string()))?,
-                    mem_used: row
-                        .try_get::<i64, _>("mem_used")
-                        .map_err(|err| AppError::Storage(err.to_string()))?
-                        as u64,
-                    mem_limit: row
-                        .try_get::<i64, _>("mem_limit")
-                        .map_err(|err| AppError::Storage(err.to_string()))?
-                        as u64,
-                    net_rx: row
-                        .try_get::<i64, _>("net_rx")
-                        .map_err(|err| AppError::Storage(err.to_string()))?
-                        as u64,
-                    net_tx: row
-                        .try_get::<i64, _>("net_tx")
-                        .map_err(|err| AppError::Storage(err.to_string()))?
-                        as u64,
-                    blk_read: row
-                        .try_get::<i64, _>("blk_read")
-                        .map_err(|err| AppError::Storage(err.to_string()))?
-                        as u64,
-                    blk_write: row
-                        .try_get::<i64, _>("blk_write")
-                        .map_err(|err| AppError::Storage(err.to_string()))?
-                        as u64,
-                })
-            })
+            .map(container_sample_from_row)
             .collect::<AppResult<Vec<_>>>()?;
 
         let mut by_service_and_container: HashMap<String, HashMap<String, Vec<ContainerSample>>> =
             HashMap::new();
-        for sample in raw_samples {
+        for sample in samples {
             by_service_and_container
                 .entry(sample.service.clone())
                 .or_default()
@@ -622,13 +535,13 @@ mod tests {
             ts,
             service: service.into(),
             cid: "abc123".into(),
-            cpu_pct: 25.0,
+            cpu_pct_mill: 25_000,
             mem_used: 1_000,
             mem_limit: 2_000,
-            net_rx: 3_000,
-            net_tx: 4_000,
-            blk_read: 5_000,
-            blk_write: 6_000,
+            net_rx_rate_mill: Some(3_000_000),
+            net_tx_rate_mill: Some(4_000_000),
+            blk_read_rate_mill: Some(5_000_000),
+            blk_write_rate_mill: Some(6_000_000),
         }
     }
 
@@ -714,6 +627,40 @@ mod tests {
         assert_eq!(hosts[0].net_tx_rate, None);
         assert_eq!(hosts[0].disk_read_rate, None);
         assert_eq!(hosts[0].disk_write_rate, None);
+
+        let _ = tokio::fs::remove_dir_all(directory).await;
+    }
+
+    #[tokio::test]
+    async fn container_rates_round_trip_as_null_when_missing() {
+        let directory = test_directory("container-null-rates");
+        let store = test_store(directory.join("metrics.db")).await;
+
+        store
+            .insert_containers(vec![ContainerSample {
+                net_rx_rate_mill: None,
+                net_tx_rate_mill: None,
+                blk_read_rate_mill: None,
+                blk_write_rate_mill: None,
+                ..container_sample(10_000, "web")
+            }])
+            .await
+            .unwrap();
+
+        let metrics = store
+            .query_container(
+                "web",
+                TimeRange {
+                    from: 0,
+                    to: 10_000,
+                },
+                MetricsResolution::TenSeconds,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(metrics.containers["abc123"][0].net_rx_rate, None);
+        assert_eq!(metrics.sum[0].net_rx_rate, None);
 
         let _ = tokio::fs::remove_dir_all(directory).await;
     }

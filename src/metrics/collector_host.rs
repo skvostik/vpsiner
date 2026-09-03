@@ -4,7 +4,7 @@ use crate::{
     logs::store::LogStore,
     metrics::{
         bucket_watcher::{BucketWatcher, MetricsSource},
-        bucketizer::{Bucketizer, CounterBucketizer, GaugeBucketizer},
+        bucketizer::{Bucketizer, CounterBucketizer, GaugeBucketizer, buffer_capacity},
         downsampling::bucket_end,
         host::HostMetricsSource,
         snapshot::MetricsSnapshotState,
@@ -13,7 +13,7 @@ use crate::{
     model::{HostRawSample, HostSample, MetricsResolution, TimestampMs},
 };
 
-fn cpu_pct_mill(cpu_pct: f64) -> u64 {
+pub(crate) fn cpu_pct_mill(cpu_pct: f64) -> u64 {
     if cpu_pct.is_finite() && cpu_pct > 0.0 {
         (cpu_pct * 1_000.0).round() as u64
     } else {
@@ -38,9 +38,7 @@ pub(crate) struct HostBucketizer {
 impl HostBucketizer {
     pub(crate) fn new(collect_interval: Duration) -> Self {
         let bucket_len_ms = MetricsResolution::TenSeconds.bucket_ms();
-        let interval_ms = collect_interval.as_millis().max(1);
-        let capacity = ((4 * bucket_len_ms as u128) / interval_ms) as usize;
-        let capacity = capacity.max(4);
+        let capacity = buffer_capacity(collect_interval, bucket_len_ms);
 
         Self {
             bck_cpu_pct_mill: GaugeBucketizer::new(capacity, bucket_len_ms),
@@ -142,14 +140,13 @@ pub(crate) async fn collect_host_once(
                     return;
                 }
             };
+            snapshot.record_host(&sample);
+
             let Some(bucketed_sample) = state.observe(&sample) else {
                 return;
             };
             match metrics.insert_host(bucketed_sample).await {
-                Ok(()) => {
-                    snapshot.record_host(&bucketed_sample);
-                    bucket_watcher.observe_sample(MetricsSource::Host, bucketed_sample.ts);
-                }
+                Ok(()) => bucket_watcher.observe_sample(MetricsSource::Host, bucketed_sample.ts),
                 Err(err) => tracing::error!(error = %err, "failed to persist host metrics"),
             }
         }
