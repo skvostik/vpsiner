@@ -10,6 +10,7 @@ import type {
 } from '../types'
 
 const trimTickMs = 5_000
+const reconnectDelayMs = 3_000
 
 /** Live per-service history for the container detail view, pushed instead of polled. */
 export function useContainerMetricsStream(
@@ -23,6 +24,7 @@ export function useContainerMetricsStream(
 
   let source: EventSource | undefined
   let trimTimer: number | undefined
+  let reconnectTimer: number | undefined
 
   function trim() {
     if (!windowMs.value) return
@@ -38,6 +40,19 @@ export function useContainerMetricsStream(
     source = undefined
     if (trimTimer) window.clearInterval(trimTimer)
     trimTimer = undefined
+    if (reconnectTimer) window.clearTimeout(reconnectTimer)
+    reconnectTimer = undefined
+  }
+
+  function reconnect(currentSource: EventSource) {
+    reportSseIssue(currentSource)
+    currentSource.close()
+    if (source === currentSource) source = undefined
+    if (!active.value || !service.value || !windowMs.value || reconnectTimer) return
+    reconnectTimer = window.setTimeout(() => {
+      reconnectTimer = undefined
+      connect()
+    }, reconnectDelayMs)
   }
 
   function connect() {
@@ -57,6 +72,7 @@ export function useContainerMetricsStream(
       const data = response.data
       sum.value = data.sum
       containers.value = data.containers
+      trim()
       setResolution(response.resolution)
       console.debug('[container-metrics-stream] snapshot', response)
     })
@@ -69,8 +85,9 @@ export function useContainerMetricsStream(
       trim()
       console.debug('[container-metrics-stream] append', append)
     })
-    // The browser retries automatically; only report an outage once the stream is definitively closed.
-    source.onerror = () => reportSseIssue(source)
+    source.onerror = () => {
+      if (source) reconnect(source)
+    }
 
     trimTimer = window.setInterval(trim, trimTickMs)
   }

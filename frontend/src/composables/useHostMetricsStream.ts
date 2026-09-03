@@ -4,6 +4,7 @@ import { reportSseIssue } from './useBackendHealth'
 import type { HostPoint, MetricsResolution, MetricsResponse } from '../types'
 
 const trimTickMs = 5_000
+const reconnectDelayMs = 3_000
 
 /** Live host metrics history for HostView, pushed instead of polled. */
 export function useHostMetricsStream(
@@ -15,6 +16,7 @@ export function useHostMetricsStream(
 
   let source: EventSource | undefined
   let trimTimer: number | undefined
+  let reconnectTimer: number | undefined
 
   function trim() {
     if (!windowMs.value) return
@@ -27,6 +29,19 @@ export function useHostMetricsStream(
     source = undefined
     if (trimTimer) window.clearInterval(trimTimer)
     trimTimer = undefined
+    if (reconnectTimer) window.clearTimeout(reconnectTimer)
+    reconnectTimer = undefined
+  }
+
+  function reconnect(currentSource: EventSource) {
+    reportSseIssue(currentSource)
+    currentSource.close()
+    if (source === currentSource) source = undefined
+    if (!active.value || !windowMs.value || reconnectTimer) return
+    reconnectTimer = window.setTimeout(() => {
+      reconnectTimer = undefined
+      connect()
+    }, reconnectDelayMs)
   }
 
   function connect() {
@@ -39,6 +54,7 @@ export function useHostMetricsStream(
     source.addEventListener('snapshot', (event) => {
       const response = JSON.parse((event as MessageEvent).data) as MetricsResponse<HostPoint[]>
       points.value = response.data
+      trim()
       setResolution(response.resolution)
       console.debug('[host-metrics-stream] snapshot', response)
     })
@@ -48,8 +64,9 @@ export function useHostMetricsStream(
       trim()
       console.debug('[host-metrics-stream] append', point)
     })
-    // The browser retries automatically; only report an outage once the stream is definitively closed.
-    source.onerror = () => reportSseIssue(source)
+    source.onerror = () => {
+      if (source) reconnect(source)
+    }
 
     trimTimer = window.setInterval(trim, trimTickMs)
   }
