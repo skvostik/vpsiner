@@ -23,7 +23,7 @@ impl ResolutionChannel {
         }
     }
 
-    fn observe(&self, ts: TimestampMs, bucket_ms: i64) {
+    fn observe(&self, ts: TimestampMs, bucket_ms: u64) {
         let end = bucket_end(ts, bucket_ms);
         let mut last = self
             .last_bucket_end

@@ -275,7 +275,7 @@ pub enum MetricsResolution {
 }
 
 impl MetricsResolution {
-    pub fn bucket_ms(self) -> i64 {
+    pub fn bucket_ms(self) -> u64 {
         match self {
             MetricsResolution::TenSeconds => 10_000,
             MetricsResolution::OneMinute => 60_000,
