@@ -61,6 +61,7 @@ pub struct SqliteMetricsStore {
     /// Newest `10s` bucket written per source; a change of coarse bucket triggers a rollup.
     last_host_ts: Mutex<Option<i64>>,
     last_containers_ts: Mutex<Option<i64>>,
+    downsample_max_gap_pct: u8,
 }
 
 impl SqliteMetricsStore {
@@ -69,6 +70,7 @@ impl SqliteMetricsStore {
         db_path: impl AsRef<Path>,
         cache_size_kb: u64,
         busy_timeout: Duration,
+        downsample_max_gap_pct: u8,
     ) -> AppResult<Self> {
         let db_path = db_path.as_ref().to_path_buf();
         if let Some(parent) = db_path.parent() {
@@ -107,6 +109,7 @@ impl SqliteMetricsStore {
             pool,
             last_host_ts: Mutex::new(None),
             last_containers_ts: Mutex::new(None),
+            downsample_max_gap_pct,
         };
         store.create_schema().await?;
 
@@ -243,7 +246,8 @@ impl MetricsStore for SqliteMetricsStore {
         // A failed rollup must not fail the insert, or the collector would stop
         // announcing the bucket and every live stream would stall with it.
         if let Some(previous) = Self::advance(&self.last_host_ts, ts)
-            && let Err(err) = rollup::roll_up_host(&self.pool, previous, ts).await
+            && let Err(err) =
+                rollup::roll_up_host(&self.pool, previous, ts, self.downsample_max_gap_pct).await
         {
             tracing::error!(error = %err, "failed to roll up host metrics");
         }
@@ -258,7 +262,9 @@ impl MetricsStore for SqliteMetricsStore {
         schema::insert_containers(&self.pool, MetricsResolution::TenSeconds, samples).await?;
 
         if let Some(previous) = Self::advance(&self.last_containers_ts, ts)
-            && let Err(err) = rollup::roll_up_containers(&self.pool, previous, ts).await
+            && let Err(err) =
+                rollup::roll_up_containers(&self.pool, previous, ts, self.downsample_max_gap_pct)
+                    .await
         {
             tracing::error!(error = %err, "failed to roll up container metrics");
         }
@@ -281,7 +287,7 @@ impl MetricsStore for SqliteMetricsStore {
             Some(uncovered) => {
                 let raw = schema::select_host(&self.pool, MetricsResolution::TenSeconds, uncovered)
                     .await?;
-                downsample_host(raw, resolution)
+                downsample_host(raw, resolution, self.downsample_max_gap_pct)
             }
             None => Vec::new(),
         };
@@ -330,7 +336,7 @@ impl MetricsStore for SqliteMetricsStore {
                     .push(sample);
             }
             for samples in raw_by_container.into_values() {
-                downsample_container(samples, resolution)
+                downsample_container(samples, resolution, self.downsample_max_gap_pct)
                     .into_iter()
                     .for_each(&mut group);
             }
@@ -376,7 +382,7 @@ mod tests {
     }
 
     async fn test_store(db_path: impl AsRef<Path>) -> SqliteMetricsStore {
-        SqliteMetricsStore::connect(db_path, 1_024, Duration::from_secs(5))
+        SqliteMetricsStore::connect(db_path, 1_024, Duration::from_secs(5), 40)
             .await
             .unwrap()
     }
@@ -679,7 +685,7 @@ mod tests {
         let store = test_store(directory.join("metrics.db")).await;
 
         insert_an_hour(&store).await;
-        rollup::roll_up_host(&store.pool, 3_600_000, 3_610_000)
+        rollup::roll_up_host(&store.pool, 3_600_000, 3_610_000, 40)
             .await
             .unwrap();
 

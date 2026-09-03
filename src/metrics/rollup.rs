@@ -30,7 +30,12 @@ fn source_range(bucket_end: i64, resolution: MetricsResolution) -> TimeRange {
 }
 
 /// Rolls up every coarse resolution whose bucket closed between `previous_ts` and `new_ts`.
-pub async fn roll_up_host(pool: &SqlitePool, previous_ts: i64, new_ts: i64) -> AppResult<()> {
+pub async fn roll_up_host(
+    pool: &SqlitePool,
+    previous_ts: i64,
+    new_ts: i64,
+    max_gap_pct: u8,
+) -> AppResult<()> {
     for resolution in MetricsResolution::COARSE {
         let Some(closed) = closed_bucket(previous_ts, new_ts, resolution) else {
             continue;
@@ -43,7 +48,7 @@ pub async fn roll_up_host(pool: &SqlitePool, previous_ts: i64, new_ts: i64) -> A
         )
         .await?;
 
-        for sample in downsample_host(samples, resolution) {
+        for sample in downsample_host(samples, resolution, max_gap_pct) {
             schema::insert_host(pool, resolution, sample).await?;
         }
     }
@@ -52,7 +57,12 @@ pub async fn roll_up_host(pool: &SqlitePool, previous_ts: i64, new_ts: i64) -> A
 }
 
 /// Rolls up every coarse resolution whose bucket closed between `previous_ts` and `new_ts`.
-pub async fn roll_up_containers(pool: &SqlitePool, previous_ts: i64, new_ts: i64) -> AppResult<()> {
+pub async fn roll_up_containers(
+    pool: &SqlitePool,
+    previous_ts: i64,
+    new_ts: i64,
+    max_gap_pct: u8,
+) -> AppResult<()> {
     for resolution in MetricsResolution::COARSE {
         let Some(closed) = closed_bucket(previous_ts, new_ts, resolution) else {
             continue;
@@ -75,7 +85,7 @@ pub async fn roll_up_containers(pool: &SqlitePool, previous_ts: i64, new_ts: i64
 
         let rolled: Vec<ContainerSample> = by_container
             .into_values()
-            .flat_map(|samples| downsample_container(samples, resolution))
+            .flat_map(|samples| downsample_container(samples, resolution, max_gap_pct))
             .collect();
         schema::insert_containers(pool, resolution, rolled).await?;
     }

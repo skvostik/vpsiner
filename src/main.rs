@@ -99,6 +99,7 @@ async fn async_main() {
             config.data_path.join("metrics.db"),
             config.sqlite_cache_size_kb,
             config.sqlite_busy_timeout,
+            config.downsample_max_gap_pct,
         )
         .await
         .expect("failed to open metrics database"),
@@ -298,6 +299,7 @@ mod tests {
             sqlite_cache_size_kb: 1_024,
             sqlite_busy_timeout: std::time::Duration::from_secs(5),
             sqlite_keep_alive: std::time::Duration::from_secs(300),
+            downsample_max_gap_pct: 40,
         }
     }
 

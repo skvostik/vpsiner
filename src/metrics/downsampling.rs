@@ -18,9 +18,39 @@ pub(crate) fn add_optional(total: &mut Option<f64>, value: Option<f64>) {
     }
 }
 
+/// Tracks the largest silence between present samples, including the edges of the bucket
+/// itself, so a bucket built from too little of its own window can be discarded.
+#[derive(Default)]
+struct GapTracker {
+    first_ts: Option<i64>,
+    last_ts: Option<i64>,
+    max_interior_gap: i64,
+}
+
+impl GapTracker {
+    fn observe(&mut self, ts: i64) {
+        if let Some(last_ts) = self.last_ts {
+            self.max_interior_gap = self.max_interior_gap.max(ts - last_ts);
+        }
+        self.first_ts.get_or_insert(ts);
+        self.last_ts = Some(ts);
+    }
+
+    /// `bucket_end` is the closing timestamp of the `(bucket_end - bucket_ms, bucket_end]` window.
+    fn exceeds_max_gap(&self, bucket_end: i64, bucket_ms: u64, max_gap_pct: u8) -> bool {
+        let bucket_start = bucket_end - i64::try_from(bucket_ms).expect("bucket size exceeds i64");
+        let edge_start = self.first_ts.expect("gap tracker has samples") - bucket_start;
+        let edge_end = bucket_end - self.last_ts.expect("gap tracker has samples");
+        let observed_max = self.max_interior_gap.max(edge_start).max(edge_end);
+        let threshold = (bucket_ms * max_gap_pct as u64 / 100) as i64;
+        observed_max > threshold
+    }
+}
+
 #[derive(Default)]
 struct HostGauges {
     count: u64,
+    gap: GapTracker,
     cpu_pct_mill: u128,
     mem_used: u128,
     mem_total: u128,
@@ -56,6 +86,7 @@ impl OptionalGauge {
 impl HostGauges {
     fn add(&mut self, sample: &HostSample) {
         self.count += 1;
+        self.gap.observe(sample.ts);
         self.cpu_pct_mill += sample.cpu_pct_mill as u128;
         self.mem_used += sample.mem_used as u128;
         self.mem_total += sample.mem_total as u128;
@@ -69,8 +100,8 @@ impl HostGauges {
         self.disk_write_rate_mill.add(sample.disk_write_rate_mill);
     }
 
-    fn finish(&self, ts: i64) -> Option<HostSample> {
-        if self.count == 0 {
+    fn finish(&self, ts: i64, bucket_ms: u64, max_gap_pct: u8) -> Option<HostSample> {
+        if self.count == 0 || self.gap.exceeds_max_gap(ts, bucket_ms, max_gap_pct) {
             return None;
         }
         let count = self.count as u128;
@@ -92,7 +123,11 @@ impl HostGauges {
 }
 
 /// Expects samples ordered by `ts`; every bucket it emits is fully elapsed.
-pub fn downsample_host(samples: Vec<HostSample>, resolution: MetricsResolution) -> Vec<HostSample> {
+pub fn downsample_host(
+    samples: Vec<HostSample>,
+    resolution: MetricsResolution,
+    max_gap_pct: u8,
+) -> Vec<HostSample> {
     let bucket_ms = resolution.bucket_ms();
     let mut points: Vec<HostSample> = Vec::new();
     let mut current_bucket = i64::MIN;
@@ -101,7 +136,7 @@ pub fn downsample_host(samples: Vec<HostSample>, resolution: MetricsResolution) 
     for sample in samples {
         let bucket = bucket_end(sample.ts, bucket_ms);
         if bucket != current_bucket {
-            points.extend(gauges.finish(current_bucket));
+            points.extend(gauges.finish(current_bucket, bucket_ms, max_gap_pct));
             gauges = HostGauges::default();
             current_bucket = bucket;
         }
@@ -109,13 +144,14 @@ pub fn downsample_host(samples: Vec<HostSample>, resolution: MetricsResolution) 
         gauges.add(&sample);
     }
 
-    points.extend(gauges.finish(current_bucket));
+    points.extend(gauges.finish(current_bucket, bucket_ms, max_gap_pct));
     points
 }
 
 #[derive(Default)]
 struct ContainerGauges {
     count: u64,
+    gap: GapTracker,
     cpu_pct_mill: u128,
     mem_used: u128,
     mem_limit: u128,
@@ -134,6 +170,7 @@ impl ContainerGauges {
             self.cid = sample.cid.clone();
         }
         self.count += 1;
+        self.gap.observe(sample.ts);
         self.cpu_pct_mill += sample.cpu_pct_mill as u128;
         self.mem_used += sample.mem_used as u128;
         self.mem_limit += sample.mem_limit as u128;
@@ -143,8 +180,8 @@ impl ContainerGauges {
         self.blk_write_rate_mill.add(sample.blk_write_rate_mill);
     }
 
-    fn finish(&self, ts: i64) -> Option<ContainerSample> {
-        if self.count == 0 {
+    fn finish(&self, ts: i64, bucket_ms: u64, max_gap_pct: u8) -> Option<ContainerSample> {
+        if self.count == 0 || self.gap.exceeds_max_gap(ts, bucket_ms, max_gap_pct) {
             return None;
         }
         let count = self.count as u128;
@@ -167,6 +204,7 @@ impl ContainerGauges {
 pub fn downsample_container(
     samples: Vec<ContainerSample>,
     resolution: MetricsResolution,
+    max_gap_pct: u8,
 ) -> Vec<ContainerSample> {
     let bucket_ms = resolution.bucket_ms();
     let mut points: Vec<ContainerSample> = Vec::new();
@@ -176,7 +214,7 @@ pub fn downsample_container(
     for sample in samples {
         let bucket = bucket_end(sample.ts, bucket_ms);
         if bucket != current_bucket {
-            points.extend(gauges.finish(current_bucket));
+            points.extend(gauges.finish(current_bucket, bucket_ms, max_gap_pct));
             gauges = ContainerGauges::default();
             current_bucket = bucket;
         }
@@ -184,7 +222,7 @@ pub fn downsample_container(
         gauges.add(&sample);
     }
 
-    points.extend(gauges.finish(current_bucket));
+    points.extend(gauges.finish(current_bucket, bucket_ms, max_gap_pct));
     points
 }
 
@@ -264,7 +302,7 @@ mod tests {
         second.metrics_size = 300;
         second.logs_size = 600;
 
-        let points = downsample_host(vec![first, second], MetricsResolution::OneMinute);
+        let points = downsample_host(vec![first, second], MetricsResolution::OneMinute, 100);
 
         assert_eq!(points.len(), 1);
         assert_eq!(points[0].ts, 60_000);
@@ -276,7 +314,7 @@ mod tests {
     fn averages_host_rates_within_larger_buckets() {
         let samples = vec![host_counter(70_000, 100_000), host_counter(80_000, 300_000)];
 
-        let points = downsample_host(samples, MetricsResolution::OneMinute);
+        let points = downsample_host(samples, MetricsResolution::OneMinute, 100);
 
         assert_eq!(points.len(), 1);
         assert_eq!(points[0].ts, 120_000);
@@ -288,6 +326,7 @@ mod tests {
         let points = downsample_host(
             vec![host_counter(60_000, 5_000_000)],
             MetricsResolution::OneMinute,
+            100,
         );
 
         assert_eq!(points.len(), 1);
@@ -302,6 +341,7 @@ mod tests {
                 ..host_sample(60_000)
             }],
             MetricsResolution::OneMinute,
+            100,
         );
 
         assert_eq!(points.len(), 1);
@@ -315,7 +355,7 @@ mod tests {
             container_counter(80_000, "web", 300_000),
         ];
 
-        let points = downsample_container(samples, MetricsResolution::OneMinute);
+        let points = downsample_container(samples, MetricsResolution::OneMinute, 100);
 
         assert_eq!(points.len(), 1);
         assert_eq!(points[0].ts, 120_000);
@@ -330,6 +370,7 @@ mod tests {
                 ..container_counter(60_000, "web", 0)
             }],
             MetricsResolution::OneMinute,
+            100,
         );
 
         assert_eq!(points.len(), 1);
@@ -345,6 +386,7 @@ mod tests {
         let known = points(downsample_container(
             vec![container_counter(60_000, "known", 1_000_000)],
             MetricsResolution::OneMinute,
+            100,
         ));
         let unknown = points(downsample_container(
             vec![ContainerSample {
@@ -352,6 +394,7 @@ mod tests {
                 ..container_counter(60_000, "unknown", 0)
             }],
             MetricsResolution::OneMinute,
+            100,
         ));
 
         let sum = sum_by_bucket([known, unknown].iter());
@@ -368,16 +411,63 @@ mod tests {
                 container_counter(120_000, "steady", 1_000_000),
             ],
             MetricsResolution::OneMinute,
+            100,
         ));
         // Joins late; its stored value is already a rate, so nothing accumulates into a spike.
         let joining = points(downsample_container(
             vec![container_counter(120_000, "joining", 0)],
             MetricsResolution::OneMinute,
+            100,
         ));
 
         let sum = sum_by_bucket([steady, joining].iter());
 
         let second = sum.iter().find(|point| point.ts == 120_000).unwrap();
         assert_eq!(second.net_rx_rate, Some(1_000.0));
+    }
+
+    #[test]
+    fn discards_bucket_with_a_lone_sample_far_from_both_edges_at_default_threshold() {
+        // Bucket is (0, 60_000]; a single sample at 30_000 leaves 30s edge gaps each side,
+        // exceeding the default 40% (24s) threshold.
+        let points = downsample_host(vec![host_sample(30_000)], MetricsResolution::OneMinute, 40);
+
+        assert!(points.is_empty());
+    }
+
+    #[test]
+    fn keeps_lone_sample_bucket_when_gap_check_is_disabled() {
+        let points = downsample_host(vec![host_sample(30_000)], MetricsResolution::OneMinute, 100);
+
+        assert_eq!(points.len(), 1);
+    }
+
+    #[test]
+    fn discards_bucket_when_interior_gap_exceeds_threshold() {
+        // 60s bucket, 40% threshold is 24_000ms; a 30s interior gap exceeds it.
+        let samples = vec![host_sample(10_000), host_sample(40_000)];
+
+        let points = downsample_host(samples, MetricsResolution::OneMinute, 40);
+
+        assert!(points.is_empty());
+    }
+
+    #[test]
+    fn keeps_fully_populated_bucket_at_default_threshold() {
+        let samples = (1..=6).map(|n| host_sample(n * 10_000)).collect();
+
+        let points = downsample_host(samples, MetricsResolution::OneMinute, 40);
+
+        assert_eq!(points.len(), 1);
+    }
+
+    #[test]
+    fn keeps_bucket_when_gap_exactly_equals_the_threshold() {
+        // 60s bucket, 40% threshold is 24_000ms; edge gaps of exactly 24s on both sides.
+        let samples = vec![host_sample(24_000), host_sample(36_000)];
+
+        let points = downsample_host(samples, MetricsResolution::OneMinute, 40);
+
+        assert_eq!(points.len(), 1);
     }
 }
