@@ -287,7 +287,7 @@ impl MetricsStore for SqliteMetricsStore {
             Some(uncovered) => {
                 let raw = schema::select_host(&self.pool, MetricsResolution::TenSeconds, uncovered)
                     .await?;
-                downsample_host(raw, resolution, self.downsample_max_gap_pct)
+                downsample_host(&raw, resolution, self.downsample_max_gap_pct)
             }
             None => Vec::new(),
         };
@@ -336,7 +336,7 @@ impl MetricsStore for SqliteMetricsStore {
                     .push(sample);
             }
             for samples in raw_by_container.into_values() {
-                downsample_container(samples, resolution, self.downsample_max_gap_pct)
+                downsample_container(&samples, resolution, self.downsample_max_gap_pct)
                     .into_iter()
                     .for_each(&mut group);
             }

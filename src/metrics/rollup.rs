@@ -29,26 +29,53 @@ fn source_range(bucket_end: i64, resolution: MetricsResolution) -> TimeRange {
     }
 }
 
-/// Rolls up every coarse resolution whose bucket closed between `previous_ts` and `new_ts`.
+/// Every resolution that closed a bucket this tick, paired with the timestamp it closed at.
+fn resolutions_closed_by(previous_ts: i64, new_ts: i64) -> Vec<(MetricsResolution, i64)> {
+    MetricsResolution::COARSE
+        .into_iter()
+        .filter_map(|resolution| {
+            closed_bucket(previous_ts, new_ts, resolution).map(|closed| (resolution, closed))
+        })
+        .collect()
+}
+
+/// The widest range needed to cover every closed resolution, since coarser buckets always
+/// contain the finer ones that close alongside them.
+fn widest_source_range(closed: &[(MetricsResolution, i64)]) -> Option<TimeRange> {
+    closed
+        .iter()
+        .max_by_key(|(resolution, _)| resolution.bucket_ms())
+        .map(|&(resolution, closed)| source_range(closed, resolution))
+}
+
+/// The contiguous run of `samples` (ordered by `ts`) falling inside `range`.
+fn slice_by_range<T>(samples: &[T], range: TimeRange, ts: impl Fn(&T) -> i64) -> &[T] {
+    let start = samples.partition_point(|sample| ts(sample) < range.from);
+    let end = samples.partition_point(|sample| ts(sample) <= range.to);
+    &samples[start..end]
+}
+
+/// Rolls up every coarse resolution whose bucket closed between `previous_ts` and `new_ts`,
+/// reading the `10s` rows once for whichever resolution needed the widest range.
 pub async fn roll_up_host(
     pool: &SqlitePool,
     previous_ts: i64,
     new_ts: i64,
     max_gap_pct: u8,
 ) -> AppResult<()> {
-    for resolution in MetricsResolution::COARSE {
-        let Some(closed) = closed_bucket(previous_ts, new_ts, resolution) else {
-            continue;
-        };
+    let closed = resolutions_closed_by(previous_ts, new_ts);
+    let Some(fetch_range) = widest_source_range(&closed) else {
+        return Ok(());
+    };
 
-        let samples = schema::select_host(
-            pool,
-            MetricsResolution::TenSeconds,
-            source_range(closed, resolution),
-        )
-        .await?;
+    let samples = schema::select_host(pool, MetricsResolution::TenSeconds, fetch_range).await?;
 
-        for sample in downsample_host(samples, resolution, max_gap_pct) {
+    for (resolution, closed) in closed {
+        let slice = slice_by_range(&samples, source_range(closed, resolution), |sample| {
+            sample.ts
+        });
+
+        for sample in downsample_host(slice, resolution, max_gap_pct) {
             schema::insert_host(pool, resolution, sample).await?;
         }
     }
@@ -56,29 +83,31 @@ pub async fn roll_up_host(
     Ok(())
 }
 
-/// Rolls up every coarse resolution whose bucket closed between `previous_ts` and `new_ts`.
+/// Rolls up every coarse resolution whose bucket closed between `previous_ts` and `new_ts`,
+/// reading the `10s` rows once for whichever resolution needed the widest range.
 pub async fn roll_up_containers(
     pool: &SqlitePool,
     previous_ts: i64,
     new_ts: i64,
     max_gap_pct: u8,
 ) -> AppResult<()> {
-    for resolution in MetricsResolution::COARSE {
-        let Some(closed) = closed_bucket(previous_ts, new_ts, resolution) else {
-            continue;
-        };
+    let closed = resolutions_closed_by(previous_ts, new_ts);
+    let Some(fetch_range) = widest_source_range(&closed) else {
+        return Ok(());
+    };
 
-        let samples = schema::select_containers(
-            pool,
-            MetricsResolution::TenSeconds,
-            source_range(closed, resolution),
-        )
-        .await?;
+    let samples =
+        schema::select_containers(pool, MetricsResolution::TenSeconds, fetch_range).await?;
 
-        let mut by_container: HashMap<String, Vec<ContainerSample>> = HashMap::new();
-        for sample in samples {
+    for (resolution, closed) in closed {
+        let slice = slice_by_range(&samples, source_range(closed, resolution), |sample| {
+            sample.ts
+        });
+
+        let mut by_container: HashMap<&str, Vec<&ContainerSample>> = HashMap::new();
+        for sample in slice {
             by_container
-                .entry(sample.cid.clone())
+                .entry(sample.cid.as_str())
                 .or_default()
                 .push(sample);
         }

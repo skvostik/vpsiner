@@ -124,7 +124,7 @@ impl HostGauges {
 
 /// Expects samples ordered by `ts`; every bucket it emits is fully elapsed.
 pub fn downsample_host(
-    samples: Vec<HostSample>,
+    samples: &[HostSample],
     resolution: MetricsResolution,
     max_gap_pct: u8,
 ) -> Vec<HostSample> {
@@ -141,7 +141,7 @@ pub fn downsample_host(
             current_bucket = bucket;
         }
 
-        gauges.add(&sample);
+        gauges.add(sample);
     }
 
     points.extend(gauges.finish(current_bucket, bucket_ms, max_gap_pct));
@@ -200,9 +200,10 @@ impl ContainerGauges {
     }
 }
 
-/// Expects the samples of a single container, ordered by `ts`.
-pub fn downsample_container(
-    samples: Vec<ContainerSample>,
+/// Expects the samples of a single container, ordered by `ts`; callers can pass a slice or a
+/// filtered iterator of references, so a shared buffer can be split by container without copying.
+pub fn downsample_container<'a>(
+    samples: impl IntoIterator<Item = &'a ContainerSample>,
     resolution: MetricsResolution,
     max_gap_pct: u8,
 ) -> Vec<ContainerSample> {
@@ -219,7 +220,7 @@ pub fn downsample_container(
             current_bucket = bucket;
         }
 
-        gauges.add(&sample);
+        gauges.add(sample);
     }
 
     points.extend(gauges.finish(current_bucket, bucket_ms, max_gap_pct));
@@ -302,7 +303,7 @@ mod tests {
         second.metrics_size = 300;
         second.logs_size = 600;
 
-        let points = downsample_host(vec![first, second], MetricsResolution::OneMinute, 100);
+        let points = downsample_host(&[first, second], MetricsResolution::OneMinute, 100);
 
         assert_eq!(points.len(), 1);
         assert_eq!(points[0].ts, 60_000);
@@ -314,7 +315,7 @@ mod tests {
     fn averages_host_rates_within_larger_buckets() {
         let samples = vec![host_counter(70_000, 100_000), host_counter(80_000, 300_000)];
 
-        let points = downsample_host(samples, MetricsResolution::OneMinute, 100);
+        let points = downsample_host(&samples, MetricsResolution::OneMinute, 100);
 
         assert_eq!(points.len(), 1);
         assert_eq!(points[0].ts, 120_000);
@@ -324,7 +325,7 @@ mod tests {
     #[test]
     fn first_host_sample_uses_stored_rate() {
         let points = downsample_host(
-            vec![host_counter(60_000, 5_000_000)],
+            &[host_counter(60_000, 5_000_000)],
             MetricsResolution::OneMinute,
             100,
         );
@@ -336,7 +337,7 @@ mod tests {
     #[test]
     fn host_rate_stays_none_without_present_values() {
         let points = downsample_host(
-            vec![HostSample {
+            &[HostSample {
                 net_rx_rate_mill: None,
                 ..host_sample(60_000)
             }],
@@ -355,7 +356,7 @@ mod tests {
             container_counter(80_000, "web", 300_000),
         ];
 
-        let points = downsample_container(samples, MetricsResolution::OneMinute, 100);
+        let points = downsample_container(&samples, MetricsResolution::OneMinute, 100);
 
         assert_eq!(points.len(), 1);
         assert_eq!(points[0].ts, 120_000);
@@ -365,7 +366,7 @@ mod tests {
     #[test]
     fn container_rate_stays_none_without_present_values() {
         let points = downsample_container(
-            vec![ContainerSample {
+            &[ContainerSample {
                 net_rx_rate_mill: None,
                 ..container_counter(60_000, "web", 0)
             }],
@@ -384,12 +385,12 @@ mod tests {
     #[test]
     fn group_sum_adds_present_rates_only() {
         let known = points(downsample_container(
-            vec![container_counter(60_000, "known", 1_000_000)],
+            &[container_counter(60_000, "known", 1_000_000)],
             MetricsResolution::OneMinute,
             100,
         ));
         let unknown = points(downsample_container(
-            vec![ContainerSample {
+            &[ContainerSample {
                 net_rx_rate_mill: None,
                 ..container_counter(60_000, "unknown", 0)
             }],
@@ -406,7 +407,7 @@ mod tests {
     #[test]
     fn group_sum_does_not_spike_when_a_container_appears() {
         let steady = points(downsample_container(
-            vec![
+            &[
                 container_counter(60_000, "steady", 0),
                 container_counter(120_000, "steady", 1_000_000),
             ],
@@ -415,7 +416,7 @@ mod tests {
         ));
         // Joins late; its stored value is already a rate, so nothing accumulates into a spike.
         let joining = points(downsample_container(
-            vec![container_counter(120_000, "joining", 0)],
+            &[container_counter(120_000, "joining", 0)],
             MetricsResolution::OneMinute,
             100,
         ));
@@ -430,14 +431,14 @@ mod tests {
     fn discards_bucket_with_a_lone_sample_far_from_both_edges_at_default_threshold() {
         // Bucket is (0, 60_000]; a single sample at 30_000 leaves 30s edge gaps each side,
         // exceeding the default 40% (24s) threshold.
-        let points = downsample_host(vec![host_sample(30_000)], MetricsResolution::OneMinute, 40);
+        let points = downsample_host(&[host_sample(30_000)], MetricsResolution::OneMinute, 40);
 
         assert!(points.is_empty());
     }
 
     #[test]
     fn keeps_lone_sample_bucket_when_gap_check_is_disabled() {
-        let points = downsample_host(vec![host_sample(30_000)], MetricsResolution::OneMinute, 100);
+        let points = downsample_host(&[host_sample(30_000)], MetricsResolution::OneMinute, 100);
 
         assert_eq!(points.len(), 1);
     }
@@ -447,16 +448,16 @@ mod tests {
         // 60s bucket, 40% threshold is 24_000ms; a 30s interior gap exceeds it.
         let samples = vec![host_sample(10_000), host_sample(40_000)];
 
-        let points = downsample_host(samples, MetricsResolution::OneMinute, 40);
+        let points = downsample_host(&samples, MetricsResolution::OneMinute, 40);
 
         assert!(points.is_empty());
     }
 
     #[test]
     fn keeps_fully_populated_bucket_at_default_threshold() {
-        let samples = (1..=6).map(|n| host_sample(n * 10_000)).collect();
+        let samples: Vec<HostSample> = (1..=6).map(|n| host_sample(n * 10_000)).collect();
 
-        let points = downsample_host(samples, MetricsResolution::OneMinute, 40);
+        let points = downsample_host(&samples, MetricsResolution::OneMinute, 40);
 
         assert_eq!(points.len(), 1);
     }
@@ -466,7 +467,7 @@ mod tests {
         // 60s bucket, 40% threshold is 24_000ms; edge gaps of exactly 24s on both sides.
         let samples = vec![host_sample(24_000), host_sample(36_000)];
 
-        let points = downsample_host(samples, MetricsResolution::OneMinute, 40);
+        let points = downsample_host(&samples, MetricsResolution::OneMinute, 40);
 
         assert_eq!(points.len(), 1);
     }
