@@ -163,6 +163,13 @@ pub struct MetricsSnapshot {
     pub services: HashMap<String, GroupPoint>,
 }
 
+/// Container half of `MetricsSnapshot`, pushed on its own SSE event.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ContainersSnapshot {
+    pub containers: HashMap<String, ContainerPoint>,
+    pub services: HashMap<String, GroupPoint>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContainerStats {
     pub ts: TimestampMs,

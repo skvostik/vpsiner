@@ -717,13 +717,16 @@ Every `/api/stream/*` endpoint returns `text/event-stream` and is a push-based a
 
 ### GET `/api/stream/metrics/current`
 
-Push equivalent of `GET /api/metrics/current` for clients that want live updates without polling. The server emits one event per message, each carrying a full `MetricsSnapshot` payload with the same shape and staleness rules as the plain GET endpoint (no diffing — every event is a complete, self-contained snapshot).
+Push equivalent of `GET /api/metrics/current` for clients that want live updates without polling. Host and container metrics are collected by independent tasks at their own rates, so each is pushed as its own named event rather than as one combined payload. Staleness rules are unchanged and applied per half.
 
 Parameters: none.
 
-Behavior:
-- on connect, the server immediately emits the current snapshot, then emits again whenever the underlying host or container data changes
-- host and container updates are collected independently server-side; updates that land within a short window of each other are coalesced into a single emitted event
+Events:
+- `snapshot` — sent once, immediately on connect. Payload is a full `MetricsSnapshot`, identical in shape to `GET /api/metrics/current`.
+- `host` — sent whenever host metrics are recorded. Payload is a `HostPoint`, or `null` if the latest sample is stale.
+- `containers` — sent whenever a container sample batch is recorded. Payload is the `containers` and `services` maps.
+
+Clients merge `host` and `containers` events into the baseline `snapshot` to maintain a full `MetricsSnapshot`.
 
 Example:
 ```http
@@ -731,9 +734,16 @@ GET /api/stream/metrics/current
 Accept: text/event-stream
 ```
 
-Example event (identical payload shape to `GET /api/metrics/current`):
+Example events:
 ```
+event: snapshot
 data: {"host":{"ts":1720003600000,"cpu_pct":21.4,"mem_used":2147483648,"mem_total":8589934592,"storage_used":104857600,"storage_total":536870912,"metrics_size":5242880,"logs_size":73400320,"net_rx_rate":15432.0,"net_tx_rate":9650.0,"disk_read_rate":2000.0,"disk_write_rate":1500.0},"containers":{},"services":{}}
+
+event: host
+data: {"ts":1720003610000,"cpu_pct":24.9,"mem_used":2147483648,"mem_total":8589934592,"storage_used":104857600,"storage_total":536870912,"metrics_size":5242880,"logs_size":73400320,"net_rx_rate":15432.0,"net_tx_rate":9650.0,"disk_read_rate":2000.0,"disk_write_rate":1500.0}
+
+event: containers
+data: {"containers":{},"services":{}}
 
 ```
 

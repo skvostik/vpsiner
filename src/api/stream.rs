@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::extract::State;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -14,36 +13,51 @@ use crate::metrics::snapshot::MetricsSnapshotState;
 use crate::model::{ContainerDiff, ContainerSummary};
 use crate::state::AppState;
 
-/// host and container samples are recorded by independent tasks, so a debounce window collapses
-/// the two revision bumps of one logical update cycle into a single emitted event.
-const COALESCE_WINDOW: Duration = Duration::from_millis(100);
-
 enum StreamState {
-    Initial(Arc<MetricsSnapshotState>, watch::Receiver<u64>),
-    Waiting(Arc<MetricsSnapshotState>, watch::Receiver<u64>),
+    Initial(
+        Arc<MetricsSnapshotState>,
+        watch::Receiver<u64>,
+        watch::Receiver<u64>,
+    ),
+    Waiting(
+        Arc<MetricsSnapshotState>,
+        watch::Receiver<u64>,
+        watch::Receiver<u64>,
+    ),
 }
 
 pub async fn current(
     State(state): State<AppState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let snapshot = state.snapshot.clone();
-    let rx = snapshot.subscribe();
+    let host_rx = snapshot.subscribe_host();
+    let containers_rx = snapshot.subscribe_containers();
     let stream = stream::unfold(
-        StreamState::Initial(snapshot, rx),
+        StreamState::Initial(snapshot, host_rx, containers_rx),
         |current_state| async move {
             match current_state {
-                StreamState::Initial(snapshot, rx) => {
-                    let event = to_event(None, &snapshot.current());
-                    Some((event, StreamState::Waiting(snapshot, rx)))
+                StreamState::Initial(snapshot, host_rx, containers_rx) => {
+                    let event = to_event(Some("snapshot"), &snapshot.current());
+                    Some((
+                        event,
+                        StreamState::Waiting(snapshot, host_rx, containers_rx),
+                    ))
                 }
-                StreamState::Waiting(snapshot, mut rx) => {
-                    if rx.changed().await.is_err() {
-                        return None;
-                    }
-                    tokio::time::sleep(COALESCE_WINDOW).await;
-                    rx.borrow_and_update();
-                    let event = to_event(None, &snapshot.current());
-                    Some((event, StreamState::Waiting(snapshot, rx)))
+                StreamState::Waiting(snapshot, mut host_rx, mut containers_rx) => {
+                    let event = tokio::select! {
+                        changed = host_rx.changed() => {
+                            changed.ok()?;
+                            to_event(Some("host"), &snapshot.current_host())
+                        }
+                        changed = containers_rx.changed() => {
+                            changed.ok()?;
+                            to_event(Some("containers"), &snapshot.current_containers())
+                        }
+                    };
+                    Some((
+                        event,
+                        StreamState::Waiting(snapshot, host_rx, containers_rx),
+                    ))
                 }
             }
         },

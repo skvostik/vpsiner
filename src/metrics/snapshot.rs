@@ -8,8 +8,8 @@ use tokio::sync::watch;
 
 use crate::metrics::rate::rate;
 use crate::model::{
-    ContainerPoint, ContainerSample, GroupPoint, HostPoint, HostSample, MetricsSnapshot,
-    TimestampMs,
+    ContainerPoint, ContainerSample, ContainersSnapshot, GroupPoint, HostPoint, HostSample,
+    MetricsSnapshot, TimestampMs,
 };
 
 /// Records older than this multiple of the collection interval are dropped on read.
@@ -24,38 +24,51 @@ fn now_ms() -> TimestampMs {
 }
 
 #[derive(Default)]
-struct Inner {
-    host: Option<HostPoint>,
-    previous_host: Option<HostSample>,
-    containers: HashMap<String, ContainerPoint>,
-    previous_containers: HashMap<String, ContainerSample>,
+struct HostState {
+    current: Option<HostPoint>,
+    previous: Option<HostSample>,
 }
 
+#[derive(Default)]
+struct ContainersState {
+    current: HashMap<String, ContainerPoint>,
+    previous: HashMap<String, ContainerSample>,
+}
+
+/// Host and container samples are recorded by independent tasks, so each half keeps its own
+/// lock and revision channel and is never blocked or woken by the other.
 pub struct MetricsSnapshotState {
-    inner: Mutex<Inner>,
+    host: Mutex<HostState>,
+    containers: Mutex<ContainersState>,
     stale_after_ms: i64,
-    /// Bumped on every record_* call so SSE subscribers know to re-read `current()`.
-    revision_tx: watch::Sender<u64>,
+    host_revision_tx: watch::Sender<u64>,
+    containers_revision_tx: watch::Sender<u64>,
 }
 
 impl MetricsSnapshotState {
     pub fn new(collect_interval: Duration) -> Self {
-        let (revision_tx, _) = watch::channel(0);
+        let (host_revision_tx, _) = watch::channel(0);
+        let (containers_revision_tx, _) = watch::channel(0);
         Self {
-            inner: Mutex::new(Inner::default()),
+            host: Mutex::new(HostState::default()),
+            containers: Mutex::new(ContainersState::default()),
             stale_after_ms: (collect_interval.as_millis() as i64) * i64::from(STALE_INTERVALS),
-            revision_tx,
+            host_revision_tx,
+            containers_revision_tx,
         }
     }
 
-    pub fn subscribe(&self) -> watch::Receiver<u64> {
-        self.revision_tx.subscribe()
+    pub fn subscribe_host(&self) -> watch::Receiver<u64> {
+        self.host_revision_tx.subscribe()
+    }
+
+    pub fn subscribe_containers(&self) -> watch::Receiver<u64> {
+        self.containers_revision_tx.subscribe()
     }
 
     pub fn record_host(&self, sample: &HostSample) {
-        let mut inner = self.inner.lock().expect("snapshot state poisoned");
-        let (net_rx_rate, net_tx_rate, disk_read_rate, disk_write_rate) = match inner.previous_host
-        {
+        let mut state = self.host.lock().expect("snapshot state poisoned");
+        let (net_rx_rate, net_tx_rate, disk_read_rate, disk_write_rate) = match state.previous {
             Some(previous) => {
                 let dt_ms = sample.ts - previous.ts;
                 (
@@ -68,7 +81,7 @@ impl MetricsSnapshotState {
             None => (0.0, 0.0, 0.0, 0.0),
         };
 
-        inner.host = Some(HostPoint {
+        state.current = Some(HostPoint {
             ts: sample.ts,
             cpu_pct: sample.cpu_pct,
             mem_used: sample.mem_used,
@@ -82,20 +95,20 @@ impl MetricsSnapshotState {
             disk_read_rate,
             disk_write_rate,
         });
-        inner.previous_host = Some(*sample);
-        drop(inner);
-        self.revision_tx.send_modify(|revision| *revision += 1);
+        state.previous = Some(*sample);
+        drop(state);
+        self.host_revision_tx.send_modify(|revision| *revision += 1);
     }
 
     /// Each batch carries the full set of sampled containers, so the map is replaced wholesale.
     pub fn record_containers(&self, samples: &[ContainerSample]) {
-        let mut inner = self.inner.lock().expect("snapshot state poisoned");
-        let mut containers = HashMap::with_capacity(samples.len());
-        let mut previous_containers = HashMap::with_capacity(samples.len());
+        let mut state = self.containers.lock().expect("snapshot state poisoned");
+        let mut current = HashMap::with_capacity(samples.len());
+        let mut previous = HashMap::with_capacity(samples.len());
 
         for sample in samples {
             let (net_rx_rate, net_tx_rate, blk_read_rate, blk_write_rate) =
-                match inner.previous_containers.get(&sample.cid) {
+                match state.previous.get(&sample.cid) {
                     Some(previous) => {
                         let dt_ms = sample.ts - previous.ts;
                         (
@@ -108,7 +121,7 @@ impl MetricsSnapshotState {
                     None => (0.0, 0.0, 0.0, 0.0),
                 };
 
-            containers.insert(
+            current.insert(
                 sample.cid.clone(),
                 ContainerPoint {
                     ts: sample.ts,
@@ -122,49 +135,83 @@ impl MetricsSnapshotState {
                     blk_write_rate,
                 },
             );
-            previous_containers.insert(sample.cid.clone(), sample.clone());
+            previous.insert(sample.cid.clone(), sample.clone());
         }
 
-        inner.containers = containers;
-        inner.previous_containers = previous_containers;
-        drop(inner);
-        self.revision_tx.send_modify(|revision| *revision += 1);
+        state.current = current;
+        state.previous = previous;
+        drop(state);
+        self.containers_revision_tx
+            .send_modify(|revision| *revision += 1);
+    }
+
+    pub fn current_host(&self) -> Option<HostPoint> {
+        self.current_host_at(now_ms())
+    }
+
+    pub fn current_containers(&self) -> ContainersSnapshot {
+        self.current_containers_at(now_ms())
     }
 
     pub fn current(&self) -> MetricsSnapshot {
         self.current_at(now_ms())
     }
 
-    fn current_at(&self, now: TimestampMs) -> MetricsSnapshot {
-        let inner = self.inner.lock().expect("snapshot state poisoned");
-        let cutoff = now - self.stale_after_ms;
+    fn cutoff(&self, now: TimestampMs) -> TimestampMs {
+        now - self.stale_after_ms
+    }
 
-        let host = inner.host.filter(|snapshot| snapshot.ts >= cutoff);
-        let containers: HashMap<String, ContainerPoint> = inner
+    fn current_host_at(&self, now: TimestampMs) -> Option<HostPoint> {
+        let cutoff = self.cutoff(now);
+        self.host
+            .lock()
+            .expect("snapshot state poisoned")
+            .current
+            .filter(|point| point.ts >= cutoff)
+    }
+
+    fn current_containers_at(&self, now: TimestampMs) -> ContainersSnapshot {
+        let cutoff = self.cutoff(now);
+        let containers: HashMap<String, ContainerPoint> = self
             .containers
+            .lock()
+            .expect("snapshot state poisoned")
+            .current
             .iter()
-            .filter(|(_, snapshot)| snapshot.ts >= cutoff)
-            .map(|(cid, snapshot)| (cid.clone(), snapshot.clone()))
+            .filter(|(_, point)| point.ts >= cutoff)
+            .map(|(cid, point)| (cid.clone(), point.clone()))
             .collect();
 
         let mut services: HashMap<String, GroupPoint> = HashMap::new();
-        for snapshot in containers.values() {
+        for point in containers.values() {
             let service = services
-                .entry(snapshot.service.clone())
+                .entry(point.service.clone())
                 .or_insert_with(|| GroupPoint {
-                    ts: snapshot.ts,
+                    ts: point.ts,
                     ..GroupPoint::default()
                 });
-            service.ts = service.ts.max(snapshot.ts);
-            service.cpu_pct += snapshot.cpu_pct;
-            service.mem_used = service.mem_used.saturating_add(snapshot.mem_used);
-            service.mem_limit = service.mem_limit.saturating_add(snapshot.mem_limit);
-            service.net_rx_rate += snapshot.net_rx_rate;
-            service.net_tx_rate += snapshot.net_tx_rate;
-            service.blk_read_rate += snapshot.blk_read_rate;
-            service.blk_write_rate += snapshot.blk_write_rate;
+            service.ts = service.ts.max(point.ts);
+            service.cpu_pct += point.cpu_pct;
+            service.mem_used = service.mem_used.saturating_add(point.mem_used);
+            service.mem_limit = service.mem_limit.saturating_add(point.mem_limit);
+            service.net_rx_rate += point.net_rx_rate;
+            service.net_tx_rate += point.net_tx_rate;
+            service.blk_read_rate += point.blk_read_rate;
+            service.blk_write_rate += point.blk_write_rate;
         }
 
+        ContainersSnapshot {
+            containers,
+            services,
+        }
+    }
+
+    fn current_at(&self, now: TimestampMs) -> MetricsSnapshot {
+        let host = self.current_host_at(now);
+        let ContainersSnapshot {
+            containers,
+            services,
+        } = self.current_containers_at(now);
         MetricsSnapshot {
             host,
             containers,
@@ -306,5 +353,15 @@ mod tests {
         assert!(snapshot.host.is_none());
         assert!(snapshot.containers.is_empty());
         assert!(snapshot.services.is_empty());
+    }
+
+    #[test]
+    fn halves_apply_staleness_independently() {
+        let state = state();
+        state.record_host(&host_sample(10_000, 5_000));
+        state.record_containers(&[container_sample(30_000, "abc", "web", 0)]);
+
+        assert!(state.current_host_at(40_001).is_none());
+        assert!(!state.current_containers_at(40_001).containers.is_empty());
     }
 }
