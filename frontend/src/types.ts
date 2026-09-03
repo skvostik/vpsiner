@@ -29,10 +29,10 @@ export interface HostPoint {
   storage_total: number
   metrics_size: number
   logs_size: number
-  net_rx_rate: number
-  net_tx_rate: number
-  disk_read_rate: number
-  disk_write_rate: number
+  net_rx_rate: number | null
+  net_tx_rate: number | null
+  disk_read_rate: number | null
+  disk_write_rate: number | null
 }
 
 export interface ContainerPoint {

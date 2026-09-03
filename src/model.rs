@@ -71,7 +71,7 @@ pub enum ContainerCommandResult {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct HostSample {
+pub struct HostRawSample {
     pub ts: TimestampMs,
     pub cpu_pct: f64,
     pub mem_used: u64,
@@ -84,6 +84,22 @@ pub struct HostSample {
     pub net_tx: u64,
     pub disk_read: u64,
     pub disk_write: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct HostSample {
+    pub ts: TimestampMs,
+    pub cpu_pct_mill: u64,
+    pub mem_used: u64,
+    pub mem_total: u64,
+    pub storage_used: u64,
+    pub storage_total: u64,
+    pub metrics_size: u64,
+    pub logs_size: u64,
+    pub net_rx_rate_mill: Option<u64>,
+    pub net_tx_rate_mill: Option<u64>,
+    pub disk_read_rate_mill: Option<u64>,
+    pub disk_write_rate_mill: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -125,10 +141,10 @@ pub struct HostPoint {
     pub storage_total: u64,
     pub metrics_size: u64,
     pub logs_size: u64,
-    pub net_rx_rate: f64,
-    pub net_tx_rate: f64,
-    pub disk_read_rate: f64,
-    pub disk_write_rate: f64,
+    pub net_rx_rate: Option<f64>,
+    pub net_tx_rate: Option<f64>,
+    pub disk_read_rate: Option<f64>,
+    pub disk_write_rate: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

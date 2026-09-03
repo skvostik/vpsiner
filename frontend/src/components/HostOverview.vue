@@ -92,8 +92,8 @@ const containerMemorySummary = computed(() => {
   return formatBytes(used)
 })
 
-function formatRate(value: number) {
-  return `${formatBytes(value)}/s`
+function formatRate(value: number | null) {
+  return value == null ? '—' : `${formatBytes(value)}/s`
 }
 
 function formatMemorySummary(sample?: HostPoint | null) {

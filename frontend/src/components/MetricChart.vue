@@ -8,7 +8,7 @@ import { CanvasRenderer } from 'echarts/renderers'
 
 export interface ChartPoint {
   ts: number
-  value: number
+  value: number | null
 }
 
 export interface ChartSeries {
@@ -56,9 +56,9 @@ function formatTooltip(params: unknown) {
   const timestamp = first?.axisValue
   const heading = typeof timestamp === 'number' ? new Date(timestamp).toLocaleString() : ''
   const rows = entries.map((entry) => {
-    const item = entry as { seriesName?: string; color?: string; value?: [number, number] }
+    const item = entry as { seriesName?: string; color?: string; value?: [number, number | null] }
     const value = Array.isArray(item.value) ? item.value[1] : undefined
-    return `<div style="display:flex;align-items:center;gap:8px"><span style="width:7px;height:7px;border-radius:50%;background:${item.color ?? '#737373'}"></span><span>${escapeHtml(item.seriesName ?? '')}</span><strong style="margin-left:auto">${value === undefined ? '—' : props.formatValue(value)}</strong></div>`
+    return `<div style="display:flex;align-items:center;gap:8px"><span style="width:7px;height:7px;border-radius:50%;background:${item.color ?? '#737373'}"></span><span>${escapeHtml(item.seriesName ?? '')}</span><strong style="margin-left:auto">${value == null ? '—' : props.formatValue(value)}</strong></div>`
   })
   return `<div><div style="margin-bottom:6px;font-weight:600">${escapeHtml(heading)}</div>${rows.join('')}</div>`
 }

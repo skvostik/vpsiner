@@ -74,45 +74,72 @@ impl CounterRates {
 #[derive(Default)]
 struct HostGauges {
     count: u64,
-    cpu_pct: f64,
+    cpu_pct_mill: u128,
     mem_used: u128,
     mem_total: u128,
     storage_used: u128,
     storage_total: u128,
     metrics_size: u128,
     logs_size: u128,
+    net_rx_rate_mill: OptionalGauge,
+    net_tx_rate_mill: OptionalGauge,
+    disk_read_rate_mill: OptionalGauge,
+    disk_write_rate_mill: OptionalGauge,
+}
+
+#[derive(Default)]
+struct OptionalGauge {
+    count: u64,
+    total: u128,
+}
+
+impl OptionalGauge {
+    fn add(&mut self, value: Option<u64>) {
+        if let Some(value) = value {
+            self.count += 1;
+            self.total += value as u128;
+        }
+    }
+
+    fn mean_rate(&self) -> Option<f64> {
+        (self.count > 0).then(|| (self.total / self.count as u128) as f64 / 1_000.0)
+    }
 }
 
 impl HostGauges {
     fn add(&mut self, sample: &HostSample) {
         self.count += 1;
-        self.cpu_pct += sample.cpu_pct;
+        self.cpu_pct_mill += sample.cpu_pct_mill as u128;
         self.mem_used += sample.mem_used as u128;
         self.mem_total += sample.mem_total as u128;
         self.storage_used += sample.storage_used as u128;
         self.storage_total += sample.storage_total as u128;
         self.metrics_size += sample.metrics_size as u128;
         self.logs_size += sample.logs_size as u128;
+        self.net_rx_rate_mill.add(sample.net_rx_rate_mill);
+        self.net_tx_rate_mill.add(sample.net_tx_rate_mill);
+        self.disk_read_rate_mill.add(sample.disk_read_rate_mill);
+        self.disk_write_rate_mill.add(sample.disk_write_rate_mill);
     }
 
-    fn finish(&self, ts: i64, rates: [f64; 4]) -> Option<HostPoint> {
+    fn finish(&self, ts: i64) -> Option<HostPoint> {
         if self.count == 0 {
             return None;
         }
         let count = self.count as u128;
         Some(HostPoint {
             ts,
-            cpu_pct: self.cpu_pct / self.count as f64,
+            cpu_pct: (self.cpu_pct_mill / count) as f64 / 1_000.0,
             mem_used: (self.mem_used / count) as u64,
             mem_total: (self.mem_total / count) as u64,
             storage_used: (self.storage_used / count) as u64,
             storage_total: (self.storage_total / count) as u64,
             metrics_size: (self.metrics_size / count) as u64,
             logs_size: (self.logs_size / count) as u64,
-            net_rx_rate: rates[0],
-            net_tx_rate: rates[1],
-            disk_read_rate: rates[2],
-            disk_write_rate: rates[3],
+            net_rx_rate: self.net_rx_rate_mill.mean_rate(),
+            net_tx_rate: self.net_tx_rate_mill.mean_rate(),
+            disk_read_rate: self.disk_read_rate_mill.mean_rate(),
+            disk_write_rate: self.disk_write_rate_mill.mean_rate(),
         })
     }
 }
@@ -122,30 +149,19 @@ pub fn downsample_host(samples: Vec<HostSample>, resolution: MetricsResolution) 
     let mut points: Vec<HostPoint> = Vec::new();
     let mut current_bucket = i64::MIN;
     let mut gauges = HostGauges::default();
-    let mut rates = CounterRates::default();
 
     for sample in samples {
         let bucket = bucket_end(sample.ts, bucket_ms);
         if bucket != current_bucket {
-            points.extend(gauges.finish(current_bucket, rates.per_second()));
+            points.extend(gauges.finish(current_bucket));
             gauges = HostGauges::default();
-            rates.start_bucket();
             current_bucket = bucket;
         }
 
         gauges.add(&sample);
-        rates.observe(
-            sample.ts,
-            [
-                sample.net_rx,
-                sample.net_tx,
-                sample.disk_read,
-                sample.disk_write,
-            ],
-        );
     }
 
-    points.extend(gauges.finish(current_bucket, rates.per_second()));
+    points.extend(gauges.finish(current_bucket));
     // ts is the bucket's closing instant, so a bucket has fully elapsed exactly when ts <= now.
     points.retain(|point| point.ts <= now_ms());
     points
@@ -259,23 +275,23 @@ mod tests {
     fn host_sample(ts: i64) -> HostSample {
         HostSample {
             ts,
-            cpu_pct: 12.5,
+            cpu_pct_mill: 12_500,
             mem_used: 100,
             mem_total: 200,
             storage_used: 700,
             storage_total: 800,
             metrics_size: 900,
             logs_size: 1_000,
-            net_rx: 300,
-            net_tx: 400,
-            disk_read: 500,
-            disk_write: 600,
+            net_rx_rate_mill: Some(300_000),
+            net_tx_rate_mill: Some(400_000),
+            disk_read_rate_mill: Some(500_000),
+            disk_write_rate_mill: Some(600_000),
         }
     }
 
-    fn host_counter(ts: i64, net_rx: u64) -> HostSample {
+    fn host_counter(ts: i64, net_rx_rate_mill: u64) -> HostSample {
         HostSample {
-            net_rx,
+            net_rx_rate_mill: Some(net_rx_rate_mill),
             ..host_sample(ts)
         }
     }
@@ -297,63 +313,55 @@ mod tests {
 
     #[test]
     fn averages_database_sizes_within_host_buckets() {
-        let mut first = host_sample(100);
+        let mut first = host_sample(10_000);
         first.metrics_size = 100;
         first.logs_size = 200;
-        let mut second = host_sample(200);
+        let mut second = host_sample(20_000);
         second.metrics_size = 300;
         second.logs_size = 600;
 
-        let points = downsample_host(vec![first, second], MetricsResolution::TenSeconds);
+        let points = downsample_host(vec![first, second], MetricsResolution::OneMinute);
 
         assert_eq!(points.len(), 1);
+        assert_eq!(points[0].ts, 60_000);
         assert_eq!(points[0].metrics_size, 200);
         assert_eq!(points[0].logs_size, 400);
     }
 
     #[test]
-    fn weights_bucket_rate_by_elapsed_time_not_sample_count() {
-        // Bucket (60s, 120s] with a missing sample: intervals are 10s, 10s, 30s, 10s and all
-        // traffic falls in the 30s one. A simple mean of pair rates would report 250 B/s.
-        let samples = vec![
-            host_counter(60_000, 0),
-            host_counter(70_000, 0),
-            host_counter(80_000, 0),
-            host_counter(110_000, 30_000),
-            host_counter(120_000, 30_000),
-        ];
+    fn averages_host_rates_within_larger_buckets() {
+        let samples = vec![host_counter(70_000, 100_000), host_counter(80_000, 300_000)];
 
         let points = downsample_host(samples, MetricsResolution::OneMinute);
 
-        assert_eq!(points.len(), 2);
-        assert_eq!(points[1].ts, 120_000);
-        assert_eq!(points[1].net_rx_rate, 500.0);
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].ts, 120_000);
+        assert_eq!(points[0].net_rx_rate, Some(200.0));
     }
 
     #[test]
-    fn excludes_reset_intervals_from_both_delta_and_elapsed_time() {
-        // 1000 bytes over 10s, then a reset; counting the reset's 10s would halve the rate.
-        let samples = vec![
-            host_counter(60_000, 1_000),
-            host_counter(70_000, 2_000),
-            host_counter(80_000, 500),
-        ];
-
-        let points = downsample_host(samples, MetricsResolution::OneMinute);
-
-        assert_eq!(points.len(), 2);
-        assert_eq!(points[1].net_rx_rate, 100.0);
-    }
-
-    #[test]
-    fn first_sample_without_predecessor_has_no_rate() {
+    fn first_host_sample_uses_stored_rate() {
         let points = downsample_host(
-            vec![host_counter(60_000, 5_000)],
+            vec![host_counter(60_000, 5_000_000)],
             MetricsResolution::OneMinute,
         );
 
         assert_eq!(points.len(), 1);
-        assert_eq!(points[0].net_rx_rate, 0.0);
+        assert_eq!(points[0].net_rx_rate, Some(5_000.0));
+    }
+
+    #[test]
+    fn host_rate_stays_none_without_present_values() {
+        let points = downsample_host(
+            vec![HostSample {
+                net_rx_rate_mill: None,
+                ..host_sample(60_000)
+            }],
+            MetricsResolution::OneMinute,
+        );
+
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].net_rx_rate, None);
     }
 
     #[test]

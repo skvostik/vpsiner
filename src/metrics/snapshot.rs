@@ -26,7 +26,6 @@ fn now_ms() -> TimestampMs {
 #[derive(Default)]
 struct HostState {
     current: Option<HostPoint>,
-    previous: Option<HostSample>,
 }
 
 #[derive(Default)]
@@ -68,34 +67,22 @@ impl MetricsSnapshotState {
 
     pub fn record_host(&self, sample: &HostSample) {
         let mut state = self.host.lock().expect("snapshot state poisoned");
-        let (net_rx_rate, net_tx_rate, disk_read_rate, disk_write_rate) = match state.previous {
-            Some(previous) => {
-                let dt_ms = sample.ts - previous.ts;
-                (
-                    rate(sample.net_rx, previous.net_rx, dt_ms),
-                    rate(sample.net_tx, previous.net_tx, dt_ms),
-                    rate(sample.disk_read, previous.disk_read, dt_ms),
-                    rate(sample.disk_write, previous.disk_write, dt_ms),
-                )
-            }
-            None => (0.0, 0.0, 0.0, 0.0),
-        };
-
         state.current = Some(HostPoint {
             ts: sample.ts,
-            cpu_pct: sample.cpu_pct,
+            cpu_pct: sample.cpu_pct_mill as f64 / 1_000.0,
             mem_used: sample.mem_used,
             mem_total: sample.mem_total,
             storage_used: sample.storage_used,
             storage_total: sample.storage_total,
             metrics_size: sample.metrics_size,
             logs_size: sample.logs_size,
-            net_rx_rate,
-            net_tx_rate,
-            disk_read_rate,
-            disk_write_rate,
+            net_rx_rate: sample.net_rx_rate_mill.map(|rate| rate as f64 / 1_000.0),
+            net_tx_rate: sample.net_tx_rate_mill.map(|rate| rate as f64 / 1_000.0),
+            disk_read_rate: sample.disk_read_rate_mill.map(|rate| rate as f64 / 1_000.0),
+            disk_write_rate: sample
+                .disk_write_rate_mill
+                .map(|rate| rate as f64 / 1_000.0),
         });
-        state.previous = Some(*sample);
         drop(state);
         self.host_revision_tx.send_modify(|revision| *revision += 1);
     }
@@ -231,17 +218,17 @@ mod tests {
     fn host_sample(ts: TimestampMs, net_rx: u64) -> HostSample {
         HostSample {
             ts,
-            cpu_pct: 12.5,
+            cpu_pct_mill: 12_500,
             mem_used: 100,
             mem_total: 200,
             storage_used: 300,
             storage_total: 400,
             metrics_size: 500,
             logs_size: 600,
-            net_rx,
-            net_tx: 0,
-            disk_read: 0,
-            disk_write: 0,
+            net_rx_rate_mill: Some(net_rx),
+            net_tx_rate_mill: Some(0),
+            disk_read_rate_mill: Some(0),
+            disk_write_rate_mill: Some(0),
         }
     }
 
@@ -261,26 +248,35 @@ mod tests {
     }
 
     #[test]
-    fn first_sample_has_zero_rates() {
+    fn host_snapshot_uses_stored_bucketed_rate() {
         let state = state();
         state.record_host(&host_sample(10_000, 5_000));
-        assert_eq!(state.current_at(10_000).host.unwrap().net_rx_rate, 0.0);
+        assert_eq!(
+            state.current_at(10_000).host.unwrap().net_rx_rate,
+            Some(5.0)
+        );
     }
 
     #[test]
-    fn computes_rate_between_consecutive_samples() {
+    fn host_snapshot_replaces_previous_bucket() {
         let state = state();
         state.record_host(&host_sample(10_000, 5_000));
-        state.record_host(&host_sample(20_000, 25_000));
-        assert_eq!(state.current_at(20_000).host.unwrap().net_rx_rate, 2_000.0);
+        state.record_host(&host_sample(20_000, 2_000_000));
+        assert_eq!(
+            state.current_at(20_000).host.unwrap().net_rx_rate,
+            Some(2_000.0)
+        );
     }
 
     #[test]
-    fn counter_reset_yields_zero_rate() {
+    fn host_snapshot_does_not_recompute_rates() {
         let state = state();
         state.record_host(&host_sample(10_000, 25_000));
         state.record_host(&host_sample(20_000, 5_000));
-        assert_eq!(state.current_at(20_000).host.unwrap().net_rx_rate, 0.0);
+        assert_eq!(
+            state.current_at(20_000).host.unwrap().net_rx_rate,
+            Some(5.0)
+        );
     }
 
     #[test]

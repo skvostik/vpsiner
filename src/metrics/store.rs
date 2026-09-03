@@ -115,19 +115,19 @@ impl SqliteMetricsStore {
 
     async fn create_schema(&self) -> AppResult<()> {
         sqlx::query(
-            "CREATE TABLE IF NOT EXISTS host_metrics (
-                ts INTEGER NOT NULL,
-                cpu_pct REAL NOT NULL,
+            "CREATE TABLE IF NOT EXISTS host_metrics_10s (
+                ts INTEGER PRIMARY KEY,
+                cpu_pct_mill INTEGER NOT NULL,
                 mem_used INTEGER NOT NULL,
                 mem_total INTEGER NOT NULL,
-                storage_used INTEGER NOT NULL DEFAULT 0,
-                storage_total INTEGER NOT NULL DEFAULT 0,
+                storage_used INTEGER NOT NULL,
+                storage_total INTEGER NOT NULL,
                 metrics_size INTEGER NOT NULL,
                 logs_size INTEGER NOT NULL,
-                net_rx INTEGER NOT NULL,
-                net_tx INTEGER NOT NULL,
-                disk_read INTEGER NOT NULL,
-                disk_write INTEGER NOT NULL
+                net_rx_rate_mill INTEGER,
+                net_tx_rate_mill INTEGER,
+                disk_read_rate_mill INTEGER,
+                disk_write_rate_mill INTEGER
             )",
         )
         .execute(&self.pool)
@@ -152,12 +152,6 @@ impl SqliteMetricsStore {
         .await
         .map_err(storage)?;
 
-        // Used by host-level range queries that read a time window in order (for example, the
-        // dashboard's host CPU/memory/network charts).
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_host_ts ON host_metrics(ts)")
-            .execute(&self.pool)
-            .await
-            .map_err(storage)?;
         // Used by per-service container metrics queries: filter by service, then walk the
         // matching samples in timestamp order for a time range.
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_ctr_ts ON container_metrics(service, ts)")
@@ -252,7 +246,7 @@ impl MetricsStore for SqliteMetricsStore {
 
     async fn delete_before(&self, cutoff_ms: i64) -> AppResult<u64> {
         let mut transaction = self.pool.begin().await.map_err(storage)?;
-        let host = sqlx::query("DELETE FROM host_metrics WHERE ts < ?")
+        let host = sqlx::query("DELETE FROM host_metrics_10s WHERE ts < ?")
             .bind(cutoff_ms)
             .execute(&mut *transaction)
             .await
@@ -272,22 +266,22 @@ impl MetricsStore for SqliteMetricsStore {
 
     async fn insert_host(&self, sample: HostSample) -> AppResult<()> {
         sqlx::query(
-            "INSERT INTO host_metrics
-                     (ts, cpu_pct, mem_used, mem_total, storage_used, storage_total, metrics_size, logs_size, net_rx, net_tx, disk_read, disk_write)
+            "INSERT INTO host_metrics_10s
+                     (ts, cpu_pct_mill, mem_used, mem_total, storage_used, storage_total, metrics_size, logs_size, net_rx_rate_mill, net_tx_rate_mill, disk_read_rate_mill, disk_write_rate_mill)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(sample.ts)
-        .bind(sample.cpu_pct)
+        .bind(sample.cpu_pct_mill as i64)
         .bind(sample.mem_used as i64)
         .bind(sample.mem_total as i64)
         .bind(sample.storage_used as i64)
         .bind(sample.storage_total as i64)
         .bind(sample.metrics_size as i64)
         .bind(sample.logs_size as i64)
-        .bind(sample.net_rx as i64)
-        .bind(sample.net_tx as i64)
-        .bind(sample.disk_read as i64)
-        .bind(sample.disk_write as i64)
+        .bind(sample.net_rx_rate_mill.map(|rate| rate as i64))
+        .bind(sample.net_tx_rate_mill.map(|rate| rate as i64))
+        .bind(sample.disk_read_rate_mill.map(|rate| rate as i64))
+        .bind(sample.disk_write_rate_mill.map(|rate| rate as i64))
         .execute(&self.pool)
         .await
         .map_err(storage)?;
@@ -332,14 +326,12 @@ impl MetricsStore for SqliteMetricsStore {
         range: TimeRange,
         resolution: MetricsResolution,
     ) -> AppResult<Vec<HostPoint>> {
-        // Reach one sample before `from` so the first in-range bucket has a rate.
         let rows = sqlx::query(
-            "SELECT ts, cpu_pct, mem_used, mem_total, storage_used, storage_total, metrics_size, logs_size, net_rx, net_tx, disk_read, disk_write
-             FROM host_metrics
-             WHERE ts >= COALESCE((SELECT MAX(ts) FROM host_metrics WHERE ts < ?), ?) AND ts <= ?
+              "SELECT ts, cpu_pct_mill, mem_used, mem_total, storage_used, storage_total, metrics_size, logs_size, net_rx_rate_mill, net_tx_rate_mill, disk_read_rate_mill, disk_write_rate_mill
+               FROM host_metrics_10s
+               WHERE ts >= ? AND ts <= ?
              ORDER BY ts ASC",
         )
-        .bind(range.from)
         .bind(range.from)
         .bind(range.to)
         .fetch_all(&self.pool)
@@ -353,9 +345,10 @@ impl MetricsStore for SqliteMetricsStore {
                     ts: row
                         .try_get("ts")
                         .map_err(|err| AppError::Storage(err.to_string()))?,
-                    cpu_pct: row
-                        .try_get("cpu_pct")
-                        .map_err(|err| AppError::Storage(err.to_string()))?,
+                    cpu_pct_mill: row
+                        .try_get::<i64, _>("cpu_pct_mill")
+                        .map_err(|err| AppError::Storage(err.to_string()))?
+                        as u64,
                     mem_used: row
                         .try_get::<i64, _>("mem_used")
                         .map_err(|err| AppError::Storage(err.to_string()))?
@@ -380,22 +373,22 @@ impl MetricsStore for SqliteMetricsStore {
                         .try_get::<i64, _>("logs_size")
                         .map_err(|err| AppError::Storage(err.to_string()))?
                         as u64,
-                    net_rx: row
-                        .try_get::<i64, _>("net_rx")
+                    net_rx_rate_mill: row
+                        .try_get::<Option<i64>, _>("net_rx_rate_mill")
                         .map_err(|err| AppError::Storage(err.to_string()))?
-                        as u64,
-                    net_tx: row
-                        .try_get::<i64, _>("net_tx")
+                        .map(|rate| rate as u64),
+                    net_tx_rate_mill: row
+                        .try_get::<Option<i64>, _>("net_tx_rate_mill")
                         .map_err(|err| AppError::Storage(err.to_string()))?
-                        as u64,
-                    disk_read: row
-                        .try_get::<i64, _>("disk_read")
+                        .map(|rate| rate as u64),
+                    disk_read_rate_mill: row
+                        .try_get::<Option<i64>, _>("disk_read_rate_mill")
                         .map_err(|err| AppError::Storage(err.to_string()))?
-                        as u64,
-                    disk_write: row
-                        .try_get::<i64, _>("disk_write")
+                        .map(|rate| rate as u64),
+                    disk_write_rate_mill: row
+                        .try_get::<Option<i64>, _>("disk_write_rate_mill")
                         .map_err(|err| AppError::Storage(err.to_string()))?
-                        as u64,
+                        .map(|rate| rate as u64),
                 })
             })
             .collect();
@@ -610,17 +603,17 @@ mod tests {
     fn host_sample(ts: i64) -> HostSample {
         HostSample {
             ts,
-            cpu_pct: 12.5,
+            cpu_pct_mill: 12_500,
             mem_used: 100,
             mem_total: 200,
             storage_used: 700,
             storage_total: 800,
             metrics_size: 900,
             logs_size: 1_000,
-            net_rx: 300,
-            net_tx: 400,
-            disk_read: 500,
-            disk_write: 600,
+            net_rx_rate_mill: Some(300_000),
+            net_tx_rate_mill: Some(400_000),
+            disk_read_rate_mill: Some(500_000),
+            disk_write_rate_mill: Some(600_000),
         }
     }
 
@@ -644,8 +637,8 @@ mod tests {
         let directory = test_directory("range");
         let store = test_store(directory.join("metrics.db")).await;
 
-        store.insert_host(host_sample(100)).await.unwrap();
-        store.insert_host(host_sample(200)).await.unwrap();
+        store.insert_host(host_sample(10_000)).await.unwrap();
+        store.insert_host(host_sample(20_000)).await.unwrap();
         store
             .insert_containers(vec![
                 container_sample(100, "web"),
@@ -657,16 +650,19 @@ mod tests {
 
         let hosts = store
             .query_host(
-                TimeRange { from: 150, to: 250 },
+                TimeRange {
+                    from: 15_000,
+                    to: 25_000,
+                },
                 MetricsResolution::TenSeconds,
             )
             .await
             .unwrap();
         assert_eq!(hosts.len(), 1);
-        assert_eq!(hosts[0].ts, 10_000);
+        assert_eq!(hosts[0].ts, 20_000);
         assert_eq!(hosts[0].cpu_pct, 12.5);
         assert_eq!(hosts[0].mem_used, 100);
-        assert_eq!(hosts[0].net_rx_rate, 0.0);
+        assert_eq!(hosts[0].net_rx_rate, Some(300.0));
 
         let containers = store
             .query_container(
@@ -688,13 +684,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn host_rates_round_trip_as_null_when_missing() {
+        let directory = test_directory("host-null-rates");
+        let store = test_store(directory.join("metrics.db")).await;
+
+        store
+            .insert_host(HostSample {
+                net_rx_rate_mill: None,
+                net_tx_rate_mill: None,
+                disk_read_rate_mill: None,
+                disk_write_rate_mill: None,
+                ..host_sample(10_000)
+            })
+            .await
+            .unwrap();
+
+        let hosts = store
+            .query_host(
+                TimeRange {
+                    from: 0,
+                    to: 10_000,
+                },
+                MetricsResolution::TenSeconds,
+            )
+            .await
+            .unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].net_rx_rate, None);
+        assert_eq!(hosts[0].net_tx_rate, None);
+        assert_eq!(hosts[0].disk_read_rate, None);
+        assert_eq!(hosts[0].disk_write_rate, None);
+
+        let _ = tokio::fs::remove_dir_all(directory).await;
+    }
+
+    #[tokio::test]
+    async fn rejects_duplicate_host_bucket_timestamps() {
+        let directory = test_directory("host-duplicate-ts");
+        let store = test_store(directory.join("metrics.db")).await;
+
+        store.insert_host(host_sample(10_000)).await.unwrap();
+        assert!(store.insert_host(host_sample(10_000)).await.is_err());
+
+        let _ = tokio::fs::remove_dir_all(directory).await;
+    }
+
+    #[tokio::test]
     async fn creates_parent_directory_and_accepts_empty_batch() {
         let directory = test_directory("empty-batch");
         let database_path = directory.join("nested/metrics.db");
         let store = test_store(&database_path).await;
 
         store.insert_containers(Vec::new()).await.unwrap();
-        store.insert_host(host_sample(1)).await.unwrap();
+        store.insert_host(host_sample(10_000)).await.unwrap();
 
         assert!(database_path.exists());
         let _ = tokio::fs::remove_dir_all(directory).await;
@@ -705,7 +747,7 @@ mod tests {
         let directory = test_directory("size");
         let store = test_store(directory.join("metrics.db")).await;
 
-        store.insert_host(host_sample(1)).await.unwrap();
+        store.insert_host(host_sample(10_000)).await.unwrap();
 
         assert!(store.database_size_bytes().await.unwrap() > 0);
         let _ = tokio::fs::remove_dir_all(directory).await;
@@ -716,14 +758,14 @@ mod tests {
         let directory = test_directory("retention");
         let store = test_store(directory.join("metrics.db")).await;
 
-        store.insert_host(host_sample(100)).await.unwrap();
+        store.insert_host(host_sample(10_000)).await.unwrap();
         store
-            .insert_containers(vec![container_sample(100, "web")])
+            .insert_containers(vec![container_sample(10_000, "web")])
             .await
             .unwrap();
 
-        assert_eq!(store.delete_before(200).await.unwrap(), 2);
-        assert_eq!(store.delete_before(200).await.unwrap(), 0);
+        assert_eq!(store.delete_before(20_000).await.unwrap(), 2);
+        assert_eq!(store.delete_before(20_000).await.unwrap(), 0);
         let _ = tokio::fs::remove_dir_all(directory).await;
     }
 }
