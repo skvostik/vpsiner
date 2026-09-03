@@ -1,6 +1,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { reportSseIssue } from './useBackendHealth'
+import { reconnectDelayMs } from './streamConfig'
 import type { ContainerDiff, ContainerSummary } from '../types'
 
 // Shared state: the sidebar badge and the containers view run off a single connection.
@@ -14,8 +15,13 @@ const runningCount = computed(
 
 let source: EventSource | undefined
 let consumers = 0
+let reconnectTimer: number | undefined
 
 function connect() {
+  source?.close()
+  if (reconnectTimer) window.clearTimeout(reconnectTimer)
+  reconnectTimer = undefined
+
   source = new EventSource('/api/stream/containers')
   source.addEventListener('snapshot', (event) => {
     const snapshot = JSON.parse((event as MessageEvent).data) as ContainerSummary[]
@@ -35,8 +41,20 @@ function connect() {
     }
     console.debug('[containers-stream] diff', diff)
   })
-  // The browser retries automatically; only report an outage once the stream is definitively closed.
-  source.onerror = () => reportSseIssue(source)
+  // A failed handshake (e.g. proxy 502 during a backend restart) leaves the browser's
+  // own retry disabled, so reconnect ourselves instead of relying on it.
+  source.onerror = () => {
+    const failedSource = source
+    reportSseIssue(failedSource)
+    failedSource?.close()
+    if (source === failedSource) source = undefined
+    if (consumers > 0 && !reconnectTimer) {
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = undefined
+        connect()
+      }, reconnectDelayMs)
+    }
+  }
 }
 
 export function useContainersStream() {
@@ -48,8 +66,12 @@ export function useContainersStream() {
   onBeforeUnmount(() => {
     consumers -= 1
     if (consumers > 0) return
+    if (reconnectTimer) window.clearTimeout(reconnectTimer)
+    reconnectTimer = undefined
     source?.close()
     source = undefined
+    containersById.value = {}
+    loading.value = true
   })
 
   return { containers, runningCount, loading }

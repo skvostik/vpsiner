@@ -3,7 +3,9 @@ import { NSpin } from 'naive-ui'
 </script>
 
 <template>
-  <div class="flex h-screen flex-col items-center justify-center px-6 text-center">
+  <div
+    class="fixed inset-0 z-50 flex flex-col items-center justify-center bg-white px-6 text-center dark:bg-neutral-950"
+  >
     <p class="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-700 dark:text-cyan-400">
       Simply Observed
     </p>

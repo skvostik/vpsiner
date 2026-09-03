@@ -62,7 +62,7 @@ onBeforeUnmount(() => {
     <n-global-style />
     <n-message-provider placement="bottom">
       <BackendOfflineScreen v-if="!backendOnline" />
-      <n-layout v-else has-sider class="h-screen">
+      <n-layout has-sider class="h-screen">
         <AppSidebar v-model:collapsed="sidebarCollapsed" :mobile="isMobile" />
         <n-layout-content>
           <AppHeader>
