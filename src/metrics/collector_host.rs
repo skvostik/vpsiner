@@ -21,7 +21,7 @@ pub(crate) fn cpu_pct_mill(cpu_pct: f64) -> u64 {
     }
 }
 
-pub(crate) struct HostBucketizer {
+struct HostBucketizer {
     bck_cpu_pct_mill: GaugeBucketizer,
     bck_mem_used: GaugeBucketizer,
     bck_mem_total: GaugeBucketizer,
@@ -36,7 +36,7 @@ pub(crate) struct HostBucketizer {
 }
 
 impl HostBucketizer {
-    pub(crate) fn new(collect_interval: Duration) -> Self {
+    fn new(collect_interval: Duration) -> Self {
         let bucket_len_ms = MetricsResolution::TenSeconds.bucket_ms();
         let capacity = buffer_capacity(collect_interval, bucket_len_ms);
 
@@ -55,7 +55,7 @@ impl HostBucketizer {
         }
     }
 
-    pub(crate) fn push(&mut self, sample: &HostRawSample) {
+    fn push(&mut self, sample: &HostRawSample) {
         self.bck_cpu_pct_mill
             .push(sample.ts, cpu_pct_mill(sample.cpu_pct));
         self.bck_mem_used.push(sample.ts, sample.mem_used);
@@ -72,7 +72,7 @@ impl HostBucketizer {
             .push(sample.ts, sample.disk_write);
     }
 
-    pub(crate) fn collect(&self, bucket_end: TimestampMs) -> Option<HostSample> {
+    fn collect(&self, bucket_end: TimestampMs) -> Option<HostSample> {
         Some(HostSample {
             ts: bucket_end,
             cpu_pct_mill: self.bck_cpu_pct_mill.collect(bucket_end)?,

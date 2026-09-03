@@ -11,7 +11,7 @@ use crate::model::{ContainerRawSample, ContainerSample, MetricsResolution, Times
 /// Buckets a container produced nothing for before its bucketizers are dropped.
 const MAX_IDLE_FLUSHES: u32 = 2;
 
-pub(crate) struct ContainerBucketizer {
+struct ContainerBucketizer {
     bck_cpu_pct_mill: GaugeBucketizer,
     bck_mem_used: GaugeBucketizer,
     bck_mem_limit: GaugeBucketizer,
@@ -22,7 +22,7 @@ pub(crate) struct ContainerBucketizer {
 }
 
 impl ContainerBucketizer {
-    pub(crate) fn new(collect_interval: Duration) -> Self {
+    fn new(collect_interval: Duration) -> Self {
         let bucket_len_ms = MetricsResolution::TenSeconds.bucket_ms();
         let capacity = buffer_capacity(collect_interval, bucket_len_ms);
 
@@ -37,7 +37,7 @@ impl ContainerBucketizer {
         }
     }
 
-    pub(crate) fn push(&mut self, sample: &ContainerRawSample) {
+    fn push(&mut self, sample: &ContainerRawSample) {
         self.bck_cpu_pct_mill
             .push(sample.ts, cpu_pct_mill(sample.cpu_pct));
         self.bck_mem_used.push(sample.ts, sample.mem_used);
@@ -49,7 +49,7 @@ impl ContainerBucketizer {
             .push(sample.ts, sample.blk_write);
     }
 
-    pub(crate) fn collect(
+    fn collect(
         &self,
         bucket_end: TimestampMs,
         service: &str,
