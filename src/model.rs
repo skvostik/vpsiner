@@ -190,6 +190,46 @@ pub struct GroupPoint {
     pub blk_write_rate: Option<f64>,
 }
 
+/// Milli-units are the stored form; the API exposes the same value scaled back down.
+fn from_mill(value: Option<u64>) -> Option<f64> {
+    value.map(|value| value as f64 / 1_000.0)
+}
+
+impl From<HostSample> for HostPoint {
+    fn from(sample: HostSample) -> Self {
+        Self {
+            ts: sample.ts,
+            cpu_pct: sample.cpu_pct_mill as f64 / 1_000.0,
+            mem_used: sample.mem_used,
+            mem_total: sample.mem_total,
+            storage_used: sample.storage_used,
+            storage_total: sample.storage_total,
+            metrics_size: sample.metrics_size,
+            logs_size: sample.logs_size,
+            net_rx_rate: from_mill(sample.net_rx_rate_mill),
+            net_tx_rate: from_mill(sample.net_tx_rate_mill),
+            disk_read_rate: from_mill(sample.disk_read_rate_mill),
+            disk_write_rate: from_mill(sample.disk_write_rate_mill),
+        }
+    }
+}
+
+impl From<ContainerSample> for ContainerPoint {
+    fn from(sample: ContainerSample) -> Self {
+        Self {
+            ts: sample.ts,
+            service: sample.service,
+            cpu_pct: sample.cpu_pct_mill as f64 / 1_000.0,
+            mem_used: sample.mem_used,
+            mem_limit: sample.mem_limit,
+            net_rx_rate: from_mill(sample.net_rx_rate_mill),
+            net_tx_rate: from_mill(sample.net_tx_rate_mill),
+            blk_read_rate: from_mill(sample.blk_read_rate_mill),
+            blk_write_rate: from_mill(sample.blk_write_rate_mill),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct MetricsSnapshot {
     pub host: Option<HostPoint>,
@@ -311,6 +351,13 @@ pub enum MetricsResolution {
 }
 
 impl MetricsResolution {
+    /// Resolutions materialised by rolling up the `10s` tables.
+    pub const COARSE: [MetricsResolution; 3] = [
+        MetricsResolution::OneMinute,
+        MetricsResolution::FiveMinutes,
+        MetricsResolution::OneHour,
+    ];
+
     pub fn bucket_ms(self) -> u64 {
         match self {
             MetricsResolution::TenSeconds => 10_000,

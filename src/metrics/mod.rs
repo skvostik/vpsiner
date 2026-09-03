@@ -6,6 +6,7 @@ mod collector_host;
 pub mod downsampling;
 pub mod host;
 pub mod rate;
+mod rollup;
 mod schema;
 pub mod snapshot;
 pub mod store;

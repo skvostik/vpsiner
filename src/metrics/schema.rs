@@ -2,8 +2,8 @@
 //!
 //! Keeping SQL text, parameter binding, and row mapping together in one place avoids the
 //! mismatch risk of editing a query in one file while its binds/row mapping live in another.
-//! Only the `10s` tables are created and used today; the other resolutions are wired up so
-//! future rollup tables can reuse the same statements without duplicating column lists.
+//! Every resolution has its own pair of tables: the `10s` tables are written by the
+//! collectors, the coarser ones by the rollup that runs when a bucket closes.
 
 use sqlx::{QueryBuilder, Row, SqlitePool};
 
@@ -12,6 +12,14 @@ use crate::model::{ContainerSample, HostSample, MetricsResolution, TimeRange};
 
 /// Bound on rows per multi-row insert; SQLite allows 32766 bound parameters.
 const INSERT_CHUNK_ROWS: usize = 3_000;
+
+/// Rollups recompute whole buckets, so replaying one must overwrite rather than fail.
+fn insert_verb(resolution: MetricsResolution) -> &'static str {
+    match resolution {
+        MetricsResolution::TenSeconds => "INSERT",
+        _ => "INSERT OR REPLACE",
+    }
+}
 
 fn storage(err: impl std::fmt::Display) -> AppError {
     AppError::Storage(err.to_string())
@@ -96,9 +104,10 @@ pub async fn insert_host(
     sample: HostSample,
 ) -> AppResult<()> {
     sqlx::query(sqlx::AssertSqlSafe(format!(
-        "INSERT INTO {}
+        "{} INTO {}
                  (ts, cpu_pct_mill, mem_used, mem_total, storage_used, storage_total, metrics_size, logs_size, net_rx_rate_mill, net_tx_rate_mill, disk_read_rate_mill, disk_write_rate_mill)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        insert_verb(resolution),
         host_table(resolution)
     )))
     .bind(sample.ts)
@@ -129,8 +138,9 @@ pub async fn insert_containers(
     }
 
     let prefix = format!(
-        "INSERT INTO {}
+        "{} INTO {}
                 (ts, cid, service, cpu_pct_mill, mem_used, mem_limit, net_rx_rate_mill, net_tx_rate_mill, blk_read_rate_mill, blk_write_rate_mill) ",
+        insert_verb(resolution),
         container_table(resolution)
     );
 
@@ -253,6 +263,61 @@ pub async fn select_containers(
     .map_err(storage)?;
 
     rows.into_iter().map(container_sample_from_row).collect()
+}
+
+async fn select_bound(pool: &SqlitePool, sql: String) -> AppResult<Option<i64>> {
+    sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+        .fetch_one(pool)
+        .await
+        .map_err(storage)
+}
+
+/// Newest stored bucket in the host table for `resolution`, or `None` when it is empty.
+pub async fn select_host_max_ts(
+    pool: &SqlitePool,
+    resolution: MetricsResolution,
+) -> AppResult<Option<i64>> {
+    select_bound(
+        pool,
+        format!("SELECT MAX(ts) FROM {}", host_table(resolution)),
+    )
+    .await
+}
+
+/// Newest stored bucket in the container table for `resolution`, or `None` when it is empty.
+pub async fn select_containers_max_ts(
+    pool: &SqlitePool,
+    resolution: MetricsResolution,
+) -> AppResult<Option<i64>> {
+    select_bound(
+        pool,
+        format!("SELECT MAX(ts) FROM {}", container_table(resolution)),
+    )
+    .await
+}
+
+/// Oldest stored bucket in the host table for `resolution`, or `None` when it is empty.
+pub async fn select_host_min_ts(
+    pool: &SqlitePool,
+    resolution: MetricsResolution,
+) -> AppResult<Option<i64>> {
+    select_bound(
+        pool,
+        format!("SELECT MIN(ts) FROM {}", host_table(resolution)),
+    )
+    .await
+}
+
+/// Oldest stored bucket in the container table for `resolution`, or `None` when it is empty.
+pub async fn select_containers_min_ts(
+    pool: &SqlitePool,
+    resolution: MetricsResolution,
+) -> AppResult<Option<i64>> {
+    select_bound(
+        pool,
+        format!("SELECT MIN(ts) FROM {}", container_table(resolution)),
+    )
+    .await
 }
 
 /// Deletes rows older than `cutoff_ms` from the host table for `resolution`.

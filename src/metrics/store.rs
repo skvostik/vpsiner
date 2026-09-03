@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -10,7 +11,7 @@ use sqlx::sqlite::{
 
 use crate::error::{AppError, AppResult};
 use crate::metrics::downsampling::{downsample_container, downsample_host, sum_by_bucket};
-use crate::metrics::schema;
+use crate::metrics::{rollup, schema};
 use crate::model::{
     ContainerGroupMetrics, ContainerPoint, ContainerSample, HostPoint, HostSample,
     MetricsResolution, TimeRange,
@@ -57,6 +58,9 @@ const VACUUM_STEP: &str = "PRAGMA incremental_vacuum(1000)";
 pub struct SqliteMetricsStore {
     db_path: PathBuf,
     pool: SqlitePool,
+    /// Newest `10s` bucket written per source; a change of coarse bucket triggers a rollup.
+    last_host_ts: Mutex<Option<i64>>,
+    last_containers_ts: Mutex<Option<i64>>,
 }
 
 impl SqliteMetricsStore {
@@ -98,15 +102,44 @@ impl SqliteMetricsStore {
             .await
             .map_err(storage)?;
 
-        let store = Self { db_path, pool };
+        let store = Self {
+            db_path,
+            pool,
+            last_host_ts: Mutex::new(None),
+            last_containers_ts: Mutex::new(None),
+        };
         store.create_schema().await?;
+
+        *store.last_host_ts.lock().expect("poisoned") =
+            schema::select_host_max_ts(&store.pool, MetricsResolution::TenSeconds).await?;
+        *store.last_containers_ts.lock().expect("poisoned") =
+            schema::select_containers_max_ts(&store.pool, MetricsResolution::TenSeconds).await?;
+
         Ok(store)
     }
 
     async fn create_schema(&self) -> AppResult<()> {
-        schema::create_host_table(&self.pool, MetricsResolution::TenSeconds).await?;
-        schema::create_container_table(&self.pool, MetricsResolution::TenSeconds).await?;
+        for resolution in [
+            MetricsResolution::TenSeconds,
+            MetricsResolution::OneMinute,
+            MetricsResolution::FiveMinutes,
+            MetricsResolution::OneHour,
+        ] {
+            schema::create_host_table(&self.pool, resolution).await?;
+            schema::create_container_table(&self.pool, resolution).await?;
+        }
         Ok(())
+    }
+
+    /// Records the newest `10s` bucket, returning the one before it when time moved on.
+    ///
+    /// A `new_ts` that does not move forward means the clock stepped backwards, so no
+    /// earlier bucket can be treated as complete.
+    fn advance(cursor: &Mutex<Option<i64>>, new_ts: i64) -> Option<i64> {
+        let mut last = cursor.lock().expect("poisoned");
+        let previous = last.filter(|previous| new_ts > *previous);
+        *last = Some(new_ts);
+        previous
     }
 
     /// Returns free pages to the filesystem in bounded steps so a large retention
@@ -147,6 +180,31 @@ fn storage(err: impl std::fmt::Display) -> AppError {
     AppError::Storage(err.to_string())
 }
 
+/// The head of `range` that predates the rollup table and must come from the `10s` rows.
+///
+/// Rollups only run forwards, so a range reaching back before the first rolled-up bucket
+/// would otherwise come back short until retention drops that older data.
+fn uncovered_head(
+    stored_min_ts: Option<i64>,
+    range: TimeRange,
+    resolution: MetricsResolution,
+) -> Option<TimeRange> {
+    if resolution == MetricsResolution::TenSeconds {
+        return None;
+    }
+
+    let bucket_ms = i64::try_from(resolution.bucket_ms()).expect("bucket size exceeds i64");
+    let uncovered_to = match stored_min_ts {
+        Some(min_ts) => min_ts - bucket_ms,
+        None => range.to,
+    };
+
+    (uncovered_to >= range.from).then_some(TimeRange {
+        from: range.from,
+        to: uncovered_to.min(range.to),
+    })
+}
+
 async fn file_size_bytes(path: &Path) -> AppResult<u64> {
     match tokio::fs::metadata(path).await {
         Ok(metadata) => Ok(metadata.len()),
@@ -163,22 +221,49 @@ impl MetricsStore for SqliteMetricsStore {
     }
 
     async fn delete_before(&self, cutoff_ms: i64) -> AppResult<u64> {
-        let host = schema::delete_host_before(&self.pool, MetricsResolution::TenSeconds, cutoff_ms)
-            .await?;
-        let containers =
-            schema::delete_containers_before(&self.pool, MetricsResolution::TenSeconds, cutoff_ms)
-                .await?;
+        let mut deleted = 0;
+        for resolution in [
+            MetricsResolution::TenSeconds,
+            MetricsResolution::OneMinute,
+            MetricsResolution::FiveMinutes,
+            MetricsResolution::OneHour,
+        ] {
+            deleted += schema::delete_host_before(&self.pool, resolution, cutoff_ms).await?;
+            deleted += schema::delete_containers_before(&self.pool, resolution, cutoff_ms).await?;
+        }
 
         self.reclaim_free_pages().await;
-        Ok(host + containers)
+        Ok(deleted)
     }
 
     async fn insert_host(&self, sample: HostSample) -> AppResult<()> {
-        schema::insert_host(&self.pool, MetricsResolution::TenSeconds, sample).await
+        let ts = sample.ts;
+        schema::insert_host(&self.pool, MetricsResolution::TenSeconds, sample).await?;
+
+        // A failed rollup must not fail the insert, or the collector would stop
+        // announcing the bucket and every live stream would stall with it.
+        if let Some(previous) = Self::advance(&self.last_host_ts, ts)
+            && let Err(err) = rollup::roll_up_host(&self.pool, previous, ts).await
+        {
+            tracing::error!(error = %err, "failed to roll up host metrics");
+        }
+
+        Ok(())
     }
 
     async fn insert_containers(&self, samples: Vec<ContainerSample>) -> AppResult<()> {
-        schema::insert_containers(&self.pool, MetricsResolution::TenSeconds, samples).await
+        let Some(ts) = samples.iter().map(|sample| sample.ts).max() else {
+            return Ok(());
+        };
+        schema::insert_containers(&self.pool, MetricsResolution::TenSeconds, samples).await?;
+
+        if let Some(previous) = Self::advance(&self.last_containers_ts, ts)
+            && let Err(err) = rollup::roll_up_containers(&self.pool, previous, ts).await
+        {
+            tracing::error!(error = %err, "failed to roll up container metrics");
+        }
+
+        Ok(())
     }
 
     async fn query_host(
@@ -186,11 +271,27 @@ impl MetricsStore for SqliteMetricsStore {
         range: TimeRange,
         resolution: MetricsResolution,
     ) -> AppResult<Vec<HostPoint>> {
-        let samples = schema::select_host(&self.pool, MetricsResolution::TenSeconds, range).await?;
+        let stored = schema::select_host(&self.pool, resolution, range).await?;
 
-        let mut points = downsample_host(samples, resolution);
-        points.retain(|point| point.ts >= range.from);
-        Ok(points)
+        let mut samples = match uncovered_head(
+            schema::select_host_min_ts(&self.pool, resolution).await?,
+            range,
+            resolution,
+        ) {
+            Some(uncovered) => {
+                let raw = schema::select_host(&self.pool, MetricsResolution::TenSeconds, uncovered)
+                    .await?;
+                downsample_host(raw, resolution)
+            }
+            None => Vec::new(),
+        };
+        samples.extend(stored);
+
+        Ok(samples
+            .into_iter()
+            .filter(|sample| sample.ts >= range.from)
+            .map(HostPoint::from)
+            .collect())
     }
 
     async fn query_containers(
@@ -198,26 +299,54 @@ impl MetricsStore for SqliteMetricsStore {
         range: TimeRange,
         resolution: MetricsResolution,
     ) -> AppResult<HashMap<String, ContainerGroupMetrics>> {
-        let samples =
-            schema::select_containers(&self.pool, MetricsResolution::TenSeconds, range).await?;
+        let stored = schema::select_containers(&self.pool, resolution, range).await?;
+
+        let uncovered = uncovered_head(
+            schema::select_containers_min_ts(&self.pool, resolution).await?,
+            range,
+            resolution,
+        );
 
         let mut by_service_and_container: HashMap<String, HashMap<String, Vec<ContainerSample>>> =
             HashMap::new();
-        for sample in samples {
+        let mut group = |sample: ContainerSample| {
             by_service_and_container
                 .entry(sample.service.clone())
                 .or_default()
                 .entry(sample.cid.clone())
                 .or_default()
                 .push(sample);
+        };
+
+        if let Some(uncovered) = uncovered {
+            let raw =
+                schema::select_containers(&self.pool, MetricsResolution::TenSeconds, uncovered)
+                    .await?;
+            let mut raw_by_container: HashMap<String, Vec<ContainerSample>> = HashMap::new();
+            for sample in raw {
+                raw_by_container
+                    .entry(sample.cid.clone())
+                    .or_default()
+                    .push(sample);
+            }
+            for samples in raw_by_container.into_values() {
+                downsample_container(samples, resolution)
+                    .into_iter()
+                    .for_each(&mut group);
+            }
         }
+        stored.into_iter().for_each(&mut group);
 
         let mut by_service = HashMap::new();
         for (service, by_container) in by_service_and_container {
             let mut containers: HashMap<String, Vec<ContainerPoint>> = HashMap::new();
-            for (cid, samples) in by_container {
-                let mut points = downsample_container(samples, resolution);
-                points.retain(|point| point.ts >= range.from);
+            for (cid, mut samples) in by_container {
+                samples.sort_by_key(|sample| sample.ts);
+                let points = samples
+                    .into_iter()
+                    .filter(|sample| sample.ts >= range.from)
+                    .map(ContainerPoint::from)
+                    .collect();
                 containers.insert(cid, points);
             }
             let sum = sum_by_bucket(containers.values());
@@ -293,9 +422,9 @@ mod tests {
         store.insert_host(host_sample(20_000)).await.unwrap();
         store
             .insert_containers(vec![
-                container_sample(100, "web"),
-                container_sample(200, "worker"),
-                container_sample(300, "web"),
+                container_sample(10_000, "web"),
+                container_sample(20_000, "worker"),
+                container_sample(30_000, "web"),
             ])
             .await
             .unwrap();
@@ -318,7 +447,10 @@ mod tests {
 
         let by_service = store
             .query_containers(
-                TimeRange { from: 0, to: 250 },
+                TimeRange {
+                    from: 0,
+                    to: 25_000,
+                },
                 MetricsResolution::TenSeconds,
             )
             .await
@@ -452,6 +584,163 @@ mod tests {
 
         assert_eq!(store.delete_before(20_000).await.unwrap(), 2);
         assert_eq!(store.delete_before(20_000).await.unwrap(), 0);
+        let _ = tokio::fs::remove_dir_all(directory).await;
+    }
+
+    /// One hour of 10s buckets, plus one more sample so the last hour closes.
+    async fn insert_an_hour(store: &SqliteMetricsStore) {
+        for bucket in 1..=361 {
+            store
+                .insert_host(host_sample(bucket * 10_000))
+                .await
+                .unwrap();
+        }
+    }
+
+    async fn count(store: &SqliteMetricsStore, table: &str) -> i64 {
+        sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")))
+            .fetch_one(&store.pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn rolls_closed_buckets_up_into_every_coarse_table() {
+        let directory = test_directory("rollup");
+        let store = test_store(directory.join("metrics.db")).await;
+
+        insert_an_hour(&store).await;
+
+        assert_eq!(count(&store, "host_metrics_1m").await, 60);
+        assert_eq!(count(&store, "host_metrics_5m").await, 12);
+        assert_eq!(count(&store, "host_metrics_1h").await, 1);
+
+        let hours = store
+            .query_host(
+                TimeRange {
+                    from: 0,
+                    to: 3_600_000,
+                },
+                MetricsResolution::OneHour,
+            )
+            .await
+            .unwrap();
+        assert_eq!(hours.len(), 1);
+        assert_eq!(hours[0].ts, 3_600_000);
+        assert_eq!(hours[0].cpu_pct, 12.5);
+        assert_eq!(hours[0].net_rx_rate, Some(300.0));
+
+        let _ = tokio::fs::remove_dir_all(directory).await;
+    }
+
+    #[tokio::test]
+    async fn the_open_coarse_bucket_is_not_stored() {
+        let directory = test_directory("rollup-open");
+        let store = test_store(directory.join("metrics.db")).await;
+
+        // Halfway through the first minute.
+        for bucket in 1..=3 {
+            store
+                .insert_host(host_sample(bucket * 10_000))
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(count(&store, "host_metrics_1m").await, 0);
+
+        let _ = tokio::fs::remove_dir_all(directory).await;
+    }
+
+    #[tokio::test]
+    async fn resuming_against_an_existing_database_rolls_up_the_straddled_bucket() {
+        let directory = test_directory("rollup-restart");
+        let database_path = directory.join("metrics.db");
+
+        let store = test_store(&database_path).await;
+        for bucket in 1..=6 {
+            store
+                .insert_host(host_sample(bucket * 10_000))
+                .await
+                .unwrap();
+        }
+        assert_eq!(count(&store, "host_metrics_1m").await, 0);
+        store.close().await;
+
+        let store = test_store(&database_path).await;
+        store.insert_host(host_sample(70_000)).await.unwrap();
+
+        assert_eq!(count(&store, "host_metrics_1m").await, 1);
+        let _ = tokio::fs::remove_dir_all(directory).await;
+    }
+
+    #[tokio::test]
+    async fn replaying_a_bucket_overwrites_rather_than_duplicating_it() {
+        let directory = test_directory("rollup-replay");
+        let store = test_store(directory.join("metrics.db")).await;
+
+        insert_an_hour(&store).await;
+        rollup::roll_up_host(&store.pool, 3_600_000, 3_610_000)
+            .await
+            .unwrap();
+
+        assert_eq!(count(&store, "host_metrics_1h").await, 1);
+        let _ = tokio::fs::remove_dir_all(directory).await;
+    }
+
+    #[tokio::test]
+    async fn a_backwards_clock_step_closes_no_bucket() {
+        let directory = test_directory("rollup-backwards");
+        let store = test_store(directory.join("metrics.db")).await;
+
+        store.insert_host(host_sample(120_000)).await.unwrap();
+        store.insert_host(host_sample(50_000)).await.unwrap();
+
+        assert_eq!(count(&store, "host_metrics_1m").await, 0);
+        let _ = tokio::fs::remove_dir_all(directory).await;
+    }
+
+    #[tokio::test]
+    async fn coarse_queries_fall_back_to_raw_rows_predating_the_rollup() {
+        let directory = test_directory("rollup-fallback");
+        let store = test_store(directory.join("metrics.db")).await;
+
+        // Written straight to the 10s table, as an upgraded database would already hold.
+        for bucket in 1..=6 {
+            schema::insert_host(
+                &store.pool,
+                MetricsResolution::TenSeconds,
+                host_sample(bucket * 10_000),
+            )
+            .await
+            .unwrap();
+        }
+
+        let minutes = store
+            .query_host(
+                TimeRange {
+                    from: 0,
+                    to: 60_000,
+                },
+                MetricsResolution::OneMinute,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(minutes.len(), 1);
+        assert_eq!(minutes[0].ts, 60_000);
+        assert_eq!(minutes[0].cpu_pct, 12.5);
+        let _ = tokio::fs::remove_dir_all(directory).await;
+    }
+
+    #[tokio::test]
+    async fn retention_expires_every_resolution() {
+        let directory = test_directory("retention-rollups");
+        let store = test_store(directory.join("metrics.db")).await;
+
+        insert_an_hour(&store).await;
+
+        // 360 of the 361 raw buckets, plus all 60 + 12 + 1 rolled-up ones.
+        assert_eq!(store.delete_before(3_610_000).await.unwrap(), 433);
         let _ = tokio::fs::remove_dir_all(directory).await;
     }
 }

@@ -1,23 +1,13 @@
-//! Turns raw stored samples into the bucketed, rate-carrying points the API returns.
+//! Aggregates stored 10s samples into the coarser buckets held by the rollup tables.
 
 use std::collections::HashMap;
 
-use crate::model::{
-    ContainerPoint, ContainerSample, GroupPoint, HostPoint, HostSample, MetricsResolution,
-};
+use crate::model::{ContainerPoint, ContainerSample, GroupPoint, HostSample, MetricsResolution};
 
 /// The end of the half-open `(bucket_end - bucket_ms, bucket_end]` window containing `ts`.
 pub(crate) fn bucket_end(ts: i64, bucket_ms: u64) -> i64 {
     let bucket_ms = i64::try_from(bucket_ms).expect("bucket size exceeds i64");
     -(-ts).div_euclid(bucket_ms) * bucket_ms
-}
-
-fn now_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 /// Adds one contributor to an aggregate rate; the total stays `None` only while every
@@ -58,8 +48,8 @@ impl OptionalGauge {
         }
     }
 
-    fn mean_rate(&self) -> Option<f64> {
-        (self.count > 0).then(|| (self.total / self.count as u128) as f64 / 1_000.0)
+    fn mean_rate(&self) -> Option<u64> {
+        (self.count > 0).then(|| (self.total / self.count as u128) as u64)
     }
 }
 
@@ -79,31 +69,32 @@ impl HostGauges {
         self.disk_write_rate_mill.add(sample.disk_write_rate_mill);
     }
 
-    fn finish(&self, ts: i64) -> Option<HostPoint> {
+    fn finish(&self, ts: i64) -> Option<HostSample> {
         if self.count == 0 {
             return None;
         }
         let count = self.count as u128;
-        Some(HostPoint {
+        Some(HostSample {
             ts,
-            cpu_pct: (self.cpu_pct_mill / count) as f64 / 1_000.0,
+            cpu_pct_mill: (self.cpu_pct_mill / count) as u64,
             mem_used: (self.mem_used / count) as u64,
             mem_total: (self.mem_total / count) as u64,
             storage_used: (self.storage_used / count) as u64,
             storage_total: (self.storage_total / count) as u64,
             metrics_size: (self.metrics_size / count) as u64,
             logs_size: (self.logs_size / count) as u64,
-            net_rx_rate: self.net_rx_rate_mill.mean_rate(),
-            net_tx_rate: self.net_tx_rate_mill.mean_rate(),
-            disk_read_rate: self.disk_read_rate_mill.mean_rate(),
-            disk_write_rate: self.disk_write_rate_mill.mean_rate(),
+            net_rx_rate_mill: self.net_rx_rate_mill.mean_rate(),
+            net_tx_rate_mill: self.net_tx_rate_mill.mean_rate(),
+            disk_read_rate_mill: self.disk_read_rate_mill.mean_rate(),
+            disk_write_rate_mill: self.disk_write_rate_mill.mean_rate(),
         })
     }
 }
 
-pub fn downsample_host(samples: Vec<HostSample>, resolution: MetricsResolution) -> Vec<HostPoint> {
+/// Expects samples ordered by `ts`; every bucket it emits is fully elapsed.
+pub fn downsample_host(samples: Vec<HostSample>, resolution: MetricsResolution) -> Vec<HostSample> {
     let bucket_ms = resolution.bucket_ms();
-    let mut points: Vec<HostPoint> = Vec::new();
+    let mut points: Vec<HostSample> = Vec::new();
     let mut current_bucket = i64::MIN;
     let mut gauges = HostGauges::default();
 
@@ -119,8 +110,6 @@ pub fn downsample_host(samples: Vec<HostSample>, resolution: MetricsResolution) 
     }
 
     points.extend(gauges.finish(current_bucket));
-    // ts is the bucket's closing instant, so a bucket has fully elapsed exactly when ts <= now.
-    points.retain(|point| point.ts <= now_ms());
     points
 }
 
@@ -135,12 +124,14 @@ struct ContainerGauges {
     blk_read_rate_mill: OptionalGauge,
     blk_write_rate_mill: OptionalGauge,
     service: String,
+    cid: String,
 }
 
 impl ContainerGauges {
     fn add(&mut self, sample: &ContainerSample) {
         if self.count == 0 {
             self.service = sample.service.clone();
+            self.cid = sample.cid.clone();
         }
         self.count += 1;
         self.cpu_pct_mill += sample.cpu_pct_mill as u128;
@@ -152,21 +143,22 @@ impl ContainerGauges {
         self.blk_write_rate_mill.add(sample.blk_write_rate_mill);
     }
 
-    fn finish(&self, ts: i64) -> Option<ContainerPoint> {
+    fn finish(&self, ts: i64) -> Option<ContainerSample> {
         if self.count == 0 {
             return None;
         }
         let count = self.count as u128;
-        Some(ContainerPoint {
+        Some(ContainerSample {
             ts,
             service: self.service.clone(),
-            cpu_pct: (self.cpu_pct_mill / count) as f64 / 1_000.0,
+            cid: self.cid.clone(),
+            cpu_pct_mill: (self.cpu_pct_mill / count) as u64,
             mem_used: (self.mem_used / count) as u64,
             mem_limit: (self.mem_limit / count) as u64,
-            net_rx_rate: self.net_rx_rate_mill.mean_rate(),
-            net_tx_rate: self.net_tx_rate_mill.mean_rate(),
-            blk_read_rate: self.blk_read_rate_mill.mean_rate(),
-            blk_write_rate: self.blk_write_rate_mill.mean_rate(),
+            net_rx_rate_mill: self.net_rx_rate_mill.mean_rate(),
+            net_tx_rate_mill: self.net_tx_rate_mill.mean_rate(),
+            blk_read_rate_mill: self.blk_read_rate_mill.mean_rate(),
+            blk_write_rate_mill: self.blk_write_rate_mill.mean_rate(),
         })
     }
 }
@@ -175,9 +167,9 @@ impl ContainerGauges {
 pub fn downsample_container(
     samples: Vec<ContainerSample>,
     resolution: MetricsResolution,
-) -> Vec<ContainerPoint> {
+) -> Vec<ContainerSample> {
     let bucket_ms = resolution.bucket_ms();
-    let mut points: Vec<ContainerPoint> = Vec::new();
+    let mut points: Vec<ContainerSample> = Vec::new();
     let mut current_bucket = i64::MIN;
     let mut gauges = ContainerGauges::default();
 
@@ -193,8 +185,6 @@ pub fn downsample_container(
     }
 
     points.extend(gauges.finish(current_bucket));
-    // ts is the bucket's closing instant, so a bucket has fully elapsed exactly when ts <= now.
-    points.retain(|point| point.ts <= now_ms());
     points
 }
 
@@ -290,7 +280,7 @@ mod tests {
 
         assert_eq!(points.len(), 1);
         assert_eq!(points[0].ts, 120_000);
-        assert_eq!(points[0].net_rx_rate, Some(200.0));
+        assert_eq!(points[0].net_rx_rate_mill, Some(200_000));
     }
 
     #[test]
@@ -301,7 +291,7 @@ mod tests {
         );
 
         assert_eq!(points.len(), 1);
-        assert_eq!(points[0].net_rx_rate, Some(5_000.0));
+        assert_eq!(points[0].net_rx_rate_mill, Some(5_000_000));
     }
 
     #[test]
@@ -315,7 +305,7 @@ mod tests {
         );
 
         assert_eq!(points.len(), 1);
-        assert_eq!(points[0].net_rx_rate, None);
+        assert_eq!(points[0].net_rx_rate_mill, None);
     }
 
     #[test]
@@ -329,7 +319,7 @@ mod tests {
 
         assert_eq!(points.len(), 1);
         assert_eq!(points[0].ts, 120_000);
-        assert_eq!(points[0].net_rx_rate, Some(200.0));
+        assert_eq!(points[0].net_rx_rate_mill, Some(200_000));
     }
 
     #[test]
@@ -343,22 +333,26 @@ mod tests {
         );
 
         assert_eq!(points.len(), 1);
-        assert_eq!(points[0].net_rx_rate, None);
+        assert_eq!(points[0].net_rx_rate_mill, None);
+    }
+
+    fn points(samples: Vec<ContainerSample>) -> Vec<ContainerPoint> {
+        samples.into_iter().map(ContainerPoint::from).collect()
     }
 
     #[test]
     fn group_sum_adds_present_rates_only() {
-        let known = downsample_container(
+        let known = points(downsample_container(
             vec![container_counter(60_000, "known", 1_000_000)],
             MetricsResolution::OneMinute,
-        );
-        let unknown = downsample_container(
+        ));
+        let unknown = points(downsample_container(
             vec![ContainerSample {
                 net_rx_rate_mill: None,
                 ..container_counter(60_000, "unknown", 0)
             }],
             MetricsResolution::OneMinute,
-        );
+        ));
 
         let sum = sum_by_bucket([known, unknown].iter());
 
@@ -368,18 +362,18 @@ mod tests {
 
     #[test]
     fn group_sum_does_not_spike_when_a_container_appears() {
-        let steady = downsample_container(
+        let steady = points(downsample_container(
             vec![
                 container_counter(60_000, "steady", 0),
                 container_counter(120_000, "steady", 1_000_000),
             ],
             MetricsResolution::OneMinute,
-        );
+        ));
         // Joins late; its stored value is already a rate, so nothing accumulates into a spike.
-        let joining = downsample_container(
+        let joining = points(downsample_container(
             vec![container_counter(120_000, "joining", 0)],
             MetricsResolution::OneMinute,
-        );
+        ));
 
         let sum = sum_by_bucket([steady, joining].iter());
 
