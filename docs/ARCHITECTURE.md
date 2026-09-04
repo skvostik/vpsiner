@@ -2,6 +2,7 @@
 
 - [Architecture overview](#architecture-overview)
   - [Components](#components)
+    - [Storage layout](#storage-layout)
   - [DockerService](#dockerservice)
   - [ContainerRegistry](#containerregistry)
   - [LogBuffer](#logbuffer)
@@ -87,6 +88,29 @@ flowchart TB
 - `GET /stream/metrics/current` and `GET /stream/containers`: Server-Sent Events push equivalents of `GET /metrics/current` and `GET /containers`. Both are driven by a `tokio::sync::watch` revision counter bumped by the underlying in-memory cache (the metrics snapshot, and the ContainerRegistry's `containers_info` cache respectively) whenever it changes, instead of clients polling on a timer.
 
 This is the clean backend wiring: the API reads from Docker and the stores, the metrics collector reads from Sysinfo and Docker and writes metrics, and the log ingestion pipeline reads from Docker and writes logs/metadata.
+
+### Storage layout
+
+Everything lives under `VPSINER_DATA_PATH` (`data` by default):
+
+| Path                             | Owner          | Shape                                                   |
+| -------------------------------- | -------------- | ------------------------------------------------------- |
+| `versions.json`                  | `db_version`   | Schema versions of the three databases                  |
+| `metadata/metadata.db`           | metadata store | Single SQLite file, opened at startup                   |
+| `metrics/metrics.db`             | metrics store  | Single SQLite file plus `-wal`, opened at startup       |
+| `logs/{service}/{YYYY}_w{WW}.db` | log store      | One SQLite file per service per ISO week, opened lazily |
+
+`src/db_version.rs` owns these paths and gates startup. No `versions.json` means
+a first run: the three directories are deleted and the manifest is written.
+Otherwise it compares the manifest against the `*_DB_VERSION` constants before
+any store is opened, and exits with code 1 on a mismatch unless
+`VPSINER_FORCE_DB_MIGRATION` is set, in which case the mismatched directories are
+deleted. A mismatch for a directory that does not exist is just recorded, so an
+operator can also resolve the error by deleting the directories by hand.
+
+Additive changes stay compatible through the `CREATE ... IF NOT EXISTS` calls in
+each store. Bumping a constant is the deliberate way to declare a schema change
+a clean break and have the old data discarded.
 
 
 ## DockerService
