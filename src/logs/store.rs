@@ -279,13 +279,13 @@ impl LogStore for SqliteLogStore {
             let pool = self.pools.pool(&path, service, &week).await?;
             let mut tx = pool.begin().await.map_err(storage)?;
             for line in lines {
-                let level = detect_level(&line.line).map(level_name);
+                let level = detect_level(&line.line).map(LogLevel::storage_code);
                 sqlx::query(
                     "INSERT INTO logs (ts, cid, stream, level, line) VALUES (?, ?, ?, ?, ?)",
                 )
                 .bind(line.ts)
                 .bind(line.cid.as_bytes().as_slice())
-                .bind(stream_name(line.stream))
+                .bind(line.stream.storage_code())
                 .bind(level)
                 .bind(line.line)
                 .execute(&mut *tx)
@@ -431,17 +431,6 @@ fn cursor_of(entry: &StoredLog) -> LogCursor {
     }
 }
 
-fn stream_name(stream: LogStream) -> &'static str {
-    match stream {
-        LogStream::Stdout => "stdout",
-        LogStream::Stderr => "stderr",
-    }
-}
-
-fn level_name(level: LogLevel) -> String {
-    format!("{level:?}").to_ascii_lowercase()
-}
-
 /// Every `*.db` week file in `service_dir` with its week start, ascending. `None` when absent.
 async fn read_week_files(service_dir: &Path) -> AppResult<Option<Vec<(String, i64)>>> {
     let mut entries = match tokio::fs::read_dir(service_dir).await {
@@ -509,7 +498,7 @@ fn push_filters(builder: &mut QueryBuilder<Sqlite>, filter: &LogFilter) {
             if index > 0 {
                 builder.push(", ");
             }
-            builder.push_bind(level_name(*level));
+            builder.push_bind(level.storage_code());
         }
         builder.push(")");
     }
@@ -519,7 +508,7 @@ fn push_filters(builder: &mut QueryBuilder<Sqlite>, filter: &LogFilter) {
             if index > 0 {
                 builder.push(", ");
             }
-            builder.push_bind(stream_name(*stream));
+            builder.push_bind(stream.storage_code());
         }
         builder.push(")");
     }
@@ -558,20 +547,10 @@ fn push_cursor(
 }
 
 fn decode_row(row: &SqliteRow, service: &str, week: &str) -> Option<StoredLog> {
-    let stream = match row.get::<String, _>("stream").as_str() {
-        "stdout" => LogStream::Stdout,
-        "stderr" => LogStream::Stderr,
-        _ => return None,
-    };
+    let stream = LogStream::from_storage_code(row.get("stream"))?;
     let level = row
-        .get::<Option<String>, _>("level")
-        .and_then(|value| match value.as_str() {
-            "debug" => Some(LogLevel::Debug),
-            "info" => Some(LogLevel::Info),
-            "warn" => Some(LogLevel::Warn),
-            "error" => Some(LogLevel::Error),
-            _ => None,
-        });
+        .get::<Option<i64>, _>("level")
+        .and_then(LogLevel::from_storage_code);
     let cid: Vec<u8> = row.get("cid");
     let cid = ContainerId::from_bytes(&cid)?;
     let ts = row.get("ts");
@@ -632,8 +611,8 @@ async fn migrate(pool: &SqlitePool) -> AppResult<()> {
             id INTEGER PRIMARY KEY,
             ts INTEGER NOT NULL,
             cid BLOB NOT NULL,
-            stream TEXT NOT NULL,
-            level TEXT,
+            stream INTEGER NOT NULL,
+            level INTEGER,
             line TEXT NOT NULL
         )",
     )
@@ -747,6 +726,54 @@ mod tests {
 
         assert_eq!(page.items.len(), 1);
         assert_eq!(page.items[0].line, "plain message");
+    }
+
+    #[tokio::test]
+    async fn stores_compact_stream_and_level_codes() {
+        let store = test_store("compact-codes");
+        let ts = 1_700_000_000_000;
+        let stdout = line(ts, "[INFO] stdout message");
+        let mut stderr = line(ts + 1, "[ERROR] stderr message");
+        stderr.stream = LogStream::Stderr;
+        store.append("group", vec![stdout, stderr]).await.unwrap();
+
+        let week = week_database_name(ts).unwrap();
+        let path = store.root.join(safe_service_path("group")).join(&week);
+        let pool = store.pools.pool(&path, "group", &week).await.unwrap();
+        let rows = sqlx::query("SELECT stream, level FROM logs ORDER BY ts")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            rows[0].get::<i64, _>("stream"),
+            LogStream::Stdout.storage_code()
+        );
+        assert_eq!(
+            rows[0].get::<Option<i64>, _>("level"),
+            Some(LogLevel::Info.storage_code())
+        );
+        assert_eq!(
+            rows[1].get::<i64, _>("stream"),
+            LogStream::Stderr.storage_code()
+        );
+        assert_eq!(
+            rows[1].get::<Option<i64>, _>("level"),
+            Some(LogLevel::Error.storage_code())
+        );
+
+        let page = store
+            .query(
+                "group",
+                LogFilter {
+                    levels: vec![LogLevel::Error],
+                    streams: vec![LogStream::Stderr],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].line, "[ERROR] stderr message");
     }
 
     #[tokio::test]

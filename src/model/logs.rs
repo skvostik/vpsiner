@@ -12,6 +12,23 @@ pub enum LogStream {
     Stderr,
 }
 
+impl LogStream {
+    pub(crate) fn storage_code(self) -> i64 {
+        match self {
+            Self::Stdout => 0,
+            Self::Stderr => 1,
+        }
+    }
+
+    pub(crate) fn from_storage_code(code: i64) -> Option<Self> {
+        match code {
+            0 => Some(Self::Stdout),
+            1 => Some(Self::Stderr),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LogLevel {
@@ -19,6 +36,27 @@ pub enum LogLevel {
     Info,
     Warn,
     Error,
+}
+
+impl LogLevel {
+    pub(crate) fn storage_code(self) -> i64 {
+        match self {
+            Self::Debug => 20,
+            Self::Info => 30,
+            Self::Warn => 40,
+            Self::Error => 50,
+        }
+    }
+
+    pub(crate) fn from_storage_code(code: i64) -> Option<Self> {
+        match code {
+            20 => Some(Self::Debug),
+            30 => Some(Self::Info),
+            40 => Some(Self::Warn),
+            50 => Some(Self::Error),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
