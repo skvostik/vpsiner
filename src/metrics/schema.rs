@@ -8,7 +8,11 @@
 use sqlx::{QueryBuilder, Row, SqlitePool};
 
 use crate::error::{AppError, AppResult};
-use crate::model::{ContainerSample, HostSample, MetricsResolution, TimeRange};
+use crate::model::{
+    container_id::ContainerId,
+    metrics::{ContainerSample, HostSample, MetricsResolution},
+    time::TimeRange,
+};
 
 /// Bound on rows per multi-row insert; SQLite allows 32766 bound parameters.
 const INSERT_CHUNK_ROWS: usize = 3_000;
@@ -78,7 +82,7 @@ pub async fn create_container_table(
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "CREATE TABLE IF NOT EXISTS {} (
             ts INTEGER NOT NULL,
-            cid TEXT NOT NULL,
+            cid BLOB NOT NULL,
             service TEXT NOT NULL,
             cpu_pct_mill INTEGER NOT NULL,
             mem_used INTEGER NOT NULL,
@@ -149,7 +153,7 @@ pub async fn insert_containers(
         let mut builder = QueryBuilder::new(prefix.clone());
         builder.push_values(chunk, |mut row, sample| {
             row.push_bind(sample.ts)
-                .push_bind(sample.cid.clone())
+                .push_bind(sample.cid.as_bytes().as_slice())
                 .push_bind(sample.service.clone())
                 .push_bind(sample.cpu_pct_mill as i64)
                 .push_bind(sample.mem_used as i64)
@@ -211,7 +215,11 @@ fn container_sample_from_row(row: sqlx::sqlite::SqliteRow) -> AppResult<Containe
 
     Ok(ContainerSample {
         ts: row.try_get("ts").map_err(storage)?,
-        cid: row.try_get("cid").map_err(storage)?,
+        cid: {
+            let bytes: Vec<u8> = row.try_get("cid").map_err(storage)?;
+            ContainerId::from_bytes(&bytes)
+                .ok_or_else(|| AppError::Storage("stored cid is not 6 bytes".into()))?
+        },
         service: row.try_get("service").map_err(storage)?,
         cpu_pct_mill: count(&row, "cpu_pct_mill")?,
         mem_used: count(&row, "mem_used")?,

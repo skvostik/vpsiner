@@ -13,8 +13,12 @@ use crate::error::{AppError, AppResult};
 use crate::metrics::downsampling::sum_by_bucket;
 use crate::metrics::{rollup, schema};
 use crate::model::{
-    ContainerGroupMetrics, ContainerPoint, ContainerSample, HostPoint, HostSample,
-    MetricsResolution, TimeRange,
+    container_id::ContainerId,
+    metrics::{
+        ContainerGroupMetrics, ContainerPoint, ContainerSample, HostPoint, HostSample,
+        MetricsResolution,
+    },
+    time::TimeRange,
 };
 
 /// Persistence for `metrics.db`.
@@ -264,20 +268,22 @@ impl MetricsStore for SqliteMetricsStore {
         range: TimeRange,
         resolution: MetricsResolution,
     ) -> AppResult<HashMap<String, ContainerGroupMetrics>> {
-        let mut by_service_and_container: HashMap<String, HashMap<String, Vec<ContainerSample>>> =
-            HashMap::new();
+        let mut by_service_and_container: HashMap<
+            String,
+            HashMap<ContainerId, Vec<ContainerSample>>,
+        > = HashMap::new();
         for sample in schema::select_containers(&self.pool, resolution, range).await? {
             by_service_and_container
                 .entry(sample.service.clone())
                 .or_default()
-                .entry(sample.cid.clone())
+                .entry(sample.cid)
                 .or_default()
                 .push(sample);
         }
 
         let mut by_service = HashMap::new();
         for (service, by_container) in by_service_and_container {
-            let mut containers: HashMap<String, Vec<ContainerPoint>> = HashMap::new();
+            let mut containers: HashMap<ContainerId, Vec<ContainerPoint>> = HashMap::new();
             for (cid, mut samples) in by_container {
                 samples.sort_by_key(|sample| sample.ts);
                 let points = samples
@@ -340,7 +346,7 @@ mod tests {
         ContainerSample {
             ts,
             service: service.into(),
-            cid: "abc123".into(),
+            cid: ContainerId::parse("abc123abc123").unwrap(),
             cpu_pct_mill: 25_000,
             mem_used: 1_000,
             mem_limit: 2_000,
@@ -398,9 +404,10 @@ mod tests {
         assert_eq!(containers.sum[0].ts, 10_000);
         assert_eq!(containers.sum[0].cpu_pct, 25.0);
         assert_eq!(containers.containers.len(), 1);
-        assert_eq!(containers.containers["abc123"][0].ts, 10_000);
-        assert_eq!(containers.containers["abc123"][0].service, "web");
-        assert_eq!(containers.containers["abc123"][0].mem_used, 1_000);
+        let cid = ContainerId::parse("abc123abc123").unwrap();
+        assert_eq!(containers.containers[&cid][0].ts, 10_000);
+        assert_eq!(containers.containers[&cid][0].service, "web");
+        assert_eq!(containers.containers[&cid][0].mem_used, 1_000);
 
         let _ = tokio::fs::remove_dir_all(directory).await;
     }
@@ -468,7 +475,8 @@ mod tests {
             .unwrap();
         let metrics = &by_service["web"];
 
-        assert_eq!(metrics.containers["abc123"][0].net_rx_rate, None);
+        let cid = ContainerId::parse("abc123abc123").unwrap();
+        assert_eq!(metrics.containers[&cid][0].net_rx_rate, None);
         assert_eq!(metrics.sum[0].net_rx_rate, None);
 
         let _ = tokio::fs::remove_dir_all(directory).await;

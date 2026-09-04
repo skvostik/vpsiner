@@ -5,7 +5,11 @@ use crate::metrics::{
     bucketizer::{Bucketizer, CounterBucketizer, GaugeBucketizer, buffer_capacity},
     downsampling::bucket_end,
 };
-use crate::model::{ContainerRawSample, ContainerSample, MetricsResolution, TimestampMs};
+use crate::model::{
+    container_id::ContainerId,
+    metrics::{ContainerRawSample, ContainerSample, MetricsResolution},
+    time::TimestampMs,
+};
 
 /// Buckets a container produced nothing for before its bucketizers are dropped.
 const MAX_IDLE_FLUSHES: u32 = 2;
@@ -73,12 +77,12 @@ impl ContainerBucketizer {
         &self,
         bucket_end: TimestampMs,
         service: &str,
-        cid: &str,
+        cid: ContainerId,
     ) -> Option<ContainerSample> {
         Some(ContainerSample {
             ts: bucket_end,
             service: service.to_owned(),
-            cid: cid.to_owned(),
+            cid,
             cpu_pct_mill: self.cpu_pct_mill(bucket_end)?,
             mem_used: self.bck_mem_used.collect(bucket_end)?,
             mem_limit: self.bck_mem_limit.collect(bucket_end)?,
@@ -97,7 +101,7 @@ struct ContainerEntry {
 }
 
 pub(crate) struct ContainerCollectorState {
-    containers: HashMap<String, ContainerEntry>,
+    containers: HashMap<ContainerId, ContainerEntry>,
     last_raw_bucket_end: Option<TimestampMs>,
     collect_interval: Duration,
 }
@@ -131,7 +135,7 @@ impl ContainerCollectorState {
         for sample in batch {
             let entry = self
                 .containers
-                .entry(sample.cid.clone())
+                .entry(sample.cid)
                 .or_insert_with(|| ContainerEntry {
                     service: sample.service.clone(),
                     bucketizer: ContainerBucketizer::new(self.collect_interval),
@@ -152,7 +156,7 @@ impl ContainerCollectorState {
     fn flush(&mut self, bucket_end: TimestampMs) -> Vec<ContainerSample> {
         let mut bucketed = Vec::with_capacity(self.containers.len());
         self.containers.retain(|cid, entry| {
-            match entry.bucketizer.collect(bucket_end, &entry.service, cid) {
+            match entry.bucketizer.collect(bucket_end, &entry.service, *cid) {
                 Some(sample) => {
                     entry.idle_flushes = 0;
                     bucketed.push(sample);
@@ -183,7 +187,7 @@ mod tests {
         ContainerRawSample {
             ts,
             service: "web".into(),
-            cid: cid.into(),
+            cid: test_cid(cid),
             cpu_usage_ns: seconds * 250_000_000,
             system_cpu_usage_ns: seconds * 1_000_000_000,
             cpu_count: 1,
@@ -194,6 +198,18 @@ mod tests {
             blk_read: counter,
             blk_write: counter,
         }
+    }
+
+    /// Maps a short mnemonic label to a distinct, valid `ContainerId` for test readability.
+    fn test_cid(label: &str) -> ContainerId {
+        let hex = match label {
+            "a" => "aaaaaaaaaaaa",
+            "b" => "bbbbbbbbbbbb",
+            "steady" => "cccccccccccc",
+            "joining" => "dddddddddddd",
+            other => panic!("add a hex mapping for test cid {other}"),
+        };
+        ContainerId::parse(hex).unwrap()
     }
 
     /// Feeds one sample per second across `seconds`, returning everything that got bucketed.
@@ -259,17 +275,17 @@ mod tests {
         assert!(
             !bucketed
                 .iter()
-                .any(|sample| sample.cid == "joining" && sample.ts == 20_000)
+                .any(|sample| sample.cid == test_cid("joining") && sample.ts == 20_000)
         );
         let joining = bucketed
             .iter()
-            .find(|sample| sample.cid == "joining" && sample.ts == 30_000)
+            .find(|sample| sample.cid == test_cid("joining") && sample.ts == 30_000)
             .unwrap();
         assert_eq!(joining.net_rx_rate_mill, Some(1_000_000));
 
         let steady = bucketed
             .iter()
-            .find(|sample| sample.cid == "steady" && sample.ts == 30_000)
+            .find(|sample| sample.cid == test_cid("steady") && sample.ts == 30_000)
             .unwrap();
         assert_eq!(steady.net_rx_rate_mill, Some(1_000_000));
     }
@@ -284,7 +300,7 @@ mod tests {
             state.observe(&[raw_sample(ts, "a", second as u64 * 1_000)]);
         }
 
-        assert!(!state.containers.contains_key("b"));
-        assert!(state.containers.contains_key("a"));
+        assert!(!state.containers.contains_key(&test_cid("b")));
+        assert!(state.containers.contains_key(&test_cid("a")));
     }
 }

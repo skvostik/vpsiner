@@ -4,11 +4,13 @@ use axum::{
     http::StatusCode,
 };
 
-use crate::error::AppResult;
-use crate::model::ContainerSummary;
+use crate::error::{AppError, AppResult};
+use crate::model::{container_id::ContainerId, containers::ContainerSummary};
 use crate::state::AppState;
 
 async fn run_action(state: &AppState, id: &str, action: &'static str) -> AppResult<StatusCode> {
+    let id = ContainerId::parse(id)
+        .ok_or_else(|| AppError::BadRequest("invalid container id".into()))?;
     match action {
         "start" => {
             state.docker.start_container(id).await?;

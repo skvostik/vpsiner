@@ -1,7 +1,6 @@
 use base64::Engine;
 
-use crate::model::LogCursor;
-use crate::model::LogLevel;
+use crate::model::logs::{LogCursor, LogLevel};
 
 pub fn encode_cursor(cursor: &LogCursor) -> Result<String, String> {
     let json = serde_json::to_vec(cursor).map_err(|err| err.to_string())?;

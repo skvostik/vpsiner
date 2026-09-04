@@ -9,8 +9,12 @@ use tokio::sync::watch;
 use crate::metrics::downsampling::add_optional;
 use crate::metrics::rate::optional_rate;
 use crate::model::{
-    ContainerPoint, ContainerRawSample, ContainersSnapshot, GroupPoint, HostPoint, HostRawSample,
-    MetricsSnapshot, TimestampMs,
+    container_id::ContainerId,
+    metrics::{
+        ContainerPoint, ContainerRawSample, ContainersSnapshot, GroupPoint, HostPoint,
+        HostRawSample, MetricsSnapshot,
+    },
+    time::TimestampMs,
 };
 
 /// Records older than this multiple of the collection interval are dropped on read.
@@ -32,8 +36,8 @@ struct HostState {
 
 #[derive(Default)]
 struct ContainersState {
-    current: HashMap<String, ContainerPoint>,
-    previous: HashMap<String, ContainerRawSample>,
+    current: HashMap<ContainerId, ContainerPoint>,
+    previous: HashMap<ContainerId, ContainerRawSample>,
 }
 
 /// Host and container samples are recorded by independent tasks, so each half keeps its own
@@ -142,7 +146,7 @@ impl MetricsSnapshotState {
                 .unwrap_or(0.0);
 
             current.insert(
-                sample.cid.clone(),
+                sample.cid,
                 ContainerPoint {
                     ts: sample.ts,
                     service: sample.service.clone(),
@@ -155,7 +159,7 @@ impl MetricsSnapshotState {
                     blk_write_rate,
                 },
             );
-            previous.insert(sample.cid.clone(), sample.clone());
+            previous.insert(sample.cid, sample.clone());
         }
 
         state.current = current;
@@ -192,14 +196,14 @@ impl MetricsSnapshotState {
 
     fn current_containers_at(&self, now: TimestampMs) -> ContainersSnapshot {
         let cutoff = self.cutoff(now);
-        let containers: HashMap<String, ContainerPoint> = self
+        let containers: HashMap<ContainerId, ContainerPoint> = self
             .containers
             .lock()
             .expect("snapshot state poisoned")
             .current
             .iter()
             .filter(|(_, point)| point.ts >= cutoff)
-            .map(|(cid, point)| (cid.clone(), point.clone()))
+            .map(|(cid, point)| (*cid, point.clone()))
             .collect();
 
         let mut services: HashMap<String, GroupPoint> = HashMap::new();
@@ -276,7 +280,7 @@ mod tests {
         ContainerRawSample {
             ts,
             service: service.into(),
-            cid: cid.into(),
+            cid: test_cid(cid),
             cpu_usage_ns: seconds * 50_000_000,
             system_cpu_usage_ns: seconds * 1_000_000_000,
             cpu_count: 1,
@@ -287,6 +291,17 @@ mod tests {
             blk_read: 0,
             blk_write: 0,
         }
+    }
+
+    /// Maps a short mnemonic label to a distinct, valid `ContainerId` for test readability.
+    fn test_cid(label: &str) -> crate::model::container_id::ContainerId {
+        let hex = match label {
+            "abc" => "aaaaaaaaaaaa",
+            "def" => "bbbbbbbbbbbb",
+            "ghi" => "cccccccccccc",
+            other => panic!("add a hex mapping for test cid {other}"),
+        };
+        crate::model::container_id::ContainerId::parse(hex).unwrap()
     }
 
     #[test]
@@ -342,8 +357,8 @@ mod tests {
         state.record_containers(&[container_sample(20_000, "abc", "web", 0)]);
 
         let snapshot = state.current_at(20_000);
-        assert!(snapshot.containers.contains_key("abc"));
-        assert!(!snapshot.containers.contains_key("def"));
+        assert!(snapshot.containers.contains_key(&test_cid("abc")));
+        assert!(!snapshot.containers.contains_key(&test_cid("def")));
     }
 
     #[test]
@@ -359,8 +374,14 @@ mod tests {
         ]);
 
         let snapshot = state.current_at(20_000);
-        assert_eq!(snapshot.containers["abc"].net_rx_rate, Some(100.0));
-        assert_eq!(snapshot.containers["def"].net_rx_rate, Some(2_000.0));
+        assert_eq!(
+            snapshot.containers[&test_cid("abc")].net_rx_rate,
+            Some(100.0)
+        );
+        assert_eq!(
+            snapshot.containers[&test_cid("def")].net_rx_rate,
+            Some(2_000.0)
+        );
     }
 
     #[test]
@@ -369,7 +390,7 @@ mod tests {
         state.record_containers(&[container_sample(10_000, "abc", "web", 1_000)]);
 
         let snapshot = state.current_at(10_000);
-        assert_eq!(snapshot.containers["abc"].net_rx_rate, None);
+        assert_eq!(snapshot.containers[&test_cid("abc")].net_rx_rate, None);
         assert_eq!(snapshot.services["web"].net_rx_rate, None);
     }
 

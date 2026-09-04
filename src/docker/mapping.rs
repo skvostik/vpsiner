@@ -6,7 +6,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
 use crate::logs::{detect_level, parse_docker_timestamp, strip_ansi_escape_codes};
-use crate::model::{ContainerState, ContainerStats, ContainerSummary, LogLine, LogStream};
+use crate::model::{
+    container_id::ContainerId,
+    containers::{ContainerState, ContainerStats, ContainerSummary},
+    logs::{LogLine, LogStream},
+};
 
 pub(super) fn receiver_stream<T: Send + 'static>(rx: mpsc::Receiver<T>) -> BoxStream<'static, T> {
     futures_util::stream::unfold(rx, |mut rx| async {
@@ -115,9 +119,14 @@ pub(super) fn map_container_summary(
     let state = get_container_state(response);
     let ports = get_container_ports(response);
 
-    let id = response.id.clone().unwrap_or_default();
+    let full_id = response.id.clone().unwrap_or_default();
+    let id = ContainerId::parse(&full_id).unwrap_or_else(|| {
+        tracing::warn!(full_id = %full_id, "container id is not a valid Docker id, using zeroed id");
+        ContainerId::default()
+    });
     ContainerSummary {
         id,
+        full_id,
         name: name.clone(),
         service,
         image: response.image.clone().unwrap_or_default(),
@@ -197,9 +206,15 @@ pub(super) fn map_container_stats(
         .copied()
         .unwrap_or(0);
 
+    let full_id = response.id.unwrap_or_else(|| fallback_id.to_string());
+    let cid = ContainerId::parse(&full_id).unwrap_or_else(|| {
+        tracing::warn!(full_id = %full_id, "container id is not a valid Docker id, using zeroed id");
+        ContainerId::default()
+    });
+
     ContainerStats {
         ts,
-        cid: response.id.unwrap_or_else(|| fallback_id.to_string()),
+        cid,
         cpu_usage_ns,
         system_cpu_usage_ns,
         cpu_count,
@@ -213,7 +228,7 @@ pub(super) fn map_container_stats(
 }
 
 pub(super) fn map_log_output(
-    container_id: String,
+    container_id: ContainerId,
     service: String,
     message: Bytes,
     stream: LogStream,
@@ -226,7 +241,7 @@ pub(super) fn map_log_output(
             LogLine {
                 ts,
                 service: service.clone(),
-                cid: container_id.clone(),
+                cid: container_id,
                 stream,
                 level: detect_level(&line),
                 line,
@@ -252,7 +267,7 @@ mod tests {
     fn map_log_output_strips_ansi_codes() {
         let line = "2024-07-04T12:33:54.000000000Z \u{1b}[32mINFO\u{1b}[0m ready\n";
         let lines = map_log_output(
-            "container-1".to_string(),
+            ContainerId::parse("aabbccddeeff").unwrap(),
             "group-1".to_string(),
             Bytes::from(line),
             LogStream::Stdout,

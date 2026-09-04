@@ -10,7 +10,7 @@ use crate::error::AppResult;
 use crate::logs::flush_watcher::LogFlushWatcher;
 use crate::logs::metadata::LogMetadataStore;
 use crate::logs::store::LogStore;
-use crate::model::LogLine;
+use crate::model::{container_id::ContainerId, logs::LogLine};
 
 /// Owns in-memory buffering, per-container two-level dedup, and per-service debounced flushing to
 /// the `LogStore`/`LogMetadataStore`. Each service flushes independently so a burst in one
@@ -37,7 +37,7 @@ struct ServiceHandle {
 struct ServiceState {
     lines: Vec<LogLine>,
     // Last accepted (ts, content hash) per container, seeded from LogMetadataStore on startup.
-    checkpoints: HashMap<String, (i64, u64)>,
+    checkpoints: HashMap<ContainerId, (i64, u64)>,
 }
 
 impl LogBuffer {
@@ -150,7 +150,7 @@ impl LogBuffer {
                     return;
                 }
             }
-            guard.checkpoints.insert(line.cid.clone(), (line.ts, hash));
+            guard.checkpoints.insert(line.cid, (line.ts, hash));
             guard.lines.push(line);
         }
         self.schedule_flush(&service);
@@ -180,16 +180,16 @@ impl Inner {
                 return;
             }
             let lines = std::mem::take(&mut guard.lines);
-            let mut cids: Vec<&str> = lines.iter().map(|line| line.cid.as_str()).collect();
+            let mut cids: Vec<ContainerId> = lines.iter().map(|line| line.cid).collect();
             cids.sort_unstable();
             cids.dedup();
-            let checkpoints: Vec<(String, i64, u64)> = cids
+            let checkpoints: Vec<(ContainerId, i64, u64)> = cids
                 .into_iter()
                 .filter_map(|cid| {
                     guard
                         .checkpoints
-                        .get(cid)
-                        .map(|&(ts, hash)| (cid.to_string(), ts, hash))
+                        .get(&cid)
+                        .map(|&(ts, hash)| (cid, ts, hash))
                 })
                 .collect();
             (lines, checkpoints)
@@ -218,7 +218,7 @@ impl Inner {
         for (cid, ts, line_hash) in checkpoints {
             if let Err(err) = self
                 .metadata
-                .record_received(service, &cid, ts, line_hash)
+                .record_received(service, cid, ts, line_hash)
                 .await
             {
                 tracing::error!(service = %service, cid = %cid, error = %err, "failed to persist last-received checkpoint");

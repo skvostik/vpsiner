@@ -15,7 +15,10 @@ use super::{
     sanitize_fts_query, week_database_name,
 };
 use crate::error::{AppError, AppResult};
-use crate::model::{LogCursor, LogFilter, LogLevel, LogLine, LogPage, LogStream};
+use crate::model::{
+    container_id::ContainerId,
+    logs::{LogCursor, LogFilter, LogLevel, LogLine, LogPage, LogStream},
+};
 
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
@@ -281,7 +284,7 @@ impl LogStore for SqliteLogStore {
                     "INSERT INTO logs (ts, cid, stream, level, line) VALUES (?, ?, ?, ?, ?)",
                 )
                 .bind(line.ts)
-                .bind(line.cid)
+                .bind(line.cid.as_bytes().as_slice())
                 .bind(stream_name(line.stream))
                 .bind(level)
                 .bind(line.line)
@@ -569,6 +572,8 @@ fn decode_row(row: &SqliteRow, service: &str, week: &str) -> Option<StoredLog> {
             "error" => Some(LogLevel::Error),
             _ => None,
         });
+    let cid: Vec<u8> = row.get("cid");
+    let cid = ContainerId::from_bytes(&cid)?;
     let ts = row.get("ts");
     Some(StoredLog {
         ts,
@@ -577,7 +582,7 @@ fn decode_row(row: &SqliteRow, service: &str, week: &str) -> Option<StoredLog> {
         line: LogLine {
             ts,
             service: service.to_string(),
-            cid: row.get("cid"),
+            cid,
             stream,
             level,
             line: row.get("line"),
@@ -626,7 +631,7 @@ async fn migrate(pool: &SqlitePool) -> AppResult<()> {
         "CREATE TABLE IF NOT EXISTS logs (
             id INTEGER PRIMARY KEY,
             ts INTEGER NOT NULL,
-            cid TEXT NOT NULL DEFAULT '',
+            cid BLOB NOT NULL,
             stream TEXT NOT NULL,
             level TEXT,
             line TEXT NOT NULL
@@ -698,7 +703,7 @@ async fn initialize_fts(pool: &SqlitePool) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::LogFilter;
+    use crate::model::logs::LogFilter;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn test_store(name: &str) -> SqliteLogStore {
@@ -719,7 +724,7 @@ mod tests {
         LogLine {
             ts,
             service: "group".into(),
-            cid: "abc123".into(),
+            cid: ContainerId::parse("abc123abc123").unwrap(),
             stream: LogStream::Stdout,
             level: None,
             line: line.to_string(),

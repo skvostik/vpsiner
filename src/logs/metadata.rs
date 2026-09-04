@@ -9,6 +9,7 @@ use sqlx::{
 };
 
 use crate::error::{AppError, AppResult};
+use crate::model::container_id::ContainerId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LogCheckpoint {
@@ -24,7 +25,7 @@ pub trait LogMetadataStore: Send + Sync + 'static {
     async fn record_received(
         &self,
         service: &str,
-        container_id: &str,
+        container_id: ContainerId,
         ts: i64,
         line_hash: u64,
     ) -> AppResult<()>;
@@ -32,14 +33,14 @@ pub trait LogMetadataStore: Send + Sync + 'static {
     async fn checkpoint(
         &self,
         service: &str,
-        container_id: &str,
+        container_id: ContainerId,
     ) -> AppResult<Option<LogCheckpoint>>;
 
     /// MAX(last_received) per service, across its containers — backs the services listing.
     async fn list_last_received(&self) -> AppResult<BTreeMap<String, i64>>;
 
     /// Every known (service, container_id) checkpoint — used to preload dedup state on startup.
-    async fn list_checkpoints(&self) -> AppResult<Vec<(String, String, LogCheckpoint)>>;
+    async fn list_checkpoints(&self) -> AppResult<Vec<(String, ContainerId, LogCheckpoint)>>;
 
     /// Releases the persistent database connection.
     async fn close(&self);
@@ -88,7 +89,7 @@ impl SqliteLogMetadataStore {
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS container_last_received (
                 service TEXT NOT NULL,
-                container_id TEXT NOT NULL,
+                container_id BLOB NOT NULL,
                 last_received INTEGER NOT NULL,
                 last_line_hash INTEGER NOT NULL,
                 PRIMARY KEY (service, container_id)
@@ -107,7 +108,7 @@ impl LogMetadataStore for SqliteLogMetadataStore {
     async fn record_received(
         &self,
         service: &str,
-        container_id: &str,
+        container_id: ContainerId,
         ts: i64,
         line_hash: u64,
     ) -> AppResult<()> {
@@ -120,7 +121,7 @@ impl LogMetadataStore for SqliteLogMetadataStore {
                 last_received = MAX(last_received, excluded.last_received)",
         )
         .bind(service)
-        .bind(container_id)
+        .bind(container_id.as_bytes().as_slice())
         .bind(ts)
         .bind(line_hash as i64)
         .execute(&self.pool)
@@ -132,14 +133,14 @@ impl LogMetadataStore for SqliteLogMetadataStore {
     async fn checkpoint(
         &self,
         service: &str,
-        container_id: &str,
+        container_id: ContainerId,
     ) -> AppResult<Option<LogCheckpoint>> {
         let row = sqlx::query(
             "SELECT last_received, last_line_hash FROM container_last_received
              WHERE service = ? AND container_id = ?",
         )
         .bind(service)
-        .bind(container_id)
+        .bind(container_id.as_bytes().as_slice())
         .fetch_optional(&self.pool)
         .await
         .map_err(storage)?;
@@ -164,7 +165,7 @@ impl LogMetadataStore for SqliteLogMetadataStore {
             .collect())
     }
 
-    async fn list_checkpoints(&self) -> AppResult<Vec<(String, String, LogCheckpoint)>> {
+    async fn list_checkpoints(&self) -> AppResult<Vec<(String, ContainerId, LogCheckpoint)>> {
         let rows = sqlx::query(
             "SELECT service, container_id, last_received, last_line_hash
              FROM container_last_received",
@@ -174,15 +175,17 @@ impl LogMetadataStore for SqliteLogMetadataStore {
         .map_err(storage)?;
         Ok(rows
             .into_iter()
-            .map(|row| {
-                (
+            .filter_map(|row| {
+                let container_id: Vec<u8> = row.get("container_id");
+                let container_id = ContainerId::from_bytes(&container_id)?;
+                Some((
                     row.get("service"),
-                    row.get("container_id"),
+                    container_id,
                     LogCheckpoint {
                         ts: row.get("last_received"),
                         line_hash: row.get::<i64, _>("last_line_hash") as u64,
                     },
-                )
+                ))
             })
             .collect())
     }
@@ -237,16 +240,17 @@ mod tests {
     #[tokio::test]
     async fn records_and_reads_back_a_checkpoint() {
         let store = test_store("record").await;
+        let cid = ContainerId::parse("abc123abc123").unwrap();
 
-        assert_eq!(store.checkpoint("group", "abc123").await.unwrap(), None);
+        assert_eq!(store.checkpoint("group", cid).await.unwrap(), None);
 
         store
-            .record_received("group", "abc123", 1_700_000_000_000, 42)
+            .record_received("group", cid, 1_700_000_000_000, 42)
             .await
             .unwrap();
 
         assert_eq!(
-            store.checkpoint("group", "abc123").await.unwrap(),
+            store.checkpoint("group", cid).await.unwrap(),
             Some(LogCheckpoint {
                 ts: 1_700_000_000_000,
                 line_hash: 42,
@@ -257,19 +261,20 @@ mod tests {
     #[tokio::test]
     async fn upsert_keeps_the_max_ts_and_its_paired_hash() {
         let store = test_store("upsert-max").await;
+        let cid = ContainerId::parse("abc123abc123").unwrap();
 
         store
-            .record_received("group", "abc123", 1_700_000_000_000, 1)
+            .record_received("group", cid, 1_700_000_000_000, 1)
             .await
             .unwrap();
         // A stale write with a lower ts must not clobber the newer ts/hash pair.
         store
-            .record_received("group", "abc123", 1_600_000_000_000, 999)
+            .record_received("group", cid, 1_600_000_000_000, 999)
             .await
             .unwrap();
 
         assert_eq!(
-            store.checkpoint("group", "abc123").await.unwrap(),
+            store.checkpoint("group", cid).await.unwrap(),
             Some(LogCheckpoint {
                 ts: 1_700_000_000_000,
                 line_hash: 1,
@@ -277,12 +282,12 @@ mod tests {
         );
 
         store
-            .record_received("group", "abc123", 1_800_000_000_000, 2)
+            .record_received("group", cid, 1_800_000_000_000, 2)
             .await
             .unwrap();
 
         assert_eq!(
-            store.checkpoint("group", "abc123").await.unwrap(),
+            store.checkpoint("group", cid).await.unwrap(),
             Some(LogCheckpoint {
                 ts: 1_800_000_000_000,
                 line_hash: 2,
@@ -293,17 +298,20 @@ mod tests {
     #[tokio::test]
     async fn lists_the_max_last_received_per_group_across_containers() {
         let store = test_store("list").await;
+        let cid_a = ContainerId::parse("abc123abc123").unwrap();
+        let cid_b = ContainerId::parse("def456def456").unwrap();
+        let cid_c = ContainerId::parse("789abc789abc").unwrap();
 
         store
-            .record_received("shop-web", "abc123", 1_700_000_000_000, 1)
+            .record_received("shop-web", cid_a, 1_700_000_000_000, 1)
             .await
             .unwrap();
         store
-            .record_received("shop-web", "def456", 1_700_000_005_000, 2)
+            .record_received("shop-web", cid_b, 1_700_000_005_000, 2)
             .await
             .unwrap();
         store
-            .record_received("shop-worker", "ghi789", 1_650_000_000_000, 3)
+            .record_received("shop-worker", cid_c, 1_650_000_000_000, 3)
             .await
             .unwrap();
 

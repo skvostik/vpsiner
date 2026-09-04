@@ -69,7 +69,10 @@ mod tests {
     use crate::logs::store::MockLogStore;
     use crate::metrics::host::MockHostMetricsSource;
     use crate::metrics::store::MockMetricsStore;
-    use crate::model::{ContainerRawSample, HostRawSample};
+    use crate::model::{
+        container_id::ContainerId,
+        metrics::{ContainerRawSample, HostRawSample},
+    };
 
     #[tokio::test]
     async fn adds_database_sizes_to_host_samples() {
@@ -173,7 +176,7 @@ mod tests {
                     vec![ContainerRawSample {
                         ts: second * 1_000,
                         service: "shop-web".into(),
-                        cid: "short-id".into(),
+                        cid: ContainerId::parse("aaaaaaaaaaaa").unwrap(),
                         // One CPU online, advancing so the ratio is a steady 12.5% usage.
                         cpu_usage_ns: second as u64 * 125_000_000,
                         system_cpu_usage_ns: second as u64 * 1_000_000_000,
@@ -198,7 +201,7 @@ mod tests {
                 samples.len() == 1
                     && samples[0].ts == 10_000
                     && samples[0].service == "shop-web"
-                    && samples[0].cid == "short-id"
+                    && samples[0].cid == ContainerId::parse("aaaaaaaaaaaa").unwrap()
                     && samples[0].cpu_pct_mill == 12_500
                     && samples[0].net_rx_rate_mill == Some(1_000_000)
             })

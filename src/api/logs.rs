@@ -6,7 +6,7 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 
 use crate::error::{AppError, AppResult};
-use crate::model::{LogFilter, LogLevel, LogPage, LogStream, ServiceStatus};
+use crate::model::logs::{LogFilter, LogLevel, LogPage, LogStream, ServiceStatus};
 use crate::state::AppState;
 
 #[derive(Debug, Default, Deserialize)]
@@ -94,7 +94,7 @@ pub async fn list_groups(
 
 pub(crate) fn merge_services(
     stored: BTreeMap<String, i64>,
-    containers: Vec<crate::model::ContainerSummary>,
+    containers: Vec<crate::model::containers::ContainerSummary>,
 ) -> BTreeMap<String, ServiceStatus> {
     let mut services = stored
         .into_iter()
@@ -115,7 +115,7 @@ pub(crate) fn merge_services(
                 last_received: None,
                 live: false,
             });
-        service.live |= container.state == Some(crate::model::ContainerState::Running);
+        service.live |= container.state == Some(crate::model::containers::ContainerState::Running);
     }
     services
 }
@@ -123,11 +123,15 @@ pub(crate) fn merge_services(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ContainerState, ContainerSummary};
+    use crate::model::{
+        container_id::ContainerId,
+        containers::{ContainerState, ContainerSummary},
+    };
 
     fn container(service: &str, state: ContainerState) -> ContainerSummary {
         ContainerSummary {
-            id: format!("{service}-{state:?}"),
+            id: ContainerId::parse("aaaaaaaaaaaa").unwrap(),
+            full_id: format!("{service}-{state:?}"),
             name: service.into(),
             service: service.into(),
             image: String::new(),

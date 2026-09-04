@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-pub const METADATA_DB_VERSION: u32 = 1;
-pub const LOGS_DB_VERSION: u32 = 1;
-pub const METRICS_DB_VERSION: u32 = 1;
+pub const METADATA_DB_VERSION: u32 = 2;
+pub const LOGS_DB_VERSION: u32 = 2;
+pub const METRICS_DB_VERSION: u32 = 2;
 
 const VERSIONS_FILE: &str = "versions.json";
 const ENV_FORCE: &str = "VPSINER_FORCE_DB_MIGRATION";

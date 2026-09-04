@@ -2,7 +2,10 @@
 
 use std::collections::HashMap;
 
-use crate::model::{ContainerPoint, ContainerSample, GroupPoint, HostSample, MetricsResolution};
+use crate::model::container_id::ContainerId;
+use crate::model::metrics::{
+    ContainerPoint, ContainerSample, GroupPoint, HostSample, MetricsResolution,
+};
 
 /// The end of the half-open `(bucket_end - bucket_ms, bucket_end]` window containing `ts`.
 pub(crate) fn bucket_end(ts: i64, bucket_ms: u64) -> i64 {
@@ -160,14 +163,14 @@ struct ContainerGauges {
     blk_read_rate_mill: OptionalGauge,
     blk_write_rate_mill: OptionalGauge,
     service: String,
-    cid: String,
+    cid: ContainerId,
 }
 
 impl ContainerGauges {
     fn add(&mut self, sample: &ContainerSample) {
         if self.count == 0 {
             self.service = sample.service.clone();
-            self.cid = sample.cid.clone();
+            self.cid = sample.cid;
         }
         self.count += 1;
         self.gap.observe(sample.ts);
@@ -188,7 +191,7 @@ impl ContainerGauges {
         Some(ContainerSample {
             ts,
             service: self.service.clone(),
-            cid: self.cid.clone(),
+            cid: self.cid,
             cpu_pct_mill: (self.cpu_pct_mill / count) as u64,
             mem_used: (self.mem_used / count) as u64,
             mem_limit: (self.mem_limit / count) as u64,
@@ -279,11 +282,13 @@ mod tests {
         }
     }
 
-    fn container_counter(ts: i64, cid: &str, net_rx_rate_mill: u64) -> ContainerSample {
+    /// `label` only documents intent here; downsampling never inspects `cid`'s value.
+    fn container_counter(ts: i64, label: &str, net_rx_rate_mill: u64) -> ContainerSample {
+        let _ = label;
         ContainerSample {
             ts,
             service: "web".into(),
-            cid: cid.into(),
+            cid: ContainerId::parse("aaaaaaaaaaaa").unwrap(),
             cpu_pct_mill: 25_000,
             mem_used: 1_000,
             mem_limit: 2_000,

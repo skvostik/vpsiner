@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
-use crate::model::TimestampMs;
+use crate::model::time::TimestampMs;
 
 /// Fixed-point scale for rates returned by `CounterBucketizer`.
 ///

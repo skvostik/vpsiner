@@ -1,7 +1,10 @@
 use crate::docker::mapping::receiver_stream;
 use crate::docker::raw::{list_all_containers_details, list_running_containers};
 use crate::error::{AppError, AppResult};
-use crate::model::{ContainerSummary, container_log_id, container_short_id};
+use crate::model::{
+    container_id::ContainerId,
+    containers::{ContainerSummary, container_short_id},
+};
 use bollard::{Docker, query_parameters::EventsOptionsBuilder};
 use futures_util::{StreamExt, stream::BoxStream};
 use std::time::Duration;
@@ -16,7 +19,9 @@ use tokio::sync::{mpsc, watch};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ObservedContainer {
-    pub id: String,
+    pub id: ContainerId,
+    /// The real Docker id; only ever read to make Docker API calls.
+    pub full_id: String,
     pub name: String,
     pub service: String,
 }
@@ -34,11 +39,8 @@ pub(super) struct ContainerObserveEvent {
 }
 
 impl ObservedContainer {
-    pub fn short_id(&self) -> &str {
-        container_short_id(&self.id)
-    }
     pub fn log_id(&self) -> String {
-        container_log_id(&self.service, &self.short_id())
+        format!("{}@{}", self.id, self.service)
     }
 }
 
@@ -48,7 +50,7 @@ pub(super) trait ContainerRegistry: Send + Sync + 'static {
     /// This should not be relied upon for critical operations,
     /// but rather to display information in UI.
     fn containers_info(&self) -> AppResult<Vec<ContainerSummary>>;
-    fn container_info(&self, id: &str) -> AppResult<Option<ContainerSummary>>;
+    fn container_info(&self, id: ContainerId) -> AppResult<Option<ContainerSummary>>;
 
     /// Returns a list of all observed containers in the registry. This
     /// list must contain up-to-date information for critical operations.
@@ -84,7 +86,7 @@ impl ContainerRegistry for BollardContainerRegistry {
         self.inner.containers_info()
     }
 
-    fn container_info(&self, id: &str) -> AppResult<Option<ContainerSummary>> {
+    fn container_info(&self, id: ContainerId) -> AppResult<Option<ContainerSummary>> {
         self.inner.container_info(id)
     }
 
@@ -110,7 +112,7 @@ impl Inner {
             .clone())
     }
 
-    fn container_info(&self, id: &str) -> AppResult<Option<ContainerSummary>> {
+    fn container_info(&self, id: ContainerId) -> AppResult<Option<ContainerSummary>> {
         Ok(self.containers_info()?.into_iter().find(|c| c.id == id))
     }
 
@@ -214,7 +216,7 @@ impl Inner {
         let running_containers = list_running_containers(&self.docker, self.request_timeout)
             .await?
             .into_iter()
-            .map(|c| (c.id.clone(), c))
+            .map(|c| (c.full_id.clone(), c))
             .collect::<HashMap<String, ObservedContainer>>();
 
         // observed containers lock scope

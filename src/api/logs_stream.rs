@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use crate::api::logs::{merge_services, parse_levels, parse_streams};
 use crate::error::AppResult;
 use crate::logs::store::LogStore;
-use crate::model::{LogFilter, LogTailAppend, ServiceDiff, ServiceStatus};
+use crate::model::logs::{LogFilter, LogTailAppend, ServiceDiff, ServiceStatus};
 use crate::state::AppState;
 
 enum GroupsStreamState {

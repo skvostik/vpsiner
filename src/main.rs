@@ -282,7 +282,10 @@ mod tests {
     use crate::logs::store::MockLogStore;
     use crate::metrics::host::MockHostMetricsSource;
     use crate::metrics::store::MockMetricsStore;
-    use crate::model::{ContainerState, ContainerSummary};
+    use crate::model::{
+        container_id::ContainerId,
+        containers::{ContainerState, ContainerSummary},
+    };
 
     fn test_config() -> Config {
         Config {
@@ -330,7 +333,8 @@ mod tests {
         let mut docker = MockDockerService::new();
         docker.expect_containers_info().times(1).returning(|| {
             Ok(vec![ContainerSummary {
-                id: "abc123".into(),
+                id: ContainerId::parse("abc123abc123").unwrap(),
+                full_id: "abc123abc123".into(),
                 name: "web".into(),
                 service: "shop-web".into(),
                 image: "nginx:latest".into(),
@@ -365,7 +369,7 @@ mod tests {
         let mut docker = MockDockerService::new();
         docker
             .expect_start_container()
-            .withf(|id| id == "abc123")
+            .withf(|id| *id == ContainerId::parse("abc123abc123").unwrap())
             .returning(|_| Err(AppError::Docker("socket unreachable".into())));
 
         let (state, config) = state_with_docker(docker);
@@ -373,7 +377,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/containers/abc123/start")
+                    .uri("/api/containers/abc123abc123/start")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -388,7 +392,7 @@ mod tests {
         let mut docker = MockDockerService::new();
         docker
             .expect_start_container()
-            .withf(|id| id == "abc123")
+            .withf(|id| *id == ContainerId::parse("abc123abc123").unwrap())
             .returning(|_| {
                 Err(AppError::Forbidden(
                     "container controls are disabled or unavailable on this backend".into(),
@@ -400,7 +404,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/containers/abc123/start")
+                    .uri("/api/containers/abc123abc123/start")
                     .body(Body::empty())
                     .unwrap(),
             )

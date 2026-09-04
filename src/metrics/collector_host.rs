@@ -10,7 +10,10 @@ use crate::{
         snapshot::MetricsSnapshotState,
         store::MetricsStore,
     },
-    model::{HostRawSample, HostSample, MetricsResolution, TimestampMs},
+    model::{
+        metrics::{HostRawSample, HostSample, MetricsResolution},
+        time::TimestampMs,
+    },
 };
 
 pub(crate) fn cpu_pct_mill(cpu_pct: f64) -> u64 {

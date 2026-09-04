@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use sysinfo::{CpuRefreshKind, Disks, MemoryRefreshKind, Networks, RefreshKind, System};
 
 use crate::error::{AppError, AppResult};
-use crate::model::HostRawSample;
+use crate::model::metrics::HostRawSample;
 
 /// Only CPU usage and memory are read from `System`, so the (expensive) process list is
 /// never collected.

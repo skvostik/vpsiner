@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use tokio::sync::watch;
 
 use crate::metrics::downsampling::bucket_end;
-use crate::model::{MetricsResolution, TimestampMs};
+use crate::model::{metrics::MetricsResolution, time::TimestampMs};
 
 struct ResolutionChannel {
     last_bucket_end: Mutex<TimestampMs>,
