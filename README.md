@@ -1,18 +1,23 @@
 # VPSiner
 
 VPSiner is a small, self-hosted dashboard for monitoring and operating a single
-Docker host. It collects host and container metrics, keeps container logs in one
-place, and can start, stop, or restart containers from its web interface.
+Docker host. It persists logs and keeps them linked across container restarts and
+recreations. It also collects host and container metrics, and can start, stop, or
+restart containers from its web interface.
 
-It is built for home labs and small servers: one container, one Docker host, no
-external services. In a typical home-lab setup, observed memory consumption is
-under 50 MB. Actual usage depends on the number of containers and log volume.
+It is designed for home labs and small servers: one container, one Docker host, no
+external services. With a dozen containers running, it typically uses about
+50 MB of memory.
+
+![Screen recording of the main features of the VPSiner tool](https://github.com/user-attachments/assets/8c130004-cb7c-42ca-8538-625214222968)
+
+## Table of contents
 
 - [VPSiner](#vpsiner)
+  - [Table of contents](#table-of-contents)
   - [Features](#features)
     - [Planned features](#planned-features)
     - [Not planned](#not-planned)
-  - [Screenshots](#screenshots)
   - [Quick start](#quick-start)
     - [Add some test logs](#add-some-test-logs)
   - [Configuration](#configuration)
@@ -58,9 +63,6 @@ The following are intentionally out of scope:
 - Collecting data from multiple hosts
 - Metrics, traces, or other advanced observability features
 
-## Screenshots
-
-![Screen recording of the main features of the VPSiner tool](https://github.com/user-attachments/assets/8c130004-cb7c-42ca-8538-625214222968)
 
 ## Quick start
 
