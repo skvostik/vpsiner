@@ -51,12 +51,12 @@ const databaseSizeSeries = computed<ChartSeries[]>(() => [
   },
 ])
 const networkSeries = computed<ChartSeries[]>(() => [
-  { name: 'In', points: networkReceivedPoints.value, color: '#0891b2' },
-  { name: 'Out', points: networkSentPoints.value, color: '#f59e0b' },
+  { name: 'In', points: networkReceivedPoints.value, color: '#4ade80' },
+  { name: 'Out', points: networkSentPoints.value, color: '#f87171' },
 ])
 const diskSeries = computed<ChartSeries[]>(() => [
-  { name: 'Read', points: diskReadPoints.value, color: '#0891b2' },
-  { name: 'Write', points: diskWritePoints.value, color: '#f59e0b' },
+  { name: 'Read', points: diskReadPoints.value, color: '#4ade80' },
+  { name: 'Write', points: diskWritePoints.value, color: '#f87171' },
 ])
 const containerSeries = computed(() =>
   Object.entries(props.containerHistory).map(([service, samples]) => ({
