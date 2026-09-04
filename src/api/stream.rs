@@ -11,7 +11,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::docker::DockerService;
 use crate::metrics::snapshot::MetricsSnapshotState;
-use crate::model::{ContainerDiff, ContainerSummary};
+use crate::model::{
+    container_id::ContainerId,
+    containers::{ContainerDiff, ContainerSummary},
+};
 use crate::state::AppState;
 
 enum StreamState {
@@ -80,7 +83,7 @@ enum ContainersStreamState {
     Waiting(
         Arc<dyn DockerService>,
         watch::Receiver<u64>,
-        HashMap<String, ContainerSummary>,
+        HashMap<ContainerId, ContainerSummary>,
         CancellationToken,
     ),
 }
@@ -139,22 +142,19 @@ pub async fn containers(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
-fn index_by_id(containers: &[ContainerSummary]) -> HashMap<String, ContainerSummary> {
-    containers
-        .iter()
-        .map(|c| (c.id.clone(), c.clone()))
-        .collect()
+fn index_by_id(containers: &[ContainerSummary]) -> HashMap<ContainerId, ContainerSummary> {
+    containers.iter().map(|c| (c.id, c.clone())).collect()
 }
 
 fn diff_containers(
-    last_sent: &HashMap<String, ContainerSummary>,
+    last_sent: &HashMap<ContainerId, ContainerSummary>,
     current: &[ContainerSummary],
 ) -> ContainerDiff {
     let mut diff = ContainerDiff::default();
     let mut seen = HashSet::with_capacity(current.len());
 
     for container in current {
-        seen.insert(container.id.as_str());
+        seen.insert(container.id);
         match last_sent.get(&container.id) {
             None => diff.added.push(container.clone()),
             Some(previous) if previous != container => diff.updated.push(container.clone()),
@@ -163,8 +163,8 @@ fn diff_containers(
     }
 
     for id in last_sent.keys() {
-        if !seen.contains(id.as_str()) {
-            diff.removed.push(id.clone());
+        if !seen.contains(id) {
+            diff.removed.push(*id);
         }
     }
 

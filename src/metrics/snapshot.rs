@@ -1,16 +1,21 @@
 //! Latest-value metrics with server-computed rates, kept in memory for `/api/metrics/current`.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::sync::watch;
 
+use crate::metadata::ServiceRegistry;
 use crate::metrics::downsampling::add_optional;
 use crate::metrics::rate::optional_rate;
 use crate::model::{
-    ContainerPoint, ContainerRawSample, ContainersSnapshot, GroupPoint, HostPoint, HostRawSample,
-    MetricsSnapshot, TimestampMs,
+    container_id::ContainerId,
+    metrics::{
+        ContainerPoint, ContainerRawSample, ContainersSnapshot, CurrentHostPoint, GroupPoint,
+        HostRawSample, MetricsSnapshot,
+    },
+    time::TimestampMs,
 };
 
 /// Records older than this multiple of the collection interval are dropped on read.
@@ -26,14 +31,14 @@ fn now_ms() -> TimestampMs {
 
 #[derive(Default)]
 struct HostState {
-    current: Option<HostPoint>,
+    current: Option<CurrentHostPoint>,
     previous: Option<HostRawSample>,
 }
 
 #[derive(Default)]
 struct ContainersState {
-    current: HashMap<String, ContainerPoint>,
-    previous: HashMap<String, ContainerRawSample>,
+    current: HashMap<ContainerId, ContainerPoint>,
+    previous: HashMap<ContainerId, ContainerRawSample>,
 }
 
 /// Host and container samples are recorded by independent tasks, so each half keeps its own
@@ -41,18 +46,21 @@ struct ContainersState {
 pub struct MetricsSnapshotState {
     host: Mutex<HostState>,
     containers: Mutex<ContainersState>,
+    /// Resolves each sample's `ServiceId` back to the name the API serializes.
+    services: Arc<ServiceRegistry>,
     stale_after_ms: i64,
     host_revision_tx: watch::Sender<u64>,
     containers_revision_tx: watch::Sender<u64>,
 }
 
 impl MetricsSnapshotState {
-    pub fn new(collect_interval: Duration) -> Self {
+    pub fn new(services: Arc<ServiceRegistry>, collect_interval: Duration) -> Self {
         let (host_revision_tx, _) = watch::channel(0);
         let (containers_revision_tx, _) = watch::channel(0);
         Self {
             host: Mutex::new(HostState::default()),
             containers: Mutex::new(ContainersState::default()),
+            services,
             stale_after_ms: (collect_interval.as_millis() as i64) * i64::from(STALE_INTERVALS),
             host_revision_tx,
             containers_revision_tx,
@@ -82,7 +90,7 @@ impl MetricsSnapshotState {
             None => (None, None, None, None),
         };
 
-        state.current = Some(HostPoint {
+        state.current = Some(CurrentHostPoint {
             ts: sample.ts,
             cpu_pct: sample.cpu_pct,
             mem_used: sample.mem_used,
@@ -142,20 +150,23 @@ impl MetricsSnapshotState {
                 .unwrap_or(0.0);
 
             current.insert(
-                sample.cid.clone(),
+                sample.cid,
                 ContainerPoint {
                     ts: sample.ts,
-                    service: sample.service.clone(),
+                    service: self
+                        .services
+                        .name(sample.service)
+                        .map(|name| name.to_string())
+                        .unwrap_or_default(),
                     cpu_pct,
                     mem_used: sample.mem_used,
-                    mem_limit: sample.mem_limit,
                     net_rx_rate,
                     net_tx_rate,
                     blk_read_rate,
                     blk_write_rate,
                 },
             );
-            previous.insert(sample.cid.clone(), sample.clone());
+            previous.insert(sample.cid, sample.clone());
         }
 
         state.current = current;
@@ -165,7 +176,7 @@ impl MetricsSnapshotState {
             .send_modify(|revision| *revision += 1);
     }
 
-    pub fn current_host(&self) -> Option<HostPoint> {
+    pub fn current_host(&self) -> Option<CurrentHostPoint> {
         self.current_host_at(now_ms())
     }
 
@@ -181,7 +192,7 @@ impl MetricsSnapshotState {
         now - self.stale_after_ms
     }
 
-    fn current_host_at(&self, now: TimestampMs) -> Option<HostPoint> {
+    fn current_host_at(&self, now: TimestampMs) -> Option<CurrentHostPoint> {
         let cutoff = self.cutoff(now);
         self.host
             .lock()
@@ -192,14 +203,14 @@ impl MetricsSnapshotState {
 
     fn current_containers_at(&self, now: TimestampMs) -> ContainersSnapshot {
         let cutoff = self.cutoff(now);
-        let containers: HashMap<String, ContainerPoint> = self
+        let containers: HashMap<ContainerId, ContainerPoint> = self
             .containers
             .lock()
             .expect("snapshot state poisoned")
             .current
             .iter()
             .filter(|(_, point)| point.ts >= cutoff)
-            .map(|(cid, point)| (cid.clone(), point.clone()))
+            .map(|(cid, point)| (*cid, point.clone()))
             .collect();
 
         let mut services: HashMap<String, GroupPoint> = HashMap::new();
@@ -213,7 +224,6 @@ impl MetricsSnapshotState {
             service.ts = service.ts.max(point.ts);
             service.cpu_pct += point.cpu_pct;
             service.mem_used = service.mem_used.saturating_add(point.mem_used);
-            service.mem_limit = service.mem_limit.saturating_add(point.mem_limit);
             add_optional(&mut service.net_rx_rate, point.net_rx_rate);
             add_optional(&mut service.net_tx_rate, point.net_tx_rate);
             add_optional(&mut service.blk_read_rate, point.blk_read_rate);
@@ -243,9 +253,22 @@ impl MetricsSnapshotState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::service_id::ServiceId;
 
     fn state() -> MetricsSnapshotState {
-        MetricsSnapshotState::new(Duration::from_secs(10))
+        MetricsSnapshotState::new(
+            ServiceRegistry::fixture(&["web", "db"]),
+            Duration::from_secs(10),
+        )
+    }
+
+    /// Must mirror the order of the fixture above.
+    fn test_sid(service: &str) -> ServiceId {
+        match service {
+            "web" => ServiceId::from_u32(1),
+            "db" => ServiceId::from_u32(2),
+            other => panic!("add {other} to the registry fixture"),
+        }
     }
 
     fn host_sample(ts: TimestampMs, net_rx: u64) -> HostRawSample {
@@ -275,18 +298,28 @@ mod tests {
         let seconds = (ts / 1_000) as u64;
         ContainerRawSample {
             ts,
-            service: service.into(),
-            cid: cid.into(),
+            service: test_sid(service),
+            cid: test_cid(cid),
             cpu_usage_ns: seconds * 50_000_000,
             system_cpu_usage_ns: seconds * 1_000_000_000,
             cpu_count: 1,
             mem_used: 100,
-            mem_limit: 200,
             net_rx,
             net_tx: 0,
             blk_read: 0,
             blk_write: 0,
         }
+    }
+
+    /// Maps a short mnemonic label to a distinct, valid `ContainerId` for test readability.
+    fn test_cid(label: &str) -> crate::model::container_id::ContainerId {
+        let hex = match label {
+            "abc" => "aaaaaaaaaaaa",
+            "def" => "bbbbbbbbbbbb",
+            "ghi" => "cccccccccccc",
+            other => panic!("add a hex mapping for test cid {other}"),
+        };
+        crate::model::container_id::ContainerId::parse(hex).unwrap()
     }
 
     #[test]
@@ -342,8 +375,8 @@ mod tests {
         state.record_containers(&[container_sample(20_000, "abc", "web", 0)]);
 
         let snapshot = state.current_at(20_000);
-        assert!(snapshot.containers.contains_key("abc"));
-        assert!(!snapshot.containers.contains_key("def"));
+        assert!(snapshot.containers.contains_key(&test_cid("abc")));
+        assert!(!snapshot.containers.contains_key(&test_cid("def")));
     }
 
     #[test]
@@ -359,8 +392,14 @@ mod tests {
         ]);
 
         let snapshot = state.current_at(20_000);
-        assert_eq!(snapshot.containers["abc"].net_rx_rate, Some(100.0));
-        assert_eq!(snapshot.containers["def"].net_rx_rate, Some(2_000.0));
+        assert_eq!(
+            snapshot.containers[&test_cid("abc")].net_rx_rate,
+            Some(100.0)
+        );
+        assert_eq!(
+            snapshot.containers[&test_cid("def")].net_rx_rate,
+            Some(2_000.0)
+        );
     }
 
     #[test]
@@ -369,7 +408,7 @@ mod tests {
         state.record_containers(&[container_sample(10_000, "abc", "web", 1_000)]);
 
         let snapshot = state.current_at(10_000);
-        assert_eq!(snapshot.containers["abc"].net_rx_rate, None);
+        assert_eq!(snapshot.containers[&test_cid("abc")].net_rx_rate, None);
         assert_eq!(snapshot.services["web"].net_rx_rate, None);
     }
 

@@ -8,7 +8,12 @@
 use sqlx::{QueryBuilder, Row, SqlitePool};
 
 use crate::error::{AppError, AppResult};
-use crate::model::{ContainerSample, HostSample, MetricsResolution, TimeRange};
+use crate::model::{
+    container_id::ContainerId,
+    metrics::{ContainerSample, HostSample, MetricsResolution},
+    service_id::ServiceId,
+    time::TimeRange,
+};
 
 /// Bound on rows per multi-row insert; SQLite allows 32766 bound parameters.
 const INSERT_CHUNK_ROWS: usize = 3_000;
@@ -23,6 +28,21 @@ fn insert_verb(resolution: MetricsResolution) -> &'static str {
 
 fn storage(err: impl std::fmt::Display) -> AppError {
     AppError::Storage(err.to_string())
+}
+
+fn sqlite_integer(value: u64, column: &str) -> AppResult<i64> {
+    i64::try_from(value)
+        .map_err(|_| AppError::Storage(format!("{column} exceeds SQLite INTEGER range")))
+}
+
+fn unsigned_integer(value: i64, column: &str) -> AppResult<u64> {
+    u64::try_from(value).map_err(|_| AppError::Storage(format!("{column} is negative")))
+}
+
+fn service_id(value: i64) -> AppResult<ServiceId> {
+    Ok(ServiceId::from_u32(u32::try_from(value).map_err(|_| {
+        AppError::Storage("stored service id is outside u32 range".into())
+    })?))
 }
 
 fn suffix(resolution: MetricsResolution) -> &'static str {
@@ -50,9 +70,7 @@ pub async fn create_host_table(pool: &SqlitePool, resolution: MetricsResolution)
             ts INTEGER PRIMARY KEY,
             cpu_pct_mill INTEGER NOT NULL,
             mem_used INTEGER NOT NULL,
-            mem_total INTEGER NOT NULL,
             storage_used INTEGER NOT NULL,
-            storage_total INTEGER NOT NULL,
             metrics_size INTEGER NOT NULL,
             logs_size INTEGER NOT NULL,
             net_rx_rate_mill INTEGER,
@@ -78,11 +96,10 @@ pub async fn create_container_table(
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "CREATE TABLE IF NOT EXISTS {} (
             ts INTEGER NOT NULL,
-            cid TEXT NOT NULL,
-            service TEXT NOT NULL,
+            cid BLOB NOT NULL CHECK(length(cid) = 6),
+            sid INTEGER NOT NULL,
             cpu_pct_mill INTEGER NOT NULL,
             mem_used INTEGER NOT NULL,
-            mem_limit INTEGER NOT NULL,
             net_rx_rate_mill INTEGER,
             net_tx_rate_mill INTEGER,
             blk_read_rate_mill INTEGER,
@@ -103,25 +120,45 @@ pub async fn insert_host(
     resolution: MetricsResolution,
     sample: HostSample,
 ) -> AppResult<()> {
+    let cpu_pct_mill = sqlite_integer(sample.cpu_pct_mill, "cpu_pct_mill")?;
+    let mem_used = sqlite_integer(sample.mem_used, "mem_used")?;
+    let storage_used = sqlite_integer(sample.storage_used, "storage_used")?;
+    let metrics_size = sqlite_integer(sample.metrics_size, "metrics_size")?;
+    let logs_size = sqlite_integer(sample.logs_size, "logs_size")?;
+    let net_rx_rate_mill = sample
+        .net_rx_rate_mill
+        .map(|value| sqlite_integer(value, "net_rx_rate_mill"))
+        .transpose()?;
+    let net_tx_rate_mill = sample
+        .net_tx_rate_mill
+        .map(|value| sqlite_integer(value, "net_tx_rate_mill"))
+        .transpose()?;
+    let disk_read_rate_mill = sample
+        .disk_read_rate_mill
+        .map(|value| sqlite_integer(value, "disk_read_rate_mill"))
+        .transpose()?;
+    let disk_write_rate_mill = sample
+        .disk_write_rate_mill
+        .map(|value| sqlite_integer(value, "disk_write_rate_mill"))
+        .transpose()?;
+
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "{} INTO {}
-                 (ts, cpu_pct_mill, mem_used, mem_total, storage_used, storage_total, metrics_size, logs_size, net_rx_rate_mill, net_tx_rate_mill, disk_read_rate_mill, disk_write_rate_mill)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 (ts, cpu_pct_mill, mem_used, storage_used, metrics_size, logs_size, net_rx_rate_mill, net_tx_rate_mill, disk_read_rate_mill, disk_write_rate_mill)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         insert_verb(resolution),
         host_table(resolution)
     )))
     .bind(sample.ts)
-    .bind(sample.cpu_pct_mill as i64)
-    .bind(sample.mem_used as i64)
-    .bind(sample.mem_total as i64)
-    .bind(sample.storage_used as i64)
-    .bind(sample.storage_total as i64)
-    .bind(sample.metrics_size as i64)
-    .bind(sample.logs_size as i64)
-    .bind(sample.net_rx_rate_mill.map(|rate| rate as i64))
-    .bind(sample.net_tx_rate_mill.map(|rate| rate as i64))
-    .bind(sample.disk_read_rate_mill.map(|rate| rate as i64))
-    .bind(sample.disk_write_rate_mill.map(|rate| rate as i64))
+    .bind(cpu_pct_mill)
+    .bind(mem_used)
+    .bind(storage_used)
+    .bind(metrics_size)
+    .bind(logs_size)
+    .bind(net_rx_rate_mill)
+    .bind(net_tx_rate_mill)
+    .bind(disk_read_rate_mill)
+    .bind(disk_write_rate_mill)
     .execute(pool)
     .await
     .map_err(storage)?;
@@ -137,9 +174,24 @@ pub async fn insert_containers(
         return Ok(());
     }
 
+    for sample in &samples {
+        sqlite_integer(sample.cpu_pct_mill, "cpu_pct_mill")?;
+        sqlite_integer(sample.mem_used, "mem_used")?;
+        for (value, column) in [
+            (sample.net_rx_rate_mill, "net_rx_rate_mill"),
+            (sample.net_tx_rate_mill, "net_tx_rate_mill"),
+            (sample.blk_read_rate_mill, "blk_read_rate_mill"),
+            (sample.blk_write_rate_mill, "blk_write_rate_mill"),
+        ] {
+            if let Some(value) = value {
+                sqlite_integer(value, column)?;
+            }
+        }
+    }
+
     let prefix = format!(
         "{} INTO {}
-                (ts, cid, service, cpu_pct_mill, mem_used, mem_limit, net_rx_rate_mill, net_tx_rate_mill, blk_read_rate_mill, blk_write_rate_mill) ",
+                (ts, cid, sid, cpu_pct_mill, mem_used, net_rx_rate_mill, net_tx_rate_mill, blk_read_rate_mill, blk_write_rate_mill) ",
         insert_verb(resolution),
         container_table(resolution)
     );
@@ -149,15 +201,30 @@ pub async fn insert_containers(
         let mut builder = QueryBuilder::new(prefix.clone());
         builder.push_values(chunk, |mut row, sample| {
             row.push_bind(sample.ts)
-                .push_bind(sample.cid.clone())
-                .push_bind(sample.service.clone())
-                .push_bind(sample.cpu_pct_mill as i64)
-                .push_bind(sample.mem_used as i64)
-                .push_bind(sample.mem_limit as i64)
-                .push_bind(sample.net_rx_rate_mill.map(|rate| rate as i64))
-                .push_bind(sample.net_tx_rate_mill.map(|rate| rate as i64))
-                .push_bind(sample.blk_read_rate_mill.map(|rate| rate as i64))
-                .push_bind(sample.blk_write_rate_mill.map(|rate| rate as i64));
+                .push_bind(sample.cid.as_bytes().as_slice())
+                .push_bind(i64::from(sample.service.as_u32()))
+                .push_bind(
+                    sqlite_integer(sample.cpu_pct_mill, "cpu_pct_mill")
+                        .expect("validated before transaction"),
+                )
+                .push_bind(
+                    sqlite_integer(sample.mem_used, "mem_used")
+                        .expect("validated before transaction"),
+                )
+                .push_bind(sample.net_rx_rate_mill.map(|value| {
+                    sqlite_integer(value, "net_rx_rate_mill").expect("validated before transaction")
+                }))
+                .push_bind(sample.net_tx_rate_mill.map(|value| {
+                    sqlite_integer(value, "net_tx_rate_mill").expect("validated before transaction")
+                }))
+                .push_bind(sample.blk_read_rate_mill.map(|value| {
+                    sqlite_integer(value, "blk_read_rate_mill")
+                        .expect("validated before transaction")
+                }))
+                .push_bind(sample.blk_write_rate_mill.map(|value| {
+                    sqlite_integer(value, "blk_write_rate_mill")
+                        .expect("validated before transaction")
+                }));
         });
         builder
             .build()
@@ -171,23 +238,22 @@ pub async fn insert_containers(
 
 fn host_sample_from_row(row: sqlx::sqlite::SqliteRow) -> AppResult<HostSample> {
     fn count(row: &sqlx::sqlite::SqliteRow, column: &str) -> AppResult<u64> {
-        Ok(row.try_get::<i64, _>(column).map_err(storage)? as u64)
+        unsigned_integer(row.try_get(column).map_err(storage)?, column)
     }
 
     fn rate(row: &sqlx::sqlite::SqliteRow, column: &str) -> AppResult<Option<u64>> {
         Ok(row
             .try_get::<Option<i64>, _>(column)
             .map_err(storage)?
-            .map(|rate| rate as u64))
+            .map(|rate| unsigned_integer(rate, column))
+            .transpose()?)
     }
 
     Ok(HostSample {
         ts: row.try_get("ts").map_err(storage)?,
         cpu_pct_mill: count(&row, "cpu_pct_mill")?,
         mem_used: count(&row, "mem_used")?,
-        mem_total: count(&row, "mem_total")?,
         storage_used: count(&row, "storage_used")?,
-        storage_total: count(&row, "storage_total")?,
         metrics_size: count(&row, "metrics_size")?,
         logs_size: count(&row, "logs_size")?,
         net_rx_rate_mill: rate(&row, "net_rx_rate_mill")?,
@@ -199,23 +265,27 @@ fn host_sample_from_row(row: sqlx::sqlite::SqliteRow) -> AppResult<HostSample> {
 
 fn container_sample_from_row(row: sqlx::sqlite::SqliteRow) -> AppResult<ContainerSample> {
     fn count(row: &sqlx::sqlite::SqliteRow, column: &str) -> AppResult<u64> {
-        Ok(row.try_get::<i64, _>(column).map_err(storage)? as u64)
+        unsigned_integer(row.try_get(column).map_err(storage)?, column)
     }
 
     fn rate(row: &sqlx::sqlite::SqliteRow, column: &str) -> AppResult<Option<u64>> {
         Ok(row
             .try_get::<Option<i64>, _>(column)
             .map_err(storage)?
-            .map(|rate| rate as u64))
+            .map(|rate| unsigned_integer(rate, column))
+            .transpose()?)
     }
 
     Ok(ContainerSample {
         ts: row.try_get("ts").map_err(storage)?,
-        cid: row.try_get("cid").map_err(storage)?,
-        service: row.try_get("service").map_err(storage)?,
+        cid: {
+            let bytes: Vec<u8> = row.try_get("cid").map_err(storage)?;
+            ContainerId::from_bytes(&bytes)
+                .ok_or_else(|| AppError::Storage("stored cid is not 6 bytes".into()))?
+        },
+        service: service_id(row.try_get("sid").map_err(storage)?)?,
         cpu_pct_mill: count(&row, "cpu_pct_mill")?,
         mem_used: count(&row, "mem_used")?,
-        mem_limit: count(&row, "mem_limit")?,
         net_rx_rate_mill: rate(&row, "net_rx_rate_mill")?,
         net_tx_rate_mill: rate(&row, "net_tx_rate_mill")?,
         blk_read_rate_mill: rate(&row, "blk_read_rate_mill")?,
@@ -229,7 +299,7 @@ pub async fn select_host(
     range: TimeRange,
 ) -> AppResult<Vec<HostSample>> {
     let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "SELECT ts, cpu_pct_mill, mem_used, mem_total, storage_used, storage_total, metrics_size, logs_size, net_rx_rate_mill, net_tx_rate_mill, disk_read_rate_mill, disk_write_rate_mill
+        "SELECT ts, cpu_pct_mill, mem_used, storage_used, metrics_size, logs_size, net_rx_rate_mill, net_tx_rate_mill, disk_read_rate_mill, disk_write_rate_mill
            FROM {}
            WHERE ts >= ? AND ts <= ?
          ORDER BY ts ASC",
@@ -250,10 +320,10 @@ pub async fn select_containers(
     range: TimeRange,
 ) -> AppResult<Vec<ContainerSample>> {
     let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "SELECT ts, cid, service, cpu_pct_mill, mem_used, mem_limit, net_rx_rate_mill, net_tx_rate_mill, blk_read_rate_mill, blk_write_rate_mill
+        "SELECT ts, cid, sid, cpu_pct_mill, mem_used, net_rx_rate_mill, net_tx_rate_mill, blk_read_rate_mill, blk_write_rate_mill
          FROM {}
          WHERE ts >= ? AND ts <= ?
-         ORDER BY ts ASC",
+         ORDER BY cid ASC, ts ASC",
         container_table(resolution)
     )))
     .bind(range.from)
@@ -332,4 +402,69 @@ pub async fn delete_containers_before(
     .rows_affected();
 
     Ok(rows_affected)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample(cid: &str, ts: i64) -> ContainerSample {
+        ContainerSample {
+            ts,
+            service: ServiceId::from_u32(1),
+            cid: ContainerId::parse(cid).unwrap(),
+            cpu_pct_mill: 0,
+            mem_used: 0,
+            net_rx_rate_mill: None,
+            net_tx_rate_mill: None,
+            blk_read_rate_mill: None,
+            blk_write_rate_mill: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn selects_container_samples_grouped_by_container_then_timestamp() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        create_container_table(&pool, MetricsResolution::TenSeconds)
+            .await
+            .unwrap();
+
+        insert_containers(
+            &pool,
+            MetricsResolution::TenSeconds,
+            vec![
+                sample("aaaaaaaaaaaa", 10_000),
+                sample("bbbbbbbbbbbb", 10_000),
+                sample("aaaaaaaaaaaa", 20_000),
+                sample("bbbbbbbbbbbb", 20_000),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let selected = select_containers(
+            &pool,
+            MetricsResolution::TenSeconds,
+            TimeRange {
+                from: 0,
+                to: 20_000,
+            },
+        )
+        .await
+        .unwrap();
+        let order: Vec<(String, i64)> = selected
+            .into_iter()
+            .map(|sample| (sample.cid.to_hex(), sample.ts))
+            .collect();
+
+        assert_eq!(
+            order,
+            vec![
+                ("aaaaaaaaaaaa".to_string(), 10_000),
+                ("aaaaaaaaaaaa".to_string(), 20_000),
+                ("bbbbbbbbbbbb".to_string(), 10_000),
+                ("bbbbbbbbbbbb".to_string(), 20_000),
+            ]
+        );
+    }
 }

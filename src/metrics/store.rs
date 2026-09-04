@@ -1,21 +1,25 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use sqlx::SqlitePool;
-use sqlx::sqlite::{
-    SqliteAutoVacuum, SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
-};
 
 use crate::error::{AppError, AppResult};
+use crate::metadata::ServiceRegistry;
 use crate::metrics::downsampling::sum_by_bucket;
 use crate::metrics::{rollup, schema};
 use crate::model::{
-    ContainerGroupMetrics, ContainerPoint, ContainerSample, HostPoint, HostSample,
-    MetricsResolution, TimeRange,
+    container_id::ContainerId,
+    metrics::{
+        ContainerGroupMetrics, ContainerPoint, ContainerSample, HostPoint, HostSample,
+        MetricsResolution,
+    },
+    service_id::ServiceId,
+    time::TimeRange,
 };
+use crate::sqlite::{open_pool, reclaim_free_pages};
 
 /// Persistence for `metrics.db`.
 #[cfg_attr(test, mockall::automock)]
@@ -47,17 +51,12 @@ pub trait MetricsStore: Send + Sync + 'static {
     async fn close(&self);
 }
 
-/// Only a handful of distinct statements are ever prepared against this database.
-const STATEMENT_CACHE_CAPACITY: usize = 32;
-/// Recommended by SQLite for `PRAGMA optimize`.
-const ANALYSIS_LIMIT: u32 = 400;
-/// Free pages returned per `incremental_vacuum` step; must match [`VACUUM_STEP`].
-const VACUUM_CHUNK_PAGES: u64 = 1_000;
-const VACUUM_STEP: &str = "PRAGMA incremental_vacuum(1000)";
 /// SQLite-backed implementation.
 pub struct SqliteMetricsStore {
     db_path: PathBuf,
     pool: SqlitePool,
+    /// Resolves the stored `sid` back to a service name on read.
+    services: Arc<ServiceRegistry>,
     /// Newest `10s` bucket written per source; a change of coarse bucket triggers a rollup.
     last_host_ts: Mutex<Option<i64>>,
     last_containers_ts: Mutex<Option<i64>>,
@@ -68,45 +67,20 @@ impl SqliteMetricsStore {
     /// Opens the single long-lived connection used for the lifetime of the process.
     pub async fn connect(
         db_path: impl AsRef<Path>,
+        services: Arc<ServiceRegistry>,
         cache_size_kb: u64,
         busy_timeout: Duration,
         downsample_max_gap_pct: u8,
     ) -> AppResult<Self> {
         let db_path = db_path.as_ref().to_path_buf();
-        if let Some(parent) = db_path.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(storage)?;
-        }
-
         tracing::info!(database = %db_path.display(), "opening metrics database connection");
 
-        let connect_options = SqliteConnectOptions::new()
-            .filename(&db_path)
-            .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal)
-            .synchronous(SqliteSynchronous::Normal)
-            .auto_vacuum(SqliteAutoVacuum::Incremental)
-            .busy_timeout(busy_timeout)
-            .foreign_keys(false)
-            .statement_cache_capacity(STATEMENT_CACHE_CAPACITY)
-            .analysis_limit(ANALYSIS_LIMIT)
-            .optimize_on_close(true, ANALYSIS_LIMIT)
-            // Negative values are interpreted as KiB rather than pages.
-            .pragma("cache_size", format!("-{cache_size_kb}"));
-
-        // A single connection serialises every reader and writer, so the database is
-        // never contended from within this process.
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .min_connections(1)
-            .idle_timeout(None)
-            .max_lifetime(None)
-            .connect_with(connect_options)
-            .await
-            .map_err(storage)?;
+        let pool = open_pool(&db_path, cache_size_kb, busy_timeout, true).await?;
 
         let store = Self {
             db_path,
             pool,
+            services,
             last_host_ts: Mutex::new(None),
             last_containers_ts: Mutex::new(None),
             downsample_max_gap_pct,
@@ -144,39 +118,6 @@ impl SqliteMetricsStore {
         *last = Some(new_ts);
         previous
     }
-
-    /// Returns free pages to the filesystem in bounded steps so a large retention
-    /// delete never blocks the connection for one long stretch.
-    async fn reclaim_free_pages(&self) {
-        let free_pages: i64 = match sqlx::query_scalar("PRAGMA freelist_count")
-            .fetch_one(&self.pool)
-            .await
-        {
-            Ok(pages) => pages,
-            Err(err) => {
-                tracing::warn!(error = %err, "failed to read metrics database freelist");
-                return;
-            }
-        };
-
-        for _ in 0..free_pages.unsigned_abs().div_ceil(VACUUM_CHUNK_PAGES) {
-            if let Err(err) = sqlx::query(VACUUM_STEP).execute(&self.pool).await {
-                tracing::warn!(error = %err, "failed to vacuum metrics database");
-                return;
-            }
-        }
-
-        if let Err(err) = sqlx::query("PRAGMA optimize").execute(&self.pool).await {
-            tracing::warn!(error = %err, "failed to optimize metrics database");
-        }
-    }
-
-    /// Path of the write-ahead log holding not-yet-checkpointed pages.
-    fn wal_path(&self) -> PathBuf {
-        let mut path = self.db_path.clone().into_os_string();
-        path.push("-wal");
-        PathBuf::from(path)
-    }
 }
 
 fn storage(err: impl std::fmt::Display) -> AppError {
@@ -194,8 +135,7 @@ async fn file_size_bytes(path: &Path) -> AppResult<u64> {
 #[async_trait]
 impl MetricsStore for SqliteMetricsStore {
     async fn database_size_bytes(&self) -> AppResult<u64> {
-        // Pages committed but not yet checkpointed still live in the write-ahead log.
-        Ok(file_size_bytes(&self.db_path).await? + file_size_bytes(&self.wal_path()).await?)
+        file_size_bytes(&self.db_path).await
     }
 
     async fn delete_before(&self, cutoff_ms: i64) -> AppResult<u64> {
@@ -210,7 +150,7 @@ impl MetricsStore for SqliteMetricsStore {
             deleted += schema::delete_containers_before(&self.pool, resolution, cutoff_ms).await?;
         }
 
-        self.reclaim_free_pages().await;
+        reclaim_free_pages(&self.pool).await;
         Ok(deleted)
     }
 
@@ -264,31 +204,41 @@ impl MetricsStore for SqliteMetricsStore {
         range: TimeRange,
         resolution: MetricsResolution,
     ) -> AppResult<HashMap<String, ContainerGroupMetrics>> {
-        let mut by_service_and_container: HashMap<String, HashMap<String, Vec<ContainerSample>>> =
-            HashMap::new();
+        let mut by_service_and_container: HashMap<
+            ServiceId,
+            HashMap<ContainerId, Vec<ContainerSample>>,
+        > = HashMap::new();
+        // select_containers orders by (cid, ts), so each collected vector stays chronological.
         for sample in schema::select_containers(&self.pool, resolution, range).await? {
             by_service_and_container
-                .entry(sample.service.clone())
+                .entry(sample.service)
                 .or_default()
-                .entry(sample.cid.clone())
+                .entry(sample.cid)
                 .or_default()
                 .push(sample);
         }
 
         let mut by_service = HashMap::new();
-        for (service, by_container) in by_service_and_container {
-            let mut containers: HashMap<String, Vec<ContainerPoint>> = HashMap::new();
-            for (cid, mut samples) in by_container {
-                samples.sort_by_key(|sample| sample.ts);
+        for (sid, by_container) in by_service_and_container {
+            // Only reachable if retention reclaimed the sid between the read and the resolve.
+            let Some(service) = self.services.name(sid) else {
+                tracing::warn!(%sid, "dropping metrics for a service missing from the dictionary");
+                continue;
+            };
+            let mut containers: HashMap<ContainerId, Vec<ContainerPoint>> = HashMap::new();
+            for (cid, samples) in by_container {
                 let points = samples
                     .into_iter()
                     .filter(|sample| sample.ts >= range.from)
-                    .map(ContainerPoint::from)
+                    .map(|sample| ContainerPoint::from_sample(sample, service.to_string()))
                     .collect();
                 containers.insert(cid, points);
             }
             let sum = sum_by_bucket(containers.values());
-            by_service.insert(service, ContainerGroupMetrics { sum, containers });
+            by_service.insert(
+                service.to_string(),
+                ContainerGroupMetrics { sum, containers },
+            );
         }
 
         Ok(by_service)
@@ -303,6 +253,7 @@ impl MetricsStore for SqliteMetricsStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metadata::SqliteMetadataStore;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn test_directory(name: &str) -> std::path::PathBuf {
@@ -314,7 +265,16 @@ mod tests {
     }
 
     async fn test_store(db_path: impl AsRef<Path>) -> SqliteMetricsStore {
-        SqliteMetricsStore::connect(db_path, 1_024, Duration::from_secs(5), 40)
+        let db_path = db_path.as_ref().to_path_buf();
+        let metadata = SqliteMetadataStore::connect(
+            db_path.with_file_name("metadata.db"),
+            1_024,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        let services = Arc::new(ServiceRegistry::load(Arc::new(metadata)).await.unwrap());
+        SqliteMetricsStore::connect(db_path, services, 1_024, Duration::from_secs(5), 40)
             .await
             .unwrap()
     }
@@ -324,9 +284,7 @@ mod tests {
             ts,
             cpu_pct_mill: 12_500,
             mem_used: 100,
-            mem_total: 200,
             storage_used: 700,
-            storage_total: 800,
             metrics_size: 900,
             logs_size: 1_000,
             net_rx_rate_mill: Some(300_000),
@@ -336,14 +294,13 @@ mod tests {
         }
     }
 
-    fn container_sample(ts: i64, service: &str) -> ContainerSample {
+    fn container_sample(ts: i64, service: ServiceId) -> ContainerSample {
         ContainerSample {
             ts,
-            service: service.into(),
-            cid: "abc123".into(),
+            service,
+            cid: ContainerId::parse("abc123abc123").unwrap(),
             cpu_pct_mill: 25_000,
             mem_used: 1_000,
-            mem_limit: 2_000,
             net_rx_rate_mill: Some(3_000_000),
             net_tx_rate_mill: Some(4_000_000),
             blk_read_rate_mill: Some(5_000_000),
@@ -355,14 +312,16 @@ mod tests {
     async fn persists_and_queries_samples_by_range() {
         let directory = test_directory("range");
         let store = test_store(directory.join("metrics.db")).await;
+        let web = store.services.id_of("web").await.unwrap();
+        let worker = store.services.id_of("worker").await.unwrap();
 
         store.insert_host(host_sample(10_000)).await.unwrap();
         store.insert_host(host_sample(20_000)).await.unwrap();
         store
             .insert_containers(vec![
-                container_sample(10_000, "web"),
-                container_sample(20_000, "worker"),
-                container_sample(30_000, "web"),
+                container_sample(10_000, web),
+                container_sample(20_000, worker),
+                container_sample(30_000, web),
             ])
             .await
             .unwrap();
@@ -398,9 +357,10 @@ mod tests {
         assert_eq!(containers.sum[0].ts, 10_000);
         assert_eq!(containers.sum[0].cpu_pct, 25.0);
         assert_eq!(containers.containers.len(), 1);
-        assert_eq!(containers.containers["abc123"][0].ts, 10_000);
-        assert_eq!(containers.containers["abc123"][0].service, "web");
-        assert_eq!(containers.containers["abc123"][0].mem_used, 1_000);
+        let cid = ContainerId::parse("abc123abc123").unwrap();
+        assert_eq!(containers.containers[&cid][0].ts, 10_000);
+        assert_eq!(containers.containers[&cid][0].service, "web");
+        assert_eq!(containers.containers[&cid][0].mem_used, 1_000);
 
         let _ = tokio::fs::remove_dir_all(directory).await;
     }
@@ -444,6 +404,7 @@ mod tests {
     async fn container_rates_round_trip_as_null_when_missing() {
         let directory = test_directory("container-null-rates");
         let store = test_store(directory.join("metrics.db")).await;
+        let web = store.services.id_of("web").await.unwrap();
 
         store
             .insert_containers(vec![ContainerSample {
@@ -451,7 +412,7 @@ mod tests {
                 net_tx_rate_mill: None,
                 blk_read_rate_mill: None,
                 blk_write_rate_mill: None,
-                ..container_sample(10_000, "web")
+                ..container_sample(10_000, web)
             }])
             .await
             .unwrap();
@@ -468,7 +429,8 @@ mod tests {
             .unwrap();
         let metrics = &by_service["web"];
 
-        assert_eq!(metrics.containers["abc123"][0].net_rx_rate, None);
+        let cid = ContainerId::parse("abc123abc123").unwrap();
+        assert_eq!(metrics.containers[&cid][0].net_rx_rate, None);
         assert_eq!(metrics.sum[0].net_rx_rate, None);
 
         let _ = tokio::fs::remove_dir_all(directory).await;
@@ -499,7 +461,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reports_size_including_the_write_ahead_log() {
+    async fn reports_nonzero_database_size() {
         let directory = test_directory("size");
         let store = test_store(directory.join("metrics.db")).await;
 
@@ -513,10 +475,11 @@ mod tests {
     async fn deleting_before_a_cutoff_reclaims_pages() {
         let directory = test_directory("retention");
         let store = test_store(directory.join("metrics.db")).await;
+        let web = store.services.id_of("web").await.unwrap();
 
         store.insert_host(host_sample(10_000)).await.unwrap();
         store
-            .insert_containers(vec![container_sample(10_000, "web")])
+            .insert_containers(vec![container_sample(10_000, web)])
             .await
             .unwrap();
 

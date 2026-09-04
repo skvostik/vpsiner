@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, ChevronDown, ChevronRight, Logs, Play, RotateCcw, Square } from '@lucide/vue'
-import { NButton, NCard, NEmpty, NSpin, NStatistic, NTooltip } from 'naive-ui'
+import { NButton, NCard, NSpin, NStatistic, NTooltip } from 'naive-ui'
 
 import MetricChart, { type ChartPoint, type ChartSeries } from '../components/MetricChart.vue'
 import LiveStatusIcon from '../components/LiveStatusIcon.vue'
@@ -323,8 +323,7 @@ usePageTitle(() => container.value?.name || service.value || 'Container')
           @update:custom-from="updateCustomFrom"
           @update:custom-to="updateCustomTo"
         />
-        <n-empty v-if="!containerSeriesEntries.length" description="Not enough data yet" />
-        <div v-else class="grid min-w-0 gap-4 lg:grid-cols-2">
+        <div class="grid min-w-0 gap-4 lg:grid-cols-2">
           <n-card
             size="small"
             :bordered="false"
@@ -338,12 +337,7 @@ usePageTitle(() => container.value?.name || service.value || 'Container')
             :bordered="false"
             class="min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
           >
-            <n-statistic
-              label="Memory used / limit"
-              :value="
-                latest ? `${formatBytes(latest.mem_used)} / ${formatBytes(latest.mem_limit)}` : '—'
-              "
-            />
+            <n-statistic label="Memory used" :value="latest ? formatBytes(latest.mem_used) : '—'" />
             <MetricChart :series="memorySeries" :format-value="formatBytes" />
           </n-card>
           <n-card

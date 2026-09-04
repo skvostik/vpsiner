@@ -67,9 +67,14 @@ mod tests {
 
     use crate::docker::MockDockerService;
     use crate::logs::store::MockLogStore;
+    use crate::metadata::ServiceRegistry;
     use crate::metrics::host::MockHostMetricsSource;
     use crate::metrics::store::MockMetricsStore;
-    use crate::model::{ContainerRawSample, HostRawSample};
+    use crate::model::{
+        container_id::ContainerId,
+        metrics::{ContainerRawSample, HostRawSample},
+        service_id::ServiceId,
+    };
 
     #[tokio::test]
     async fn adds_database_sizes_to_host_samples() {
@@ -147,7 +152,10 @@ mod tests {
         let host: Arc<dyn HostMetricsSource> = Arc::new(host);
         let metrics: Arc<dyn MetricsStore> = Arc::new(metrics);
         let logs: Arc<dyn LogStore> = Arc::new(logs);
-        let snapshot = Arc::new(MetricsSnapshotState::new(Duration::from_secs(10)));
+        let snapshot = Arc::new(MetricsSnapshotState::new(
+            ServiceRegistry::fixture(&[]),
+            Duration::from_secs(10),
+        ));
         let bucket_watcher = Arc::new(BucketWatcher::new());
         let mut state = HostCollectorState::new(Duration::from_secs(10));
         for _ in 0..3 {
@@ -172,14 +180,13 @@ mod tests {
                 .map(|second: i64| {
                     vec![ContainerRawSample {
                         ts: second * 1_000,
-                        service: "shop-web".into(),
-                        cid: "short-id".into(),
+                        service: ServiceId::from_u32(1),
+                        cid: ContainerId::parse("aaaaaaaaaaaa").unwrap(),
                         // One CPU online, advancing so the ratio is a steady 12.5% usage.
                         cpu_usage_ns: second as u64 * 125_000_000,
                         system_cpu_usage_ns: second as u64 * 1_000_000_000,
                         cpu_count: 1,
                         mem_used: 100,
-                        mem_limit: 200,
                         net_rx: second as u64 * 1_000,
                         net_tx: second as u64 * 1_000,
                         blk_read: second as u64 * 1_000,
@@ -197,8 +204,8 @@ mod tests {
             .withf(|samples| {
                 samples.len() == 1
                     && samples[0].ts == 10_000
-                    && samples[0].service == "shop-web"
-                    && samples[0].cid == "short-id"
+                    && samples[0].service == ServiceId::from_u32(1)
+                    && samples[0].cid == ContainerId::parse("aaaaaaaaaaaa").unwrap()
                     && samples[0].cpu_pct_mill == 12_500
                     && samples[0].net_rx_rate_mill == Some(1_000_000)
             })
@@ -206,7 +213,10 @@ mod tests {
 
         let docker: Arc<dyn DockerService> = Arc::new(docker);
         let metrics: Arc<dyn MetricsStore> = Arc::new(metrics);
-        let snapshot = Arc::new(MetricsSnapshotState::new(Duration::from_secs(1)));
+        let snapshot = Arc::new(MetricsSnapshotState::new(
+            ServiceRegistry::fixture(&["shop-web"]),
+            Duration::from_secs(1),
+        ));
         let bucket_watcher = Arc::new(BucketWatcher::new());
         // Must match the fixture's cadence, or the buffers are sized for far fewer samples.
         run_containers(

@@ -4,7 +4,11 @@ use bollard::{
 };
 use futures_util::StreamExt;
 
-use crate::model::{ContainerState, ContainerStats, ContainerSummary, TimestampMs};
+use crate::model::{
+    container_id::ContainerId,
+    containers::{ContainerState, ContainerStats, ContainerSummary},
+    time::TimestampMs,
+};
 use crate::{
     docker::{
         container_registry::ObservedContainer,
@@ -27,10 +31,18 @@ pub(super) async fn list_running_containers(
 
     let observed_containers = containers
         .into_iter()
-        .map(|response| ObservedContainer {
-            id: response.id.clone().unwrap_or_default(),
-            name: get_container_name(&response),
-            service: get_container_service(&response),
+        .map(|response| {
+            let full_id = response.id.clone().unwrap_or_default();
+            let id = ContainerId::parse(&full_id).unwrap_or_else(|| {
+                tracing::warn!(full_id = %full_id, "container id is not a valid Docker id, using zeroed id");
+                ContainerId::default()
+            });
+            ObservedContainer {
+                id,
+                full_id,
+                name: get_container_name(&response),
+                service: get_container_service(&response),
+            }
         })
         .collect::<Vec<_>>();
 
@@ -54,7 +66,7 @@ pub(super) async fn list_all_containers_details(
         .map(|container| async move {
             let summary = map_container_summary(&container);
             let started_at = if summary.state == Some(ContainerState::Running) {
-                inspect_started_at(docker, &summary.id, request_timeout)
+                inspect_started_at(docker, &summary.full_id, request_timeout)
                     .await
                     .or_else(|| None)
             } else {
@@ -63,6 +75,7 @@ pub(super) async fn list_all_containers_details(
 
             Some(ContainerSummary {
                 id: summary.id,
+                full_id: summary.full_id,
                 name: summary.name,
                 service: summary.service,
                 image: summary.image,

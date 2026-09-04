@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use crate::api::logs::{merge_services, parse_levels, parse_streams};
 use crate::error::AppResult;
 use crate::logs::store::LogStore;
-use crate::model::{LogFilter, LogTailAppend, ServiceDiff, ServiceStatus};
+use crate::model::logs::{LogFilter, LogTailAppend, ServiceDiff, ServiceStatus};
 use crate::state::AppState;
 
 enum GroupsStreamState {
@@ -108,9 +108,7 @@ pub async fn groups(
 }
 
 async fn current_groups(state: &AppState) -> BTreeMap<String, ServiceStatus> {
-    let stored = state
-        .metadata
-        .list_last_received()
+    let stored = crate::api::logs::resolve_watermarks(state)
         .await
         .unwrap_or_default();
     let containers = state.docker.containers_info().unwrap_or_default();

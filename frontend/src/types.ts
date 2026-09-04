@@ -24,9 +24,7 @@ export interface HostPoint {
   ts: number
   cpu_pct: number
   mem_used: number
-  mem_total: number
   storage_used: number
-  storage_total: number
   metrics_size: number
   logs_size: number
   net_rx_rate: number | null
@@ -35,12 +33,16 @@ export interface HostPoint {
   disk_write_rate: number | null
 }
 
+export interface CurrentHostPoint extends HostPoint {
+  mem_total: number
+  storage_total: number
+}
+
 export interface ContainerPoint {
   ts: number
   service: string
   cpu_pct: number
   mem_used: number
-  mem_limit: number
   net_rx_rate: number | null
   net_tx_rate: number | null
   blk_read_rate: number | null
@@ -51,7 +53,6 @@ export interface GroupPoint {
   ts: number
   cpu_pct: number
   mem_used: number
-  mem_limit: number
   net_rx_rate: number | null
   net_tx_rate: number | null
   blk_read_rate: number | null
@@ -78,7 +79,7 @@ export interface ContainerGroupMetricsAppend {
 }
 
 export interface MetricsSnapshot {
-  host: HostPoint | null
+  host: CurrentHostPoint | null
   containers: Record<string, ContainerPoint>
   services: Record<string, GroupPoint>
 }

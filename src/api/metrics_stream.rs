@@ -19,10 +19,11 @@ use tokio_util::sync::CancellationToken;
 use crate::error::{AppError, AppResult};
 use crate::metrics::bucket_watcher::MetricsSource;
 use crate::metrics::store::MetricsStore;
-use crate::model::{
-    ContainerGroupMetricsAppend, GroupPoint, MetricsResolution, MetricsResponse, TimeRange,
-    TimestampMs,
+use crate::model::metrics::{
+    ContainerGroupMetricsAppend, GroupPoint, MetricsResolution, MetricsResponse,
 };
+use crate::model::time::TimeRange;
+use crate::model::time::TimestampMs;
 use crate::state::AppState;
 
 fn now_ms() -> TimestampMs {
@@ -392,7 +393,7 @@ fn cross_section_by_service(
 }
 
 fn latest_ts_in_service(
-    group_metrics: &crate::model::ContainerGroupMetrics,
+    group_metrics: &crate::model::metrics::ContainerGroupMetrics,
 ) -> Option<TimestampMs> {
     let sum_ts = group_metrics.sum.last().map(|point| point.ts);
     let containers_ts = group_metrics

@@ -4,9 +4,11 @@ mod db_version;
 mod docker;
 mod error;
 mod logs;
+mod metadata;
 mod metrics;
 mod model;
 mod retention;
+mod sqlite;
 mod state;
 
 use std::net::SocketAddr;
@@ -18,8 +20,8 @@ use tower_http::services::{ServeDir, ServeFile};
 
 use crate::config::Config;
 use crate::docker::BollardDocker;
-use crate::logs::metadata::SqliteLogMetadataStore;
 use crate::logs::store::SqliteLogStore;
+use crate::metadata::SqliteMetadataStore;
 use crate::metrics::host::SysinfoHost;
 use crate::metrics::store::SqliteMetricsStore;
 use crate::state::AppState;
@@ -92,7 +94,7 @@ async fn async_main() {
 
     // Composition root: concrete implementations are chosen here and nowhere else.
     let metadata = Arc::new(
-        SqliteLogMetadataStore::connect(
+        SqliteMetadataStore::connect(
             db_version::metadata_dir(&config.data_path).join("metadata.db"),
             config.sqlite_cache_size_kb,
             config.sqlite_busy_timeout,
@@ -100,9 +102,15 @@ async fn async_main() {
         .await
         .expect("failed to open metadata database"),
     );
+    let services = Arc::new(
+        metadata::ServiceRegistry::load(metadata.clone())
+            .await
+            .expect("failed to load service dictionary"),
+    );
     let metrics = Arc::new(
         SqliteMetricsStore::connect(
             db_version::metrics_dir(&config.data_path).join("metrics.db"),
+            services.clone(),
             config.sqlite_cache_size_kb,
             config.sqlite_busy_timeout,
             config.downsample_max_gap_pct,
@@ -126,6 +134,7 @@ async fn async_main() {
             config.docker_debounce,
             config.docker_controls_mode,
             metadata.clone(),
+            services.clone(),
             config.retention_weeks,
         )),
         metrics,
@@ -136,6 +145,7 @@ async fn async_main() {
             config.sqlite_keep_alive,
         )),
         metadata,
+        services,
         Arc::new(SysinfoHost::default()),
     );
 
@@ -143,10 +153,19 @@ async fn async_main() {
         retention_weeks = config.retention_weeks,
         "retention cleanup worker started"
     );
-    retention::cleanup_once(&state.metrics, &state.logs, config.retention_weeks).await;
+    retention::cleanup_once(
+        &state.metrics,
+        &state.logs,
+        &state.metadata,
+        &state.services,
+        config.retention_weeks,
+    )
+    .await;
     let retention_task = tokio::spawn(retention::run(
         state.metrics.clone(),
         state.logs.clone(),
+        state.metadata.clone(),
+        state.services.clone(),
         config.retention_weeks,
     ));
 
@@ -169,6 +188,7 @@ async fn async_main() {
         state.docker.clone(),
         state.logs.clone(),
         state.metadata.clone(),
+        state.services.clone(),
         state.log_flush_watcher.clone(),
         config.log_flush_debounce,
         config.log_flush_keep_alive,
@@ -278,11 +298,14 @@ mod tests {
 
     use crate::docker::MockDockerService;
     use crate::error::AppError;
-    use crate::logs::metadata::MockLogMetadataStore;
     use crate::logs::store::MockLogStore;
+    use crate::metadata::MockMetadataStore;
     use crate::metrics::host::MockHostMetricsSource;
     use crate::metrics::store::MockMetricsStore;
-    use crate::model::{ContainerState, ContainerSummary};
+    use crate::model::{
+        container_id::ContainerId,
+        containers::{ContainerState, ContainerSummary},
+    };
 
     fn test_config() -> Config {
         Config {
@@ -319,7 +342,8 @@ mod tests {
             Arc::new(docker),
             Arc::new(MockMetricsStore::new()),
             Arc::new(MockLogStore::new()),
-            Arc::new(MockLogMetadataStore::new()),
+            Arc::new(MockMetadataStore::new()),
+            metadata::ServiceRegistry::fixture(&[]),
             Arc::new(MockHostMetricsSource::new()),
         );
         (state, config)
@@ -330,7 +354,8 @@ mod tests {
         let mut docker = MockDockerService::new();
         docker.expect_containers_info().times(1).returning(|| {
             Ok(vec![ContainerSummary {
-                id: "abc123".into(),
+                id: ContainerId::parse("abc123abc123").unwrap(),
+                full_id: "abc123abc123".into(),
                 name: "web".into(),
                 service: "shop-web".into(),
                 image: "nginx:latest".into(),
@@ -365,7 +390,7 @@ mod tests {
         let mut docker = MockDockerService::new();
         docker
             .expect_start_container()
-            .withf(|id| id == "abc123")
+            .withf(|id| *id == ContainerId::parse("abc123abc123").unwrap())
             .returning(|_| Err(AppError::Docker("socket unreachable".into())));
 
         let (state, config) = state_with_docker(docker);
@@ -373,7 +398,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/containers/abc123/start")
+                    .uri("/api/containers/abc123abc123/start")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -388,7 +413,7 @@ mod tests {
         let mut docker = MockDockerService::new();
         docker
             .expect_start_container()
-            .withf(|id| id == "abc123")
+            .withf(|id| *id == ContainerId::parse("abc123abc123").unwrap())
             .returning(|_| {
                 Err(AppError::Forbidden(
                     "container controls are disabled or unavailable on this backend".into(),
@@ -400,7 +425,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/containers/abc123/start")
+                    .uri("/api/containers/abc123abc123/start")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -501,7 +526,8 @@ mod tests {
             Arc::new(MockDockerService::new()),
             Arc::new(MockMetricsStore::new()),
             Arc::new(MockLogStore::new()),
-            Arc::new(MockLogMetadataStore::new()),
+            Arc::new(MockMetadataStore::new()),
+            metadata::ServiceRegistry::fixture(&[]),
             Arc::new(MockHostMetricsSource::new()),
         );
 

@@ -5,7 +5,12 @@ import { NCard, NStatistic } from 'naive-ui'
 import MetricChart, { type ChartSeries } from './MetricChart.vue'
 import { colorForKey } from '../colors'
 import { formatBytes, formatRate } from '../format'
-import type { ContainerMetricsByService, HostPoint, MetricsSnapshot } from '../types'
+import type {
+  ContainerMetricsByService,
+  CurrentHostPoint,
+  HostPoint,
+  MetricsSnapshot,
+} from '../types'
 
 const props = defineProps<{
   snapshot: MetricsSnapshot
@@ -26,7 +31,7 @@ const memoryPoints = computed(() => points('mem_used'))
 const storagePoints = computed(() =>
   props.history.map((sample) => ({
     ts: sample.ts,
-    value: sample.storage_total ? (sample.storage_used / sample.storage_total) * 100 : 0,
+    value: sample.storage_used,
   }))
 )
 const networkReceivedPoints = computed(() => points('net_rx_rate'))
@@ -46,12 +51,12 @@ const databaseSizeSeries = computed<ChartSeries[]>(() => [
   },
 ])
 const networkSeries = computed<ChartSeries[]>(() => [
-  { name: 'In', points: networkReceivedPoints.value, color: '#0891b2' },
-  { name: 'Out', points: networkSentPoints.value, color: '#f59e0b' },
+  { name: 'In', points: networkReceivedPoints.value, color: '#4ade80' },
+  { name: 'Out', points: networkSentPoints.value, color: '#f87171' },
 ])
 const diskSeries = computed<ChartSeries[]>(() => [
-  { name: 'Read', points: diskReadPoints.value, color: '#0891b2' },
-  { name: 'Write', points: diskWritePoints.value, color: '#f59e0b' },
+  { name: 'Read', points: diskReadPoints.value, color: '#4ade80' },
+  { name: 'Write', points: diskWritePoints.value, color: '#f87171' },
 ])
 const containerSeries = computed(() =>
   Object.entries(props.containerHistory).map(([service, samples]) => ({
@@ -94,7 +99,7 @@ const containerMemorySummary = computed(() => {
   return formatBytes(used)
 })
 
-function formatMemorySummary(sample?: HostPoint | null) {
+function formatMemorySummary(sample?: CurrentHostPoint | null) {
   return sample ? `${formatBytes(sample.mem_used)} / ${formatBytes(sample.mem_total)}` : '—'
 }
 
@@ -102,7 +107,7 @@ function formatCpuSummary(sample?: HostPoint | null) {
   return sample ? `${sample.cpu_pct.toFixed(1)}%` : '—'
 }
 
-function formatStorageSummary(sample?: HostPoint | null) {
+function formatStorageSummary(sample?: CurrentHostPoint | null) {
   return sample && sample.storage_total
     ? `${formatBytes(sample.storage_used)} / ${formatBytes(sample.storage_total)}`
     : '—'
@@ -118,7 +123,7 @@ function formatDatabaseStorageSummary(sample?: HostPoint | null) {
     <n-card
       size="small"
       :bordered="false"
-      class="order-1 min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
+      class="min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
     >
       <n-statistic label="Host CPU" :value="formatCpuSummary(host)" />
       <MetricChart
@@ -130,7 +135,7 @@ function formatDatabaseStorageSummary(sample?: HostPoint | null) {
     <n-card
       size="small"
       :bordered="false"
-      class="order-2 min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
+      class="min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
     >
       <n-statistic label="Memory used / total" :value="formatMemorySummary(host)" />
       <MetricChart :points="memoryPoints" :format-value="formatBytes" />
@@ -138,23 +143,7 @@ function formatDatabaseStorageSummary(sample?: HostPoint | null) {
     <n-card
       size="small"
       :bordered="false"
-      class="order-7 min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
-    >
-      <n-statistic label="Storage used / total" :value="formatStorageSummary(host)" />
-      <MetricChart :points="storagePoints" :format-value="(value) => `${value.toFixed(1)}%`" />
-    </n-card>
-    <n-card
-      size="small"
-      :bordered="false"
-      class="order-8 min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
-    >
-      <n-statistic label="Database storage" :value="formatDatabaseStorageSummary(host)" />
-      <MetricChart :series="databaseSizeSeries" :format-value="formatBytes" />
-    </n-card>
-    <n-card
-      size="small"
-      :bordered="false"
-      class="order-3 min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
+      class="min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
     >
       <n-statistic label="Container CPU" :value="containerCpuSummary" />
       <MetricChart :series="containerCpuSeries" :format-value="(value) => `${value.toFixed(1)}%`" />
@@ -162,7 +151,7 @@ function formatDatabaseStorageSummary(sample?: HostPoint | null) {
     <n-card
       size="small"
       :bordered="false"
-      class="order-4 min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
+      class="min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
     >
       <n-statistic label="Container memory" :value="containerMemorySummary" />
       <MetricChart :series="containerMemorySeries" :format-value="formatBytes" />
@@ -170,7 +159,7 @@ function formatDatabaseStorageSummary(sample?: HostPoint | null) {
     <n-card
       size="small"
       :bordered="false"
-      class="order-5 min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
+      class="min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
     >
       <div class="grid grid-cols-2 gap-3">
         <n-statistic label="Network in" :value="host ? formatRate(host.net_rx_rate) : '—'" />
@@ -181,13 +170,29 @@ function formatDatabaseStorageSummary(sample?: HostPoint | null) {
     <n-card
       size="small"
       :bordered="false"
-      class="order-6 min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
+      class="min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
     >
       <div class="grid grid-cols-2 gap-3">
         <n-statistic label="Disk read" :value="host ? formatRate(host.disk_read_rate) : '—'" />
         <n-statistic label="Disk write" :value="host ? formatRate(host.disk_write_rate) : '—'" />
       </div>
       <MetricChart :series="diskSeries" :format-value="formatRate" />
+    </n-card>
+    <n-card
+      size="small"
+      :bordered="false"
+      class="min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
+    >
+      <n-statistic label="Storage used / total" :value="formatStorageSummary(host)" />
+      <MetricChart :points="storagePoints" :format-value="formatBytes" />
+    </n-card>
+    <n-card
+      size="small"
+      :bordered="false"
+      class="min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
+    >
+      <n-statistic label="Database storage" :value="formatDatabaseStorageSummary(host)" />
+      <MetricChart :series="databaseSizeSeries" :format-value="formatBytes" />
     </n-card>
   </div>
 </template>

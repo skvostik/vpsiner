@@ -5,10 +5,11 @@ use axum::{
 use serde::Deserialize;
 
 use crate::error::{AppError, AppResult};
-use crate::model::{
+use crate::model::metrics::{
     ContainerGroupMetrics, ContainerMetricsByService, HostPoint, MetricsResolution,
-    MetricsResponse, MetricsSnapshot, TimeRange,
+    MetricsResponse, MetricsSnapshot,
 };
+use crate::model::time::TimeRange;
 use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]

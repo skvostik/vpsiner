@@ -6,7 +6,7 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 
 use crate::error::{AppError, AppResult};
-use crate::model::{LogFilter, LogLevel, LogPage, LogStream, ServiceStatus};
+use crate::model::logs::{LogFilter, LogLevel, LogPage, LogStream, ServiceStatus};
 use crate::state::AppState;
 
 #[derive(Debug, Default, Deserialize)]
@@ -87,14 +87,25 @@ pub(crate) fn parse_streams(value: Option<String>) -> AppResult<Vec<LogStream>> 
 pub async fn list_groups(
     State(state): State<AppState>,
 ) -> AppResult<Json<BTreeMap<String, ServiceStatus>>> {
-    let stored = state.metadata.list_last_received().await?;
+    let stored = resolve_watermarks(&state).await?;
     let containers = state.docker.containers_info()?;
     Ok(Json(merge_services(stored, containers)))
 }
 
+/// Turns stored `ServiceId` watermarks back into the names the API is keyed by.
+pub(crate) async fn resolve_watermarks(state: &AppState) -> AppResult<BTreeMap<String, i64>> {
+    Ok(state
+        .metadata
+        .list_service_log_watermarks()
+        .await?
+        .into_iter()
+        .filter_map(|(sid, ts)| Some((state.services.name(sid)?.to_string(), ts)))
+        .collect())
+}
+
 pub(crate) fn merge_services(
     stored: BTreeMap<String, i64>,
-    containers: Vec<crate::model::ContainerSummary>,
+    containers: Vec<crate::model::containers::ContainerSummary>,
 ) -> BTreeMap<String, ServiceStatus> {
     let mut services = stored
         .into_iter()
@@ -115,7 +126,7 @@ pub(crate) fn merge_services(
                 last_received: None,
                 live: false,
             });
-        service.live |= container.state == Some(crate::model::ContainerState::Running);
+        service.live |= container.state == Some(crate::model::containers::ContainerState::Running);
     }
     services
 }
@@ -123,11 +134,15 @@ pub(crate) fn merge_services(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ContainerState, ContainerSummary};
+    use crate::model::{
+        container_id::ContainerId,
+        containers::{ContainerState, ContainerSummary},
+    };
 
     fn container(service: &str, state: ContainerState) -> ContainerSummary {
         ContainerSummary {
-            id: format!("{service}-{state:?}"),
+            id: ContainerId::parse("aaaaaaaaaaaa").unwrap(),
+            full_id: format!("{service}-{state:?}"),
             name: service.into(),
             service: service.into(),
             image: String::new(),

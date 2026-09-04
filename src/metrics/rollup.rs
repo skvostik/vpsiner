@@ -10,7 +10,11 @@ use sqlx::SqlitePool;
 use crate::error::AppResult;
 use crate::metrics::downsampling::{bucket_end, downsample_container, downsample_host};
 use crate::metrics::schema;
-use crate::model::{ContainerSample, MetricsResolution, TimeRange};
+use crate::model::{
+    container_id::ContainerId,
+    metrics::{ContainerSample, MetricsResolution},
+    time::TimeRange,
+};
 
 /// The bucket that `previous_ts` fell into, if `new_ts` has moved past its end.
 fn closed_bucket(previous_ts: i64, new_ts: i64, resolution: MetricsResolution) -> Option<i64> {
@@ -104,12 +108,9 @@ pub async fn roll_up_containers(
             sample.ts
         });
 
-        let mut by_container: HashMap<&str, Vec<&ContainerSample>> = HashMap::new();
+        let mut by_container: HashMap<ContainerId, Vec<&ContainerSample>> = HashMap::new();
         for sample in slice {
-            by_container
-                .entry(sample.cid.as_str())
-                .or_default()
-                .push(sample);
+            by_container.entry(sample.cid).or_default().push(sample);
         }
 
         let rolled: Vec<ContainerSample> = by_container

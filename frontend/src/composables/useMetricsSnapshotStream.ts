@@ -2,7 +2,7 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { reportSseIssue } from './useBackendHealth'
 import { reconnectDelayMs } from './streamConfig'
-import type { HostPoint, MetricsSnapshot } from '../types'
+import type { CurrentHostPoint, MetricsSnapshot } from '../types'
 
 /** Pushes MetricsSnapshot updates over SSE instead of polling /api/metrics/current. */
 export function useMetricsSnapshotStream() {
@@ -22,7 +22,7 @@ export function useMetricsSnapshotStream() {
       snapshot.value = JSON.parse(event.data)
     })
     source.addEventListener('host', (event) => {
-      const host = JSON.parse(event.data) as HostPoint | null
+      const host = JSON.parse(event.data) as CurrentHostPoint | null
       snapshot.value = { ...snapshot.value, host }
     })
     source.addEventListener('containers', (event) => {

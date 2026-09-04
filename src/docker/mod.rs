@@ -18,10 +18,12 @@ use crate::config::DockerControlsMode;
 use crate::docker::container_registry::{ContainerObserveAction, ObservedContainer};
 use crate::docker::mapping::receiver_stream;
 use crate::error::{AppError, AppResult};
-use crate::logs::metadata::LogMetadataStore;
+use crate::metadata::{MetadataStore, ServiceRegistry};
 use crate::model::{
-    ContainerCommandResult, ContainerRawSample, ContainerState, ContainerSummary, LogLine,
-    LogStream,
+    container_id::ContainerId,
+    containers::{ContainerCommandResult, ContainerState, ContainerSummary},
+    logs::{LogLine, LogStream},
+    metrics::ContainerRawSample,
 };
 
 use self::mapping::map_log_output;
@@ -47,11 +49,11 @@ pub trait DockerService: Send + Sync + 'static {
 
     fn container_samples(&self) -> BoxStream<'static, Vec<ContainerRawSample>>;
 
-    async fn start_container(&self, id: &str) -> AppResult<ContainerCommandResult>;
+    async fn start_container(&self, id: ContainerId) -> AppResult<ContainerCommandResult>;
 
-    async fn stop_container(&self, id: &str) -> AppResult<ContainerCommandResult>;
+    async fn stop_container(&self, id: ContainerId) -> AppResult<ContainerCommandResult>;
 
-    async fn restart_container(&self, id: &str) -> AppResult<ContainerCommandResult>;
+    async fn restart_container(&self, id: ContainerId) -> AppResult<ContainerCommandResult>;
 }
 
 /// Bollard-backed implementation. Wired up in the composition root.
@@ -68,7 +70,8 @@ struct Inner {
     samples_tx: mpsc::Sender<Vec<ContainerRawSample>>,
     logs_rx: Mutex<Option<mpsc::Receiver<LogLine>>>,
     samples_rx: Mutex<Option<mpsc::Receiver<Vec<ContainerRawSample>>>>,
-    metadata: Arc<dyn LogMetadataStore>,
+    metadata: Arc<dyn MetadataStore>,
+    services: Arc<ServiceRegistry>,
     retention_weeks: u32,
 }
 
@@ -87,7 +90,8 @@ impl BollardDocker {
         docker_events_channel_capacity: usize,
         docker_debounce: Duration,
         controls_mode: DockerControlsMode,
-        metadata: Arc<dyn LogMetadataStore>,
+        metadata: Arc<dyn MetadataStore>,
+        services: Arc<ServiceRegistry>,
         retention_weeks: u32,
     ) -> Self {
         let host = docker_host.into();
@@ -132,6 +136,7 @@ impl BollardDocker {
             logs_rx: Mutex::new(Some(logs_rx)),
             samples_rx: Mutex::new(Some(samples_rx)),
             metadata,
+            services,
             retention_weeks,
         });
 
@@ -206,7 +211,7 @@ impl DockerService for BollardDocker {
         }
     }
 
-    async fn start_container(&self, id: &str) -> AppResult<ContainerCommandResult> {
+    async fn start_container(&self, id: ContainerId) -> AppResult<ContainerCommandResult> {
         ensure_connected(self.connected())?;
         if !self.controls_available() {
             return Err(AppError::Forbidden(
@@ -232,17 +237,17 @@ impl DockerService for BollardDocker {
             _ => {}
         }
         let docker = self.inner.docker.clone();
-        let container_id = container.id.clone();
+        let full_id = container.full_id.clone();
         let log_id = container.log_id();
         tokio::spawn(async move {
-            if let Err(error) = docker.start_container(&container_id, None).await {
+            if let Err(error) = docker.start_container(&full_id, None).await {
                 tracing::warn!(container = %log_id, error = %error, "failed to start container");
             }
         });
         Ok(ContainerCommandResult::Submitted)
     }
 
-    async fn stop_container(&self, id: &str) -> AppResult<ContainerCommandResult> {
+    async fn stop_container(&self, id: ContainerId) -> AppResult<ContainerCommandResult> {
         ensure_connected(self.connected())?;
         if !self.controls_available() {
             return Err(AppError::Forbidden(
@@ -270,17 +275,17 @@ impl DockerService for BollardDocker {
             _ => {}
         }
         let docker = self.inner.docker.clone();
-        let container_id = container.id.clone();
+        let full_id = container.full_id.clone();
         let log_id = container.log_id();
         tokio::spawn(async move {
-            if let Err(error) = docker.stop_container(&container_id, None).await {
+            if let Err(error) = docker.stop_container(&full_id, None).await {
                 tracing::warn!(container = %log_id, error = %error, "failed to stop container");
             }
         });
         Ok(ContainerCommandResult::Submitted)
     }
 
-    async fn restart_container(&self, id: &str) -> AppResult<ContainerCommandResult> {
+    async fn restart_container(&self, id: ContainerId) -> AppResult<ContainerCommandResult> {
         ensure_connected(self.connected())?;
         if !self.controls_available() {
             return Err(AppError::Forbidden(
@@ -298,20 +303,20 @@ impl DockerService for BollardDocker {
         })? {
             ContainerState::Created | ContainerState::Exited => {
                 let docker = self.inner.docker.clone();
-                let container_id = container.id.clone();
+                let full_id = container.full_id.clone();
                 let log_id = container.log_id();
                 tokio::spawn(async move {
-                    if let Err(error) = docker.start_container(&container_id, None).await {
+                    if let Err(error) = docker.start_container(&full_id, None).await {
                         tracing::warn!(container = %log_id, error = %error, "failed to start container");
                     }
                 });
             }
             ContainerState::Running | ContainerState::Paused => {
                 let docker = self.inner.docker.clone();
-                let container_id = container.id.clone();
+                let full_id = container.full_id.clone();
                 let log_id = container.log_id();
                 tokio::spawn(async move {
-                    if let Err(error) = docker.restart_container(&container_id, None).await {
+                    if let Err(error) = docker.restart_container(&full_id, None).await {
                         tracing::warn!(container = %log_id, error = %error, "failed to restart container");
                     }
                 });
@@ -394,7 +399,7 @@ fn spawn_docker_probe(
 
 fn spawn_log_observer(registry: Weak<Inner>, interval: Duration) {
     tokio::spawn(async move {
-        let mut tasks = HashMap::<String, LogTask>::new();
+        let mut tasks = HashMap::<ContainerId, LogTask>::new();
         let mut observe_events = registry.upgrade().and_then(|registry_ref| {
             registry_ref
                 .container_registry
@@ -447,6 +452,7 @@ fn spawn_log_observer(registry: Weak<Inner>, interval: Duration) {
             let docker = registry_ref.docker.clone();
             let sender = registry_ref.logs_tx.clone();
             let metadata = registry_ref.metadata.clone();
+            let services = registry_ref.services.clone();
             let retention_weeks = registry_ref.retention_weeks;
             let running = registry_ref.container_registry.observed_containers();
             drop(registry_ref);
@@ -470,7 +476,7 @@ fn spawn_log_observer(registry: Weak<Inner>, interval: Duration) {
             for container in running {
                 if !tasks.contains_key(&container.id) {
                     tasks.insert(
-                        container.id.clone(),
+                        container.id,
                         LogTask {
                             container: container.clone(),
                             handle: spawn_container_log_task(
@@ -478,6 +484,7 @@ fn spawn_log_observer(registry: Weak<Inner>, interval: Duration) {
                                 container,
                                 sender.clone(),
                                 metadata.clone(),
+                                services.clone(),
                                 retention_weeks,
                             ),
                         },
@@ -502,7 +509,7 @@ fn clamp_to_i32(value: i64) -> i32 {
 }
 
 fn log_since_secs(
-    checkpoint: Option<crate::logs::metadata::LogCheckpoint>,
+    checkpoint: Option<crate::metadata::LogCheckpoint>,
     now: time::OffsetDateTime,
     retention_weeks: u32,
 ) -> i32 {
@@ -518,11 +525,19 @@ fn spawn_container_log_task(
     docker: Docker,
     container: ObservedContainer,
     sender: mpsc::Sender<LogLine>,
-    metadata: Arc<dyn LogMetadataStore>,
+    metadata: Arc<dyn MetadataStore>,
+    services: Arc<ServiceRegistry>,
     retention_weeks: u32,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let checkpoint = match metadata.checkpoint(&container.service, &container.id).await {
+        let sid = match services.id_of(&container.service).await {
+            Ok(sid) => sid,
+            Err(err) => {
+                tracing::error!(container = %container.log_id(), error = %err, "failed to intern service name; log task will respawn");
+                return;
+            }
+        };
+        let checkpoint = match metadata.load_log_checkpoint(sid, container.id).await {
             Ok(checkpoint) => checkpoint,
             Err(err) => {
                 tracing::error!(container = %container.log_id(), error = %err, "failed to read log checkpoint; log task will respawn");
@@ -554,17 +569,17 @@ fn spawn_container_log_task(
             .since(since_secs)
             .tail("all")
             .build();
-        let mut stream = docker.logs(&container.id, Some(options));
+        let mut stream = docker.logs(&container.full_id, Some(options));
         while let Some(result) = stream.next().await {
             let lines = match result {
                 Ok(LogOutput::StdOut { message }) => map_log_output(
-                    container.id.clone(),
+                    container.id,
                     container.service.clone(),
                     message,
                     LogStream::Stdout,
                 ),
                 Ok(LogOutput::StdErr { message }) => map_log_output(
-                    container.id.clone(),
+                    container.id,
                     container.service.clone(),
                     message,
                     LogStream::Stderr,
@@ -610,6 +625,7 @@ fn spawn_sample_observer(
             let docker = registry_ref.docker.clone();
             let registry_client = registry_ref.container_registry.clone();
             let sender = registry_ref.samples_tx.clone();
+            let services = registry_ref.services.clone();
             drop(registry_ref);
 
             let running = registry_client.observed_containers();
@@ -631,17 +647,24 @@ fn spawn_sample_observer(
             let samples = futures_util::stream::iter(running)
                 .map(|container| {
                     let docker = docker.clone();
+                    let services = services.clone();
                     async move {
-                        match sample_container_stats(&docker, &container.id, request_timeout).await {
+                        let sid = match services.id_of(&container.service).await {
+                            Ok(sid) => sid,
+                            Err(err) => {
+                                tracing::warn!(container = %container.log_id(), error = %err, "failed to intern service name");
+                                return None;
+                            }
+                        };
+                        match sample_container_stats(&docker, &container.full_id, request_timeout).await {
                             Ok(stats) => Some(ContainerRawSample {
                                 ts: collection_ts,
-                                service: container.service,
+                                service: sid,
                                 cid: stats.cid,
                                 cpu_usage_ns: stats.cpu_usage_ns,
                                 system_cpu_usage_ns: stats.system_cpu_usage_ns,
                                 cpu_count: stats.cpu_count,
                                 mem_used: stats.mem_used,
-                                mem_limit: stats.mem_limit,
                                 net_rx: stats.net_rx,
                                 net_tx: stats.net_tx,
                                 blk_read: stats.blk_read,
@@ -668,7 +691,7 @@ fn spawn_sample_observer(
 #[cfg(test)]
 mod tests {
     use super::{clamp_to_i32, log_since_secs};
-    use crate::logs::metadata::LogCheckpoint;
+    use crate::metadata::LogCheckpoint;
 
     #[test]
     fn uses_cutoff_when_checkpoint_is_older_than_retention_window() {
