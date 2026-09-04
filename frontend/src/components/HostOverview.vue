@@ -123,7 +123,7 @@ function formatDatabaseStorageSummary(sample?: HostPoint | null) {
     <n-card
       size="small"
       :bordered="false"
-      class="order-1 min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
+      class="min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
     >
       <n-statistic label="Host CPU" :value="formatCpuSummary(host)" />
       <MetricChart
@@ -135,7 +135,7 @@ function formatDatabaseStorageSummary(sample?: HostPoint | null) {
     <n-card
       size="small"
       :bordered="false"
-      class="order-2 min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
+      class="min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
     >
       <n-statistic label="Memory used / total" :value="formatMemorySummary(host)" />
       <MetricChart :points="memoryPoints" :format-value="formatBytes" />
@@ -143,23 +143,7 @@ function formatDatabaseStorageSummary(sample?: HostPoint | null) {
     <n-card
       size="small"
       :bordered="false"
-      class="order-7 min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
-    >
-      <n-statistic label="Storage used / total" :value="formatStorageSummary(host)" />
-      <MetricChart :points="storagePoints" :format-value="formatBytes" />
-    </n-card>
-    <n-card
-      size="small"
-      :bordered="false"
-      class="order-8 min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
-    >
-      <n-statistic label="Database storage" :value="formatDatabaseStorageSummary(host)" />
-      <MetricChart :series="databaseSizeSeries" :format-value="formatBytes" />
-    </n-card>
-    <n-card
-      size="small"
-      :bordered="false"
-      class="order-3 min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
+      class="min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
     >
       <n-statistic label="Container CPU" :value="containerCpuSummary" />
       <MetricChart :series="containerCpuSeries" :format-value="(value) => `${value.toFixed(1)}%`" />
@@ -167,7 +151,7 @@ function formatDatabaseStorageSummary(sample?: HostPoint | null) {
     <n-card
       size="small"
       :bordered="false"
-      class="order-4 min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
+      class="min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
     >
       <n-statistic label="Container memory" :value="containerMemorySummary" />
       <MetricChart :series="containerMemorySeries" :format-value="formatBytes" />
@@ -175,7 +159,7 @@ function formatDatabaseStorageSummary(sample?: HostPoint | null) {
     <n-card
       size="small"
       :bordered="false"
-      class="order-5 min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
+      class="min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
     >
       <div class="grid grid-cols-2 gap-3">
         <n-statistic label="Network in" :value="host ? formatRate(host.net_rx_rate) : '—'" />
@@ -186,13 +170,29 @@ function formatDatabaseStorageSummary(sample?: HostPoint | null) {
     <n-card
       size="small"
       :bordered="false"
-      class="order-6 min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
+      class="min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
     >
       <div class="grid grid-cols-2 gap-3">
         <n-statistic label="Disk read" :value="host ? formatRate(host.disk_read_rate) : '—'" />
         <n-statistic label="Disk write" :value="host ? formatRate(host.disk_write_rate) : '—'" />
       </div>
       <MetricChart :series="diskSeries" :format-value="formatRate" />
+    </n-card>
+    <n-card
+      size="small"
+      :bordered="false"
+      class="min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
+    >
+      <n-statistic label="Storage used / total" :value="formatStorageSummary(host)" />
+      <MetricChart :points="storagePoints" :format-value="formatBytes" />
+    </n-card>
+    <n-card
+      size="small"
+      :bordered="false"
+      class="min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
+    >
+      <n-statistic label="Database storage" :value="formatDatabaseStorageSummary(host)" />
+      <MetricChart :series="databaseSizeSeries" :format-value="formatBytes" />
     </n-card>
   </div>
 </template>
