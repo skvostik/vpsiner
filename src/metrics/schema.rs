@@ -323,7 +323,7 @@ pub async fn select_containers(
         "SELECT ts, cid, sid, cpu_pct_mill, mem_used, net_rx_rate_mill, net_tx_rate_mill, blk_read_rate_mill, blk_write_rate_mill
          FROM {}
          WHERE ts >= ? AND ts <= ?
-         ORDER BY ts ASC",
+         ORDER BY cid ASC, ts ASC",
         container_table(resolution)
     )))
     .bind(range.from)
@@ -402,4 +402,69 @@ pub async fn delete_containers_before(
     .rows_affected();
 
     Ok(rows_affected)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample(cid: &str, ts: i64) -> ContainerSample {
+        ContainerSample {
+            ts,
+            service: ServiceId::from_u32(1),
+            cid: ContainerId::parse(cid).unwrap(),
+            cpu_pct_mill: 0,
+            mem_used: 0,
+            net_rx_rate_mill: None,
+            net_tx_rate_mill: None,
+            blk_read_rate_mill: None,
+            blk_write_rate_mill: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn selects_container_samples_grouped_by_container_then_timestamp() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        create_container_table(&pool, MetricsResolution::TenSeconds)
+            .await
+            .unwrap();
+
+        insert_containers(
+            &pool,
+            MetricsResolution::TenSeconds,
+            vec![
+                sample("aaaaaaaaaaaa", 10_000),
+                sample("bbbbbbbbbbbb", 10_000),
+                sample("aaaaaaaaaaaa", 20_000),
+                sample("bbbbbbbbbbbb", 20_000),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let selected = select_containers(
+            &pool,
+            MetricsResolution::TenSeconds,
+            TimeRange {
+                from: 0,
+                to: 20_000,
+            },
+        )
+        .await
+        .unwrap();
+        let order: Vec<(String, i64)> = selected
+            .into_iter()
+            .map(|sample| (sample.cid.to_hex(), sample.ts))
+            .collect();
+
+        assert_eq!(
+            order,
+            vec![
+                ("aaaaaaaaaaaa".to_string(), 10_000),
+                ("aaaaaaaaaaaa".to_string(), 20_000),
+                ("bbbbbbbbbbbb".to_string(), 10_000),
+                ("bbbbbbbbbbbb".to_string(), 20_000),
+            ]
+        );
+    }
 }

@@ -208,6 +208,7 @@ impl MetricsStore for SqliteMetricsStore {
             ServiceId,
             HashMap<ContainerId, Vec<ContainerSample>>,
         > = HashMap::new();
+        // select_containers orders by (cid, ts), so each collected vector stays chronological.
         for sample in schema::select_containers(&self.pool, resolution, range).await? {
             by_service_and_container
                 .entry(sample.service)
@@ -225,8 +226,7 @@ impl MetricsStore for SqliteMetricsStore {
                 continue;
             };
             let mut containers: HashMap<ContainerId, Vec<ContainerPoint>> = HashMap::new();
-            for (cid, mut samples) in by_container {
-                samples.sort_by_key(|sample| sample.ts);
+            for (cid, samples) in by_container {
                 let points = samples
                     .into_iter()
                     .filter(|sample| sample.ts >= range.from)
