@@ -116,6 +116,21 @@ impl SqliteMetadataStore {
     }
 }
 
+fn service_id(value: i64) -> AppResult<ServiceId> {
+    Ok(ServiceId::from_u32(u32::try_from(value).map_err(|_| {
+        AppError::Storage("stored service id is outside u32 range".into())
+    })?))
+}
+
+fn encode_hash(value: u64) -> i64 {
+    // Hashes use the full bit range; this signed representation round-trips through SQLite.
+    value as i64
+}
+
+fn decode_hash(value: i64) -> u64 {
+    value as u64
+}
+
 #[async_trait]
 impl MetadataStore for SqliteMetadataStore {
     async fn resolve_service(&self, name: &str, now_ms: i64) -> AppResult<ServiceId> {
@@ -131,7 +146,7 @@ impl MetadataStore for SqliteMetadataStore {
         .fetch_one(&self.pool)
         .await
         .map_err(storage)?;
-        Ok(ServiceId::from_u32(sid as u32))
+        service_id(sid)
     }
 
     async fn list_services(&self) -> AppResult<Vec<(ServiceId, String)>> {
@@ -139,15 +154,9 @@ impl MetadataStore for SqliteMetadataStore {
             .fetch_all(&self.pool)
             .await
             .map_err(storage)?;
-        Ok(rows
-            .into_iter()
-            .map(|row| {
-                (
-                    ServiceId::from_u32(row.get::<i64, _>("sid") as u32),
-                    row.get("name"),
-                )
-            })
-            .collect())
+        rows.into_iter()
+            .map(|row| Ok((service_id(row.get("sid"))?, row.get("name"))))
+            .collect()
     }
 
     async fn touch_service(&self, sid: ServiceId, now_ms: i64) -> AppResult<()> {
@@ -168,10 +177,7 @@ impl MetadataStore for SqliteMetadataStore {
                 .fetch_all(&self.pool)
                 .await
                 .map_err(storage)?;
-        Ok(rows
-            .into_iter()
-            .map(|sid| ServiceId::from_u32(sid as u32))
-            .collect())
+        rows.into_iter().map(service_id).collect()
     }
 
     async fn advance_log_checkpoint(
@@ -191,7 +197,7 @@ impl MetadataStore for SqliteMetadataStore {
         .bind(i64::from(sid.as_u32()))
         .bind(cid.as_bytes().as_slice())
         .bind(checkpoint.ts)
-        .bind(checkpoint.line_hash as i64)
+        .bind(encode_hash(checkpoint.line_hash))
         .execute(&self.pool)
         .await
         .map_err(storage)?;
@@ -214,7 +220,7 @@ impl MetadataStore for SqliteMetadataStore {
         .map_err(storage)?;
         Ok(row.map(|row| LogCheckpoint {
             ts: row.get("ts"),
-            line_hash: row.get::<i64, _>("line_hash") as u64,
+            line_hash: decode_hash(row.get("line_hash")),
         }))
     }
 
@@ -227,15 +233,9 @@ impl MetadataStore for SqliteMetadataStore {
         .fetch_all(&self.pool)
         .await
         .map_err(storage)?;
-        Ok(rows
-            .into_iter()
-            .map(|row| {
-                (
-                    ServiceId::from_u32(row.get::<i64, _>("sid") as u32),
-                    row.get("ts"),
-                )
-            })
-            .collect())
+        rows.into_iter()
+            .map(|row| Ok((service_id(row.get("sid"))?, row.get("ts"))))
+            .collect()
     }
 
     async fn list_log_checkpoints(&self) -> AppResult<Vec<LogCheckpointEntry>> {
@@ -252,11 +252,11 @@ impl MetadataStore for SqliteMetadataStore {
                 let cid: Vec<u8> = row.get("cid");
                 let cid = ContainerId::from_bytes(&cid)?;
                 Some(LogCheckpointEntry {
-                    sid: ServiceId::from_u32(row.get::<i64, _>("sid") as u32),
+                    sid: service_id(row.get("sid")).ok()?,
                     cid,
                     checkpoint: LogCheckpoint {
                         ts: row.get("ts"),
-                        line_hash: row.get::<i64, _>("line_hash") as u64,
+                        line_hash: decode_hash(row.get("line_hash")),
                     },
                 })
             })

@@ -30,6 +30,22 @@ fn storage(err: impl std::fmt::Display) -> AppError {
     AppError::Storage(err.to_string())
 }
 
+fn sqlite_integer(value: u64, column: &str) -> AppResult<i64> {
+    i64::try_from(value)
+        .map_err(|_| AppError::Storage(format!("{column} exceeds SQLite INTEGER range")))
+}
+
+fn unsigned_integer(value: i64, column: &str) -> AppResult<u64> {
+    u64::try_from(value)
+        .map_err(|_| AppError::Storage(format!("{column} is negative")))
+}
+
+fn service_id(value: i64) -> AppResult<ServiceId> {
+    Ok(ServiceId::from_u32(u32::try_from(value).map_err(|_| {
+        AppError::Storage("stored service id is outside u32 range".into())
+    })?))
+}
+
 fn suffix(resolution: MetricsResolution) -> &'static str {
     match resolution {
         MetricsResolution::TenSeconds => "10s",
@@ -105,6 +121,28 @@ pub async fn insert_host(
     resolution: MetricsResolution,
     sample: HostSample,
 ) -> AppResult<()> {
+    let cpu_pct_mill = sqlite_integer(sample.cpu_pct_mill, "cpu_pct_mill")?;
+    let mem_used = sqlite_integer(sample.mem_used, "mem_used")?;
+    let storage_used = sqlite_integer(sample.storage_used, "storage_used")?;
+    let metrics_size = sqlite_integer(sample.metrics_size, "metrics_size")?;
+    let logs_size = sqlite_integer(sample.logs_size, "logs_size")?;
+    let net_rx_rate_mill = sample
+        .net_rx_rate_mill
+        .map(|value| sqlite_integer(value, "net_rx_rate_mill"))
+        .transpose()?;
+    let net_tx_rate_mill = sample
+        .net_tx_rate_mill
+        .map(|value| sqlite_integer(value, "net_tx_rate_mill"))
+        .transpose()?;
+    let disk_read_rate_mill = sample
+        .disk_read_rate_mill
+        .map(|value| sqlite_integer(value, "disk_read_rate_mill"))
+        .transpose()?;
+    let disk_write_rate_mill = sample
+        .disk_write_rate_mill
+        .map(|value| sqlite_integer(value, "disk_write_rate_mill"))
+        .transpose()?;
+
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "{} INTO {}
                  (ts, cpu_pct_mill, mem_used, storage_used, metrics_size, logs_size, net_rx_rate_mill, net_tx_rate_mill, disk_read_rate_mill, disk_write_rate_mill)
@@ -113,15 +151,15 @@ pub async fn insert_host(
         host_table(resolution)
     )))
     .bind(sample.ts)
-    .bind(sample.cpu_pct_mill as i64)
-    .bind(sample.mem_used as i64)
-    .bind(sample.storage_used as i64)
-    .bind(sample.metrics_size as i64)
-    .bind(sample.logs_size as i64)
-    .bind(sample.net_rx_rate_mill.map(|rate| rate as i64))
-    .bind(sample.net_tx_rate_mill.map(|rate| rate as i64))
-    .bind(sample.disk_read_rate_mill.map(|rate| rate as i64))
-    .bind(sample.disk_write_rate_mill.map(|rate| rate as i64))
+    .bind(cpu_pct_mill)
+    .bind(mem_used)
+    .bind(storage_used)
+    .bind(metrics_size)
+    .bind(logs_size)
+    .bind(net_rx_rate_mill)
+    .bind(net_tx_rate_mill)
+    .bind(disk_read_rate_mill)
+    .bind(disk_write_rate_mill)
     .execute(pool)
     .await
     .map_err(storage)?;
@@ -135,6 +173,21 @@ pub async fn insert_containers(
 ) -> AppResult<()> {
     if samples.is_empty() {
         return Ok(());
+    }
+
+    for sample in &samples {
+        sqlite_integer(sample.cpu_pct_mill, "cpu_pct_mill")?;
+        sqlite_integer(sample.mem_used, "mem_used")?;
+        for (value, column) in [
+            (sample.net_rx_rate_mill, "net_rx_rate_mill"),
+            (sample.net_tx_rate_mill, "net_tx_rate_mill"),
+            (sample.blk_read_rate_mill, "blk_read_rate_mill"),
+            (sample.blk_write_rate_mill, "blk_write_rate_mill"),
+        ] {
+            if let Some(value) = value {
+                sqlite_integer(value, column)?;
+            }
+        }
     }
 
     let prefix = format!(
@@ -151,12 +204,12 @@ pub async fn insert_containers(
             row.push_bind(sample.ts)
                 .push_bind(sample.cid.as_bytes().as_slice())
                 .push_bind(i64::from(sample.service.as_u32()))
-                .push_bind(sample.cpu_pct_mill as i64)
-                .push_bind(sample.mem_used as i64)
-                .push_bind(sample.net_rx_rate_mill.map(|rate| rate as i64))
-                .push_bind(sample.net_tx_rate_mill.map(|rate| rate as i64))
-                .push_bind(sample.blk_read_rate_mill.map(|rate| rate as i64))
-                .push_bind(sample.blk_write_rate_mill.map(|rate| rate as i64));
+                .push_bind(sqlite_integer(sample.cpu_pct_mill, "cpu_pct_mill").expect("validated before transaction"))
+                .push_bind(sqlite_integer(sample.mem_used, "mem_used").expect("validated before transaction"))
+                .push_bind(sample.net_rx_rate_mill.map(|value| sqlite_integer(value, "net_rx_rate_mill").expect("validated before transaction")))
+                .push_bind(sample.net_tx_rate_mill.map(|value| sqlite_integer(value, "net_tx_rate_mill").expect("validated before transaction")))
+                .push_bind(sample.blk_read_rate_mill.map(|value| sqlite_integer(value, "blk_read_rate_mill").expect("validated before transaction")))
+                .push_bind(sample.blk_write_rate_mill.map(|value| sqlite_integer(value, "blk_write_rate_mill").expect("validated before transaction")));
         });
         builder
             .build()
@@ -170,14 +223,15 @@ pub async fn insert_containers(
 
 fn host_sample_from_row(row: sqlx::sqlite::SqliteRow) -> AppResult<HostSample> {
     fn count(row: &sqlx::sqlite::SqliteRow, column: &str) -> AppResult<u64> {
-        Ok(row.try_get::<i64, _>(column).map_err(storage)? as u64)
+        unsigned_integer(row.try_get(column).map_err(storage)?, column)
     }
 
     fn rate(row: &sqlx::sqlite::SqliteRow, column: &str) -> AppResult<Option<u64>> {
         Ok(row
             .try_get::<Option<i64>, _>(column)
             .map_err(storage)?
-            .map(|rate| rate as u64))
+            .map(|rate| unsigned_integer(rate, column))
+            .transpose()?)
     }
 
     Ok(HostSample {
@@ -196,14 +250,15 @@ fn host_sample_from_row(row: sqlx::sqlite::SqliteRow) -> AppResult<HostSample> {
 
 fn container_sample_from_row(row: sqlx::sqlite::SqliteRow) -> AppResult<ContainerSample> {
     fn count(row: &sqlx::sqlite::SqliteRow, column: &str) -> AppResult<u64> {
-        Ok(row.try_get::<i64, _>(column).map_err(storage)? as u64)
+        unsigned_integer(row.try_get(column).map_err(storage)?, column)
     }
 
     fn rate(row: &sqlx::sqlite::SqliteRow, column: &str) -> AppResult<Option<u64>> {
         Ok(row
             .try_get::<Option<i64>, _>(column)
             .map_err(storage)?
-            .map(|rate| rate as u64))
+            .map(|rate| unsigned_integer(rate, column))
+            .transpose()?)
     }
 
     Ok(ContainerSample {
@@ -213,7 +268,7 @@ fn container_sample_from_row(row: sqlx::sqlite::SqliteRow) -> AppResult<Containe
             ContainerId::from_bytes(&bytes)
                 .ok_or_else(|| AppError::Storage("stored cid is not 6 bytes".into()))?
         },
-        service: ServiceId::from_u32(row.try_get::<i64, _>("sid").map_err(storage)? as u32),
+        service: service_id(row.try_get("sid").map_err(storage)?)?,
         cpu_pct_mill: count(&row, "cpu_pct_mill")?,
         mem_used: count(&row, "mem_used")?,
         net_rx_rate_mill: rate(&row, "net_rx_rate_mill")?,
