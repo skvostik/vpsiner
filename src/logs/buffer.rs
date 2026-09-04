@@ -41,7 +41,7 @@ struct ServiceState {
 }
 
 impl LogBuffer {
-    /// Preloads every known (service, container_id) checkpoint so dedup survives restarts.
+    /// Preloads every known (service, cid) checkpoint so dedup survives restarts.
     pub async fn new(
         logs: Arc<dyn LogStore>,
         metadata: Arc<dyn MetadataStore>,
@@ -52,12 +52,12 @@ impl LogBuffer {
         tracing::info!(debounce = ?debounce, keep_alive = ?keep_alive, "initializing log buffer");
         tracing::info!("preloading log buffer checkpoints from metadata store");
         let mut seeded: HashMap<String, ServiceState> = HashMap::new();
-        for (service, container_id, checkpoint) in metadata.list_log_checkpoints().await? {
+        for entry in metadata.list_log_checkpoints().await? {
             seeded
-                .entry(service)
+                .entry(entry.service)
                 .or_default()
                 .checkpoints
-                .insert(container_id, (checkpoint.ts, checkpoint.line_hash));
+                .insert(entry.cid, (entry.checkpoint.ts, entry.checkpoint.line_hash));
         }
 
         let inner = Arc::new(Inner {
@@ -218,7 +218,11 @@ impl Inner {
         for (cid, ts, line_hash) in checkpoints {
             if let Err(err) = self
                 .metadata
-                .log_received(service, cid, ts, line_hash)
+                .advance_log_checkpoint(
+                    service,
+                    cid,
+                    crate::metadata::LogCheckpoint { ts, line_hash },
+                )
                 .await
             {
                 tracing::error!(service = %service, cid = %cid, error = %err, "failed to persist last-received checkpoint");

@@ -525,7 +525,7 @@ fn spawn_container_log_task(
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let checkpoint = match metadata
-            .log_checkpoint(&container.service, container.id)
+            .load_log_checkpoint(&container.service, container.id)
             .await
         {
             Ok(checkpoint) => checkpoint,

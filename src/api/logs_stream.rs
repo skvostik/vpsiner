@@ -110,7 +110,7 @@ pub async fn groups(
 async fn current_groups(state: &AppState) -> BTreeMap<String, ServiceStatus> {
     let stored = state
         .metadata
-        .list_last_log_received()
+        .list_service_log_watermarks()
         .await
         .unwrap_or_default();
     let containers = state.docker.containers_info().unwrap_or_default();
