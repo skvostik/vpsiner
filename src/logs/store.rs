@@ -40,6 +40,8 @@ const STATEMENT_CACHE_CAPACITY: usize = 32;
 const ANALYSIS_LIMIT: u32 = 400;
 const WEEK_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
 const DEFAULT_PAGE_LIMIT: u32 = 100;
+/// Keeps bound parameters (5 per row) far below SQLite's variable limit per statement.
+const INSERT_CHUNK_ROWS: usize = 500;
 
 pub struct SqliteLogStore {
     root: PathBuf,
@@ -278,19 +280,19 @@ impl LogStore for SqliteLogStore {
             let _operation = self.pools.lock_path(&path).await;
             let pool = self.pools.pool(&path, service, &week).await?;
             let mut tx = pool.begin().await.map_err(storage)?;
-            for line in lines {
-                let level = detect_level(&line.line).map(LogLevel::storage_code);
-                sqlx::query(
-                    "INSERT INTO logs (ts, cid, stream, level, line) VALUES (?, ?, ?, ?, ?)",
-                )
-                .bind(line.ts)
-                .bind(line.cid.as_bytes().as_slice())
-                .bind(line.stream.storage_code())
-                .bind(level)
-                .bind(line.line)
-                .execute(&mut *tx)
-                .await
-                .map_err(storage)?;
+            // Chunked well under SQLite's bound-parameter limit so one flush stays one round trip.
+            for chunk in lines.chunks(INSERT_CHUNK_ROWS) {
+                let mut builder =
+                    QueryBuilder::<Sqlite>::new("INSERT INTO logs (ts, cid, stream, level, line) ");
+                builder.push_values(chunk, |mut row, line| {
+                    let level = detect_level(&line.line).map(LogLevel::storage_code);
+                    row.push_bind(line.ts)
+                        .push_bind(line.cid.as_bytes().as_slice())
+                        .push_bind(line.stream.storage_code())
+                        .push_bind(level)
+                        .push_bind(&line.line);
+                });
+                builder.build().execute(&mut *tx).await.map_err(storage)?;
             }
             tx.commit().await.map_err(storage)?;
         }
