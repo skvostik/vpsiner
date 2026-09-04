@@ -117,13 +117,13 @@ impl MetadataStore for SqliteMetadataStore {
         cid: ContainerId,
         checkpoint: LogCheckpoint,
     ) -> AppResult<()> {
-        // line_hash is only ever paired with the ts it belongs to.
         sqlx::query(
             "INSERT INTO log_checkpoints (service, cid, ts, line_hash)
              VALUES (?, ?, ?, ?)
              ON CONFLICT(service, cid) DO UPDATE SET
-                line_hash = CASE WHEN excluded.ts >= ts THEN excluded.line_hash ELSE line_hash END,
-                ts = MAX(ts, excluded.ts)",
+                     ts = excluded.ts,
+                     line_hash = excluded.line_hash
+                 WHERE excluded.ts >= log_checkpoints.ts",
         )
         .bind(service)
         .bind(cid.as_bytes().as_slice())
