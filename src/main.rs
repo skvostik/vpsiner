@@ -8,6 +8,7 @@ mod metadata;
 mod metrics;
 mod model;
 mod retention;
+mod sqlite;
 mod state;
 
 use std::net::SocketAddr;

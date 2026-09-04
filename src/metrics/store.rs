@@ -5,9 +5,6 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use sqlx::SqlitePool;
-use sqlx::sqlite::{
-    SqliteAutoVacuum, SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
-};
 
 use crate::error::{AppError, AppResult};
 use crate::metrics::downsampling::sum_by_bucket;
@@ -20,6 +17,7 @@ use crate::model::{
     },
     time::TimeRange,
 };
+use crate::sqlite::{open_pool, reclaim_free_pages};
 
 /// Persistence for `metrics.db`.
 #[cfg_attr(test, mockall::automock)]
@@ -51,13 +49,6 @@ pub trait MetricsStore: Send + Sync + 'static {
     async fn close(&self);
 }
 
-/// Only a handful of distinct statements are ever prepared against this database.
-const STATEMENT_CACHE_CAPACITY: usize = 32;
-/// Recommended by SQLite for `PRAGMA optimize`.
-const ANALYSIS_LIMIT: u32 = 400;
-/// Free pages returned per `incremental_vacuum` step; must match [`VACUUM_STEP`].
-const VACUUM_CHUNK_PAGES: u64 = 1_000;
-const VACUUM_STEP: &str = "PRAGMA incremental_vacuum(1000)";
 /// SQLite-backed implementation.
 pub struct SqliteMetricsStore {
     db_path: PathBuf,
@@ -77,36 +68,9 @@ impl SqliteMetricsStore {
         downsample_max_gap_pct: u8,
     ) -> AppResult<Self> {
         let db_path = db_path.as_ref().to_path_buf();
-        if let Some(parent) = db_path.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(storage)?;
-        }
-
         tracing::info!(database = %db_path.display(), "opening metrics database connection");
 
-        let connect_options = SqliteConnectOptions::new()
-            .filename(&db_path)
-            .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal)
-            .synchronous(SqliteSynchronous::Normal)
-            .auto_vacuum(SqliteAutoVacuum::Incremental)
-            .busy_timeout(busy_timeout)
-            .foreign_keys(false)
-            .statement_cache_capacity(STATEMENT_CACHE_CAPACITY)
-            .analysis_limit(ANALYSIS_LIMIT)
-            .optimize_on_close(true, ANALYSIS_LIMIT)
-            // Negative values are interpreted as KiB rather than pages.
-            .pragma("cache_size", format!("-{cache_size_kb}"));
-
-        // A single connection serialises every reader and writer, so the database is
-        // never contended from within this process.
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .min_connections(1)
-            .idle_timeout(None)
-            .max_lifetime(None)
-            .connect_with(connect_options)
-            .await
-            .map_err(storage)?;
+        let pool = open_pool(&db_path, cache_size_kb, busy_timeout, true).await?;
 
         let store = Self {
             db_path,
@@ -148,39 +112,6 @@ impl SqliteMetricsStore {
         *last = Some(new_ts);
         previous
     }
-
-    /// Returns free pages to the filesystem in bounded steps so a large retention
-    /// delete never blocks the connection for one long stretch.
-    async fn reclaim_free_pages(&self) {
-        let free_pages: i64 = match sqlx::query_scalar("PRAGMA freelist_count")
-            .fetch_one(&self.pool)
-            .await
-        {
-            Ok(pages) => pages,
-            Err(err) => {
-                tracing::warn!(error = %err, "failed to read metrics database freelist");
-                return;
-            }
-        };
-
-        for _ in 0..free_pages.unsigned_abs().div_ceil(VACUUM_CHUNK_PAGES) {
-            if let Err(err) = sqlx::query(VACUUM_STEP).execute(&self.pool).await {
-                tracing::warn!(error = %err, "failed to vacuum metrics database");
-                return;
-            }
-        }
-
-        if let Err(err) = sqlx::query("PRAGMA optimize").execute(&self.pool).await {
-            tracing::warn!(error = %err, "failed to optimize metrics database");
-        }
-    }
-
-    /// Path of the write-ahead log holding not-yet-checkpointed pages.
-    fn wal_path(&self) -> PathBuf {
-        let mut path = self.db_path.clone().into_os_string();
-        path.push("-wal");
-        PathBuf::from(path)
-    }
 }
 
 fn storage(err: impl std::fmt::Display) -> AppError {
@@ -198,8 +129,7 @@ async fn file_size_bytes(path: &Path) -> AppResult<u64> {
 #[async_trait]
 impl MetricsStore for SqliteMetricsStore {
     async fn database_size_bytes(&self) -> AppResult<u64> {
-        // Pages committed but not yet checkpointed still live in the write-ahead log.
-        Ok(file_size_bytes(&self.db_path).await? + file_size_bytes(&self.wal_path()).await?)
+        file_size_bytes(&self.db_path).await
     }
 
     async fn delete_before(&self, cutoff_ms: i64) -> AppResult<u64> {
@@ -214,7 +144,7 @@ impl MetricsStore for SqliteMetricsStore {
             deleted += schema::delete_containers_before(&self.pool, resolution, cutoff_ms).await?;
         }
 
-        self.reclaim_free_pages().await;
+        reclaim_free_pages(&self.pool).await;
         Ok(deleted)
     }
 
@@ -504,7 +434,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reports_size_including_the_write_ahead_log() {
+    async fn reports_nonzero_database_size() {
         let directory = test_directory("size");
         let store = test_store(directory.join("metrics.db")).await;
 

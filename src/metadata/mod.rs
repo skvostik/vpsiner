@@ -3,13 +3,11 @@ use std::time::Duration;
 use std::{collections::BTreeMap, path::PathBuf};
 
 use async_trait::async_trait;
-use sqlx::{
-    Row, SqlitePool,
-    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
-};
+use sqlx::{Row, SqlitePool};
 
 use crate::error::{AppError, AppResult};
 use crate::model::container_id::ContainerId;
+use crate::sqlite::open_pool;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LogCheckpoint {
@@ -68,32 +66,9 @@ impl SqliteMetadataStore {
         busy_timeout: Duration,
     ) -> AppResult<Self> {
         let db_path = db_path.as_ref().to_path_buf();
-        if let Some(parent) = db_path.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(storage)?;
-        }
-
         tracing::info!(database = %db_path.display(), "opening metadata database connection");
 
-        let options = SqliteConnectOptions::new()
-            .filename(&db_path)
-            .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Delete)
-            .synchronous(SqliteSynchronous::Full)
-            .busy_timeout(busy_timeout)
-            .foreign_keys(false)
-            .statement_cache_capacity(32)
-            .analysis_limit(400)
-            .optimize_on_close(true, 400)
-            // Negative values are interpreted as KiB rather than pages.
-            .pragma("cache_size", format!("-{cache_size_kb}"));
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .min_connections(1)
-            .idle_timeout(None)
-            .max_lifetime(None)
-            .connect_with(options)
-            .await
-            .map_err(storage)?;
+        let pool = open_pool(&db_path, cache_size_kb, busy_timeout, false).await?;
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS log_checkpoints (

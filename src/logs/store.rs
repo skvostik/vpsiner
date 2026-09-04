@@ -4,10 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use sqlx::{
-    QueryBuilder, Row, Sqlite, SqlitePool,
-    sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteRow},
-};
+use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, sqlite::SqliteRow};
 use tokio::sync::{Mutex, OnceCell, OwnedMutexGuard};
 
 use super::{
@@ -21,6 +18,7 @@ use crate::model::{
     container_id::ContainerId,
     logs::{LogCursor, LogFilter, LogLevel, LogLine, LogPage, LogStream},
 };
+use crate::sqlite::open_pool;
 
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
@@ -36,10 +34,6 @@ pub trait LogStore: Send + Sync + 'static {
     async fn close(&self);
 }
 
-/// Only a handful of distinct statements are ever prepared against a week database.
-const STATEMENT_CACHE_CAPACITY: usize = 32;
-/// Recommended by SQLite for `PRAGMA optimize`.
-const ANALYSIS_LIMIT: u32 = 400;
 const WEEK_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
 const DEFAULT_PAGE_LIMIT: u32 = 100;
 /// Keeps bound parameters (5 per row) far below SQLite's variable limit per statement.
@@ -600,25 +594,7 @@ async fn open_database(
         "opening log database connection"
     );
 
-    let options = SqliteConnectOptions::new()
-        .filename(path)
-        .create_if_missing(true)
-        .busy_timeout(busy_timeout)
-        .foreign_keys(false)
-        .statement_cache_capacity(STATEMENT_CACHE_CAPACITY)
-        .analysis_limit(ANALYSIS_LIMIT)
-        .optimize_on_close(true, ANALYSIS_LIMIT)
-        // Negative values are interpreted as KiB rather than pages.
-        .pragma("cache_size", format!("-{cache_size_kb}"));
-    // Lifetime is owned by `PoolCache`, so sqlx's own idle reaping stays off.
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .min_connections(1)
-        .idle_timeout(None)
-        .max_lifetime(None)
-        .connect_with(options)
-        .await
-        .map_err(storage)?;
+    let pool = open_pool(path, cache_size_kb, busy_timeout, false).await?;
     migrate(&pool).await?;
     Ok(pool)
 }
