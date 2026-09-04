@@ -102,7 +102,7 @@ impl SqliteMetadataStore {
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS log_checkpoints (
                 sid INTEGER NOT NULL,
-                cid BLOB NOT NULL,
+                cid BLOB NOT NULL CHECK(length(cid) = 6),
                 ts INTEGER NOT NULL,
                 line_hash INTEGER NOT NULL,
                 PRIMARY KEY (sid, cid)

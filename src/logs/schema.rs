@@ -9,7 +9,7 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> AppResult<()> {
         "CREATE TABLE IF NOT EXISTS logs (
             id INTEGER PRIMARY KEY,
             ts_rel INTEGER NOT NULL,
-            cid BLOB NOT NULL,
+            cid BLOB NOT NULL CHECK(length(cid) = 6),
             stream INTEGER NOT NULL,
             level INTEGER,
             line TEXT NOT NULL

@@ -81,7 +81,7 @@ pub async fn create_container_table(
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "CREATE TABLE IF NOT EXISTS {} (
             ts INTEGER NOT NULL,
-            cid BLOB NOT NULL,
+            cid BLOB NOT NULL CHECK(length(cid) = 6),
             sid INTEGER NOT NULL,
             cpu_pct_mill INTEGER NOT NULL,
             mem_used INTEGER NOT NULL,
