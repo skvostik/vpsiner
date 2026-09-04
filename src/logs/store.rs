@@ -15,6 +15,8 @@ use super::{
     sanitize_fts_query, week_database_name,
 };
 use crate::error::{AppError, AppResult};
+use crate::logs::schema::migrate;
+use crate::logs::storage;
 use crate::model::{
     container_id::ContainerId,
     logs::{LogCursor, LogFilter, LogLevel, LogLine, LogPage, LogStream},
@@ -276,17 +278,19 @@ impl LogStore for SqliteLogStore {
             .map_err(storage)?;
 
         for (week, lines) in by_week {
+            let week_start = week_start_ms(&week);
             let path = service_dir.join(&week);
             let _operation = self.pools.lock_path(&path).await;
             let pool = self.pools.pool(&path, service, &week).await?;
             let mut tx = pool.begin().await.map_err(storage)?;
             // Chunked well under SQLite's bound-parameter limit so one flush stays one round trip.
             for chunk in lines.chunks(INSERT_CHUNK_ROWS) {
-                let mut builder =
-                    QueryBuilder::<Sqlite>::new("INSERT INTO logs (ts, cid, stream, level, line) ");
+                let mut builder = QueryBuilder::<Sqlite>::new(
+                    "INSERT INTO logs (ts_rel, cid, stream, level, line) ",
+                );
                 builder.push_values(chunk, |mut row, line| {
                     let level = detect_level(&line.line).map(LogLevel::storage_code);
-                    row.push_bind(line.ts)
+                    row.push_bind(line.ts - week_start)
                         .push_bind(line.cid.as_bytes().as_slice())
                         .push_bind(line.stream.storage_code())
                         .push_bind(level)
@@ -337,34 +341,35 @@ impl LogStore for SqliteLogStore {
             if page.len() >= target {
                 break;
             }
+            let week_start = week_start_ms(&week);
             let path = service_dir.join(&week);
             let _operation = self.pools.lock_path(&path).await;
             let pool = self.pools.pool(&path, service, &week).await?;
             let mut builder = if sanitized_query.is_some() {
                 QueryBuilder::<Sqlite>::new(
-                    "SELECT logs.id, logs.ts, logs.cid, logs.stream, logs.level, logs.line \
+                    "SELECT logs.id, logs.ts_rel, logs.cid, logs.stream, logs.level, logs.line \
                      FROM logs JOIN logs_fts ON logs_fts.rowid = logs.id WHERE logs_fts MATCH ",
                 )
             } else {
                 QueryBuilder::<Sqlite>::new(
-                    "SELECT logs.id, logs.ts, logs.cid, logs.stream, logs.level, logs.line \
+                    "SELECT logs.id, logs.ts_rel, logs.cid, logs.stream, logs.level, logs.line \
                      FROM logs WHERE 1 = 1",
                 )
             };
             if let Some(query) = &sanitized_query {
                 builder.push_bind(query);
             }
-            push_filters(&mut builder, &filter);
+            push_filters(&mut builder, &filter, week_start);
             if let Some(cursor) = cursor {
-                push_cursor(&mut builder, cursor, &week, direction);
+                push_cursor(&mut builder, cursor, week_start, direction);
             }
             builder.push(match direction {
-                Direction::Backward => " ORDER BY ts DESC, id DESC LIMIT ",
-                Direction::Forward => " ORDER BY ts ASC, id ASC LIMIT ",
+                Direction::Backward => " ORDER BY ts_rel DESC, id DESC LIMIT ",
+                Direction::Forward => " ORDER BY ts_rel ASC, id ASC LIMIT ",
             });
             builder.push_bind((target - page.len()) as i64);
             for row in builder.build().fetch_all(&pool).await.map_err(storage)? {
-                if let Some(entry) = decode_row(&row, service, &week) {
+                if let Some(entry) = decode_row(&row, service, &week, week_start) {
                     page.push(entry);
                 }
             }
@@ -407,8 +412,9 @@ impl LogStore for SqliteLogStore {
     }
 }
 
-fn storage(error: impl std::fmt::Display) -> AppError {
-    AppError::Storage(error.to_string())
+/// Week file names always come from `week_database_name`, so parsing them back cannot fail.
+fn week_start_ms(week: &str) -> i64 {
+    database_week_start_ms(week).expect("week file name must encode a valid week start")
 }
 
 fn bad_cursor(error: String) -> AppError {
@@ -487,12 +493,16 @@ fn week_matches(
     }
 }
 
-fn push_filters(builder: &mut QueryBuilder<Sqlite>, filter: &LogFilter) {
+fn push_filters(builder: &mut QueryBuilder<Sqlite>, filter: &LogFilter, week_start: i64) {
     if let Some(from) = filter.from {
-        builder.push(" AND logs.ts >= ").push_bind(from);
+        builder
+            .push(" AND logs.ts_rel >= ")
+            .push_bind(from - week_start);
     }
     if let Some(to) = filter.to {
-        builder.push(" AND logs.ts <= ").push_bind(to);
+        builder
+            .push(" AND logs.ts_rel <= ")
+            .push_bind(to - week_start);
     }
     if !filter.levels.is_empty() {
         builder.push(" AND logs.level IN (");
@@ -516,17 +526,23 @@ fn push_filters(builder: &mut QueryBuilder<Sqlite>, filter: &LogFilter) {
     }
 }
 
-/// Week files partition the timeline, so only the cursor's own week needs the id tiebreak.
+/// Only the cursor's own week needs the id tiebreak; both branches share the same offset math
+/// since `logs.ts` is stored relative to `week_start`, whichever week that happens to be.
 fn push_cursor(
     builder: &mut QueryBuilder<Sqlite>,
     cursor: &LogCursor,
-    week: &str,
+    week_start: i64,
     direction: Direction,
 ) {
-    if week != cursor.week {
+    let relative_cursor_ts = cursor.ts - week_start;
+    if week_start != week_start_ms(&cursor.week) {
         match direction {
-            Direction::Backward => builder.push(" AND logs.ts <= ").push_bind(cursor.ts),
-            Direction::Forward => builder.push(" AND logs.ts >= ").push_bind(cursor.ts),
+            Direction::Backward => builder
+                .push(" AND logs.ts_rel <= ")
+                .push_bind(relative_cursor_ts),
+            Direction::Forward => builder
+                .push(" AND logs.ts_rel >= ")
+                .push_bind(relative_cursor_ts),
         };
         return;
     }
@@ -535,12 +551,12 @@ fn push_cursor(
         Direction::Forward => ">",
     };
     builder
-        .push(" AND (logs.ts ")
+        .push(" AND (logs.ts_rel ")
         .push(comparison)
         .push(" ")
-        .push_bind(cursor.ts)
-        .push(" OR (logs.ts = ")
-        .push_bind(cursor.ts)
+        .push_bind(relative_cursor_ts)
+        .push(" OR (logs.ts_rel = ")
+        .push_bind(relative_cursor_ts)
         .push(" AND logs.id ")
         .push(comparison)
         .push(" ")
@@ -548,14 +564,14 @@ fn push_cursor(
         .push("))");
 }
 
-fn decode_row(row: &SqliteRow, service: &str, week: &str) -> Option<StoredLog> {
+fn decode_row(row: &SqliteRow, service: &str, week: &str, week_start: i64) -> Option<StoredLog> {
     let stream = LogStream::from_storage_code(row.get("stream"))?;
     let level = row
         .get::<Option<i64>, _>("level")
         .and_then(LogLevel::from_storage_code);
     let cid: Vec<u8> = row.get("cid");
     let cid = ContainerId::from_bytes(&cid)?;
-    let ts = row.get("ts");
+    let ts: i64 = row.get::<i64, _>("ts_rel") + week_start;
     Some(StoredLog {
         ts,
         week: week.to_string(),
@@ -605,80 +621,6 @@ async fn open_database(
         .map_err(storage)?;
     migrate(&pool).await?;
     Ok(pool)
-}
-
-async fn migrate(pool: &SqlitePool) -> AppResult<()> {
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS logs (
-            id INTEGER PRIMARY KEY,
-            ts INTEGER NOT NULL,
-            cid BLOB NOT NULL,
-            stream INTEGER NOT NULL,
-            level INTEGER,
-            line TEXT NOT NULL
-        )",
-    )
-    .execute(pool)
-    .await
-    .map_err(storage)?;
-    // Used for the default timeline queries: newest/oldest-first paging, time range filters,
-    // and ordering by timestamp across a week database.
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_ts ON logs(ts)")
-        .execute(pool)
-        .await
-        .map_err(storage)?;
-    // Used when the frontend filters by level and then reads the matching rows in time order.
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_level_ts ON logs(level, ts)")
-        .execute(pool)
-        .await
-        .map_err(storage)?;
-    let fts_exists = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'logs_fts')",
-    )
-    .fetch_one(pool)
-    .await
-    .map_err(storage)?;
-    if !fts_exists {
-        initialize_fts(pool).await?;
-    }
-    Ok(())
-}
-
-/// The trigram tokenizer supports substring search but only matches phrases of 3+ characters.
-async fn initialize_fts(pool: &SqlitePool) -> AppResult<()> {
-    let mut tx = pool.begin().await.map_err(storage)?;
-    sqlx::query(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS logs_fts USING fts5(
-            line,
-            content='logs',
-            content_rowid='id',
-            tokenize='trigram'
-        )",
-    )
-    .execute(&mut *tx)
-    .await
-    .map_err(storage)?;
-    sqlx::query(
-        "CREATE TRIGGER IF NOT EXISTS logs_fts_ai AFTER INSERT ON logs BEGIN
-            INSERT INTO logs_fts(rowid, line) VALUES (new.id, new.line);
-        END",
-    )
-    .execute(&mut *tx)
-    .await
-    .map_err(storage)?;
-    sqlx::query(
-        "CREATE TRIGGER IF NOT EXISTS logs_fts_bd BEFORE DELETE ON logs BEGIN
-            INSERT INTO logs_fts(logs_fts, rowid, line) VALUES ('delete', old.id, old.line);
-        END",
-    )
-    .execute(&mut *tx)
-    .await
-    .map_err(storage)?;
-    sqlx::query("INSERT INTO logs_fts(logs_fts) VALUES ('rebuild')")
-        .execute(&mut *tx)
-        .await
-        .map_err(storage)?;
-    tx.commit().await.map_err(storage)
 }
 
 #[cfg(test)]
@@ -742,7 +684,7 @@ mod tests {
         let week = week_database_name(ts).unwrap();
         let path = store.root.join(safe_service_path("group")).join(&week);
         let pool = store.pools.pool(&path, "group", &week).await.unwrap();
-        let rows = sqlx::query("SELECT stream, level FROM logs ORDER BY ts")
+        let rows = sqlx::query("SELECT stream, level FROM logs ORDER BY ts_rel")
             .fetch_all(&pool)
             .await
             .unwrap();
@@ -776,6 +718,66 @@ mod tests {
             .unwrap();
         assert_eq!(page.items.len(), 1);
         assert_eq!(page.items[0].line, "[ERROR] stderr message");
+    }
+
+    #[tokio::test]
+    async fn stores_ts_relative_to_week_start() {
+        let store = test_store("ts-relative");
+        let ts = 1_700_000_000_000;
+        store
+            .append("group", vec![line(ts, "relative")])
+            .await
+            .unwrap();
+
+        let week = week_database_name(ts).unwrap();
+        let path = store.root.join(safe_service_path("group")).join(&week);
+        let pool = store.pools.pool(&path, "group", &week).await.unwrap();
+        let stored: i64 = sqlx::query_scalar("SELECT ts_rel FROM logs")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(stored, ts - week_start_ms(&week));
+        let page = store.query("group", LogFilter::default()).await.unwrap();
+        assert_eq!(page.items[0].ts, ts);
+    }
+
+    #[tokio::test]
+    async fn pages_across_a_week_boundary_timestamp() {
+        let store = test_store("week-boundary");
+        let boundary = week_start_ms(&week_database_name(1_700_000_000_000).unwrap());
+        store
+            .append(
+                "group",
+                vec![line(boundary - 1, "before"), line(boundary, "at boundary")],
+            )
+            .await
+            .unwrap();
+
+        let newest = store
+            .query(
+                "group",
+                LogFilter {
+                    limit: Some(1),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(newest.items[0].line, "at boundary");
+
+        let older = store
+            .query(
+                "group",
+                LogFilter {
+                    limit: Some(1),
+                    before: newest.older_cursor.clone(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(older.items[0].line, "before");
     }
 
     #[tokio::test]
