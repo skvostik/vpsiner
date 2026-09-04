@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+use tokio::sync::Mutex;
+
 use crate::error::AppResult;
 use crate::metadata::MetadataStore;
 use crate::model::service_id::ServiceId;
@@ -29,6 +31,8 @@ struct Inner {
 pub struct ServiceRegistry {
     store: Arc<dyn MetadataStore>,
     inner: RwLock<Inner>,
+    /// Serializes SQLite-backed resolution with retention-driven reclamation.
+    reclamation_lock: Mutex<()>,
 }
 
 impl ServiceRegistry {
@@ -47,12 +51,23 @@ impl ServiceRegistry {
         Ok(Self {
             store,
             inner: RwLock::new(inner),
+            reclamation_lock: Mutex::new(()),
         })
     }
 
     /// Interns `name`, inserting it into the dictionary if it is new.
     pub async fn id_of(&self, name: &str) -> AppResult<ServiceId> {
         let now = now_ms();
+        if let Some(sid) = self.fresh_cached_id(name, now) {
+            return Ok(sid);
+        }
+
+        let _lifecycle = self.reclamation_lock.lock().await;
+        // Another caller may have refreshed or resolved it while this one waited.
+        if let Some(sid) = self.fresh_cached_id(name, now) {
+            return Ok(sid);
+        }
+
         if let Some(sid) = self.cached_id(name) {
             self.touch(sid, now).await?;
             return Ok(sid);
@@ -72,8 +87,16 @@ impl ServiceRegistry {
         self.read().by_id.get(&sid).cloned()
     }
 
-    /// Drops ids that retention has removed from the dictionary.
-    pub fn forget(&self, sids: &[ServiceId]) {
+    /// Deletes stale dictionary entries and drops their cached ids atomically with resolution.
+    pub async fn reclaim_before(&self, cutoff_ms: i64) -> AppResult<Vec<ServiceId>> {
+        let _lifecycle = self.reclamation_lock.lock().await;
+        let reclaimed = self.store.delete_services_before(cutoff_ms).await?;
+        self.forget(&reclaimed);
+        Ok(reclaimed)
+    }
+
+    /// Drops ids that retention has removed from the dictionary. Caller holds `lifecycle`.
+    fn forget(&self, sids: &[ServiceId]) {
         if sids.is_empty() {
             return;
         }
@@ -88,6 +111,16 @@ impl ServiceRegistry {
 
     fn cached_id(&self, name: &str) -> Option<ServiceId> {
         self.read().by_name.get(name).copied()
+    }
+
+    fn fresh_cached_id(&self, name: &str, now: i64) -> Option<ServiceId> {
+        let inner = self.read();
+        let sid = *inner.by_name.get(name)?;
+        inner
+            .touched_ms
+            .get(&sid)
+            .is_some_and(|last| now - *last < TOUCH_INTERVAL_MS)
+            .then_some(sid)
     }
 
     /// Debounced so a hot ingestion path costs at most one UPDATE per service per interval.
@@ -129,6 +162,7 @@ impl ServiceRegistry {
         Arc::new(Self {
             store: Arc::new(crate::metadata::MockMetadataStore::new()),
             inner: RwLock::new(inner),
+            reclamation_lock: Mutex::new(()),
         })
     }
 }
@@ -186,13 +220,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn forget_drops_both_directions() {
+    async fn reclaim_drops_both_directions() {
         let registry = sqlite_registry("forget").await;
         let sid = registry.id_of("gone").await.unwrap();
 
-        registry.forget(&[sid]);
+        registry.reclaim_before(i64::MAX).await.unwrap();
 
         assert_eq!(registry.name(sid), None);
+    }
+
+    #[tokio::test]
+    async fn reclaims_then_reinterns_with_a_new_id() {
+        let registry = sqlite_registry("reintern").await;
+        let old_sid = registry.id_of("gone").await.unwrap();
+
+        registry.reclaim_before(i64::MAX).await.unwrap();
+        let new_sid = registry.id_of("gone").await.unwrap();
+
+        assert_ne!(new_sid, old_sid);
+        assert_eq!(registry.name(new_sid).as_deref(), Some("gone"));
     }
 
     #[tokio::test]

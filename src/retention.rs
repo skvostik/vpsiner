@@ -54,9 +54,8 @@ pub async fn cleanup_once(
         let reclaim_cutoff_ms = cutoff_ms
             - MetricsResolution::max_bucket_ms() as i64
             - ServiceRegistry::MAX_WATERMARK_LAG_MS;
-        match metadata.delete_services_before(reclaim_cutoff_ms).await {
+        match services.reclaim_before(reclaim_cutoff_ms).await {
             Ok(reclaimed) => {
-                services.forget(&reclaimed);
                 tracing::info!(
                     cutoff = %format_timestamp_ms(reclaim_cutoff_ms),
                     services_reclaimed = reclaimed.len(),
