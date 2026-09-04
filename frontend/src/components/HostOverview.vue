@@ -83,11 +83,13 @@ const containerMemorySeries = computed<ChartSeries[]>(() =>
 )
 
 const latestContainerSamples = computed(() => Object.values(props.snapshot.services))
-const containerCpuSummary = computed(
-  () =>
-    `${latestContainerSamples.value.reduce((total, service) => total + service.cpu_pct, 0).toFixed(1)}%`
-)
+const containerCpuSummary = computed(() => {
+  if (!latestContainerSamples.value.length) return '—'
+  const used = latestContainerSamples.value.reduce((total, service) => total + service.cpu_pct, 0)
+  return `${used.toFixed(1)}%`
+})
 const containerMemorySummary = computed(() => {
+  if (!latestContainerSamples.value.length) return '—'
   const used = latestContainerSamples.value.reduce((total, group) => total + group.mem_used, 0)
   return formatBytes(used)
 })
@@ -150,7 +152,6 @@ function formatDatabaseStorageSummary(sample?: HostPoint | null) {
       <MetricChart :series="databaseSizeSeries" :format-value="formatBytes" />
     </n-card>
     <n-card
-      v-if="containerCpuSeries.length"
       size="small"
       :bordered="false"
       class="order-3 min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
@@ -159,7 +160,6 @@ function formatDatabaseStorageSummary(sample?: HostPoint | null) {
       <MetricChart :series="containerCpuSeries" :format-value="(value) => `${value.toFixed(1)}%`" />
     </n-card>
     <n-card
-      v-if="containerMemorySeries.length"
       size="small"
       :bordered="false"
       class="order-4 min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
