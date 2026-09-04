@@ -21,6 +21,7 @@ under 50 MB. Actual usage depends on the number of containers and log volume.
     - [Container controls](#container-controls)
     - [UI customization and custom links](#ui-customization-and-custom-links)
     - [Data persistence](#data-persistence)
+    - [Database schema versions](#database-schema-versions)
   - [Development](#development)
   - [Contributing](#contributing)
 
@@ -210,13 +211,26 @@ If `ui.json` is not present, VPSiner defaults to `"VPSiner"`, `"Simply Observed"
 
 ### Data persistence
 
-VPSiner stores host and container metrics in `/data/metrics.db` and logs in
-weekly SQLite databases under `/data/logs/`. Mount `/data` to a named volume or
-host directory, as shown in the quick start, to preserve history when the
-container is replaced.
+VPSiner stores host and container metrics in `/data/metrics/metrics.db`, log
+ingestion checkpoints in `/data/metadata/metadata.db`, and logs in weekly SQLite
+databases under `/data/logs/`. Mount `/data` to a named volume or host
+directory, as shown in the quick start, to preserve history when the container
+is replaced.
 
 Metrics and logs older than `VPSINER_RETENTION_WEEKS` are removed automatically.
 Back up the data directory if historical monitoring data matters to you.
+
+### Database schema versions
+
+Some releases change the database schema in an incompatible way. VPSiner tracks
+this in `/data/versions.json` and refuses to start when the databases on disk do
+not match the ones the release expects, telling you exactly what it found.
+
+To move on, restart once with `VPSINER_FORCE_DB_MIGRATION=1`. This **permanently
+deletes** the incompatible databases and starts them empty; databases that still
+match keep their history. The error message names the exact folders, so you can
+also just delete them yourself instead of setting the variable. Back up `/data`
+first if you need the old contents.
 
 ## Development
 

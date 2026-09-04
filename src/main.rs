@@ -1,5 +1,6 @@
 mod api;
 mod config;
+mod db_version;
 mod docker;
 mod error;
 mod logs;
@@ -84,10 +85,15 @@ async fn async_main() {
         tracing::info!("static file serving disabled");
     }
 
+    if let Err(message) = db_version::ensure_compatible(&config.data_path).await {
+        tracing::error!("{message}");
+        std::process::exit(1);
+    }
+
     // Composition root: concrete implementations are chosen here and nowhere else.
     let metadata = Arc::new(
         SqliteLogMetadataStore::connect(
-            config.data_path.join("metadata.db"),
+            db_version::metadata_dir(&config.data_path).join("metadata.db"),
             config.sqlite_cache_size_kb,
             config.sqlite_busy_timeout,
         )
@@ -96,7 +102,7 @@ async fn async_main() {
     );
     let metrics = Arc::new(
         SqliteMetricsStore::connect(
-            config.data_path.join("metrics.db"),
+            db_version::metrics_dir(&config.data_path).join("metrics.db"),
             config.sqlite_cache_size_kb,
             config.sqlite_busy_timeout,
             config.downsample_max_gap_pct,
@@ -124,7 +130,7 @@ async fn async_main() {
         )),
         metrics,
         Arc::new(SqliteLogStore::new(
-            config.data_path.join("logs"),
+            db_version::logs_dir(&config.data_path),
             config.sqlite_cache_size_kb,
             config.sqlite_busy_timeout,
             config.sqlite_keep_alive,
