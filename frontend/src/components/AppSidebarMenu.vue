@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, type Component } from 'vue'
 import { useRoute } from 'vue-router'
-import { NBadge } from 'naive-ui'
+import { NBadge, NTooltip } from 'naive-ui'
 import * as LucideIcons from '@lucide/vue'
-import { Boxes, ExternalLink, Gauge, Logs, Settings } from '@lucide/vue'
+import { Boxes, ExternalLink, Gauge, Logs, Settings, TriangleAlert } from '@lucide/vue'
 
 import { useContainersStream } from '../composables/useContainersStream'
-import { backendVersion, retentionWeeks } from '../composables/useBackendHealth'
+import { backendVersion, dockerConnected, retentionWeeks } from '../composables/useBackendHealth'
 import { useUiConfig } from '../composables/useUiConfig'
 
 const emit = defineEmits<{ navigate: [] }>()
@@ -74,8 +74,19 @@ function resolveIcon(name: string): Component {
         <component :is="item.icon" :size="18" />
         <span class="flex min-w-0 flex-1 items-center justify-between gap-2">
           <span class="truncate">{{ item.label }}</span>
+          <n-tooltip v-if="item.key === 'containers' && !dockerConnected">
+            <template #trigger>
+              <TriangleAlert
+                :size="16"
+                class="shrink-0 text-amber-500"
+                role="img"
+                aria-label="Docker connection unavailable"
+              />
+            </template>
+            Docker connection is unavailable
+          </n-tooltip>
           <n-badge
-            v-if="item.key === 'containers'"
+            v-else-if="item.key === 'containers'"
             :value="runningCount"
             type="success"
             :show-zero="false"

@@ -17,6 +17,7 @@ export const backendVersion = ref('')
 export const retentionWeeks = ref<number | null>(null)
 
 let timer: number | undefined
+let consumers = 0
 
 async function check() {
   try {
@@ -66,10 +67,17 @@ export function reportSseIssue(source?: EventSource) {
 }
 
 export function useBackendHealth() {
-  onMounted(check)
+  onMounted(() => {
+    consumers += 1
+    if (consumers === 1) check()
+  })
   onBeforeUnmount(() => {
-    if (timer) window.clearTimeout(timer)
-    timer = undefined
+    consumers -= 1
+    // The timer is shared, so it must outlive any single consumer that unmounts on navigation.
+    if (consumers === 0 && timer) {
+      window.clearTimeout(timer)
+      timer = undefined
+    }
   })
   return { backendOnline }
 }
