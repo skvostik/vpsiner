@@ -103,6 +103,8 @@ impl MetricsSnapshotState {
             net_tx_rate,
             disk_read_rate,
             disk_write_rate,
+            log_pressure_pct: Some(sample.log_pressure_pct_mill as f64 / 1_000.0),
+            app_rss_bytes: sample.app_rss_bytes,
         });
         state.previous = Some(*sample);
         drop(state);
@@ -285,6 +287,8 @@ mod tests {
             net_tx: 0,
             disk_read: 0,
             disk_write: 0,
+            log_pressure_pct_mill: 0,
+            app_rss_bytes: Some(40_000_000),
         }
     }
 

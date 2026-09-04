@@ -20,6 +20,11 @@ pub struct HostRawSample {
     pub net_tx: u64,
     pub disk_read: u64,
     pub disk_write: u64,
+    /// Peak fill of the docker log channel since the previous sample, as a percentage in
+    /// milli-units to match `cpu_pct_mill`.
+    pub log_pressure_pct_mill: u64,
+    /// Resident set size of this process; `None` when the platform can't report it.
+    pub app_rss_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -34,6 +39,8 @@ pub struct HostSample {
     pub net_tx_rate_mill: Option<u64>,
     pub disk_read_rate_mill: Option<u64>,
     pub disk_write_rate_mill: Option<u64>,
+    pub log_pressure_pct_mill: Option<u64>,
+    pub app_rss_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -101,6 +108,8 @@ pub struct HostPoint {
     pub net_tx_rate: Option<f64>,
     pub disk_read_rate: Option<f64>,
     pub disk_write_rate: Option<f64>,
+    pub log_pressure_pct: Option<f64>,
+    pub app_rss_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -117,6 +126,8 @@ pub struct CurrentHostPoint {
     pub net_tx_rate: Option<f64>,
     pub disk_read_rate: Option<f64>,
     pub disk_write_rate: Option<f64>,
+    pub log_pressure_pct: Option<f64>,
+    pub app_rss_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -161,6 +172,8 @@ impl From<HostSample> for HostPoint {
             net_tx_rate: from_mill(sample.net_tx_rate_mill),
             disk_read_rate: from_mill(sample.disk_read_rate_mill),
             disk_write_rate: from_mill(sample.disk_write_rate_mill),
+            log_pressure_pct: from_mill(sample.log_pressure_pct_mill),
+            app_rss_bytes: sample.app_rss_bytes,
         }
     }
 }
@@ -180,6 +193,8 @@ impl From<HostRawSample> for CurrentHostPoint {
             net_tx_rate: None,
             disk_read_rate: None,
             disk_write_rate: None,
+            log_pressure_pct: Some(sample.log_pressure_pct_mill as f64 / 1_000.0),
+            app_rss_bytes: sample.app_rss_bytes,
         }
     }
 }

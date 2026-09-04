@@ -17,6 +17,7 @@ const ENV_RETENTION_WEEKS: &str = "VPSINER_RETENTION_WEEKS";
 const ENV_COLLECT_INTERVAL_SECS: &str = "VPSINER_COLLECT_INTERVAL_SECS";
 const ENV_LOG_FLUSH_DEBOUNCE_MS: &str = "VPSINER_LOG_FLUSH_DEBOUNCE_MS";
 const ENV_LOG_FLUSH_KEEP_ALIVE_SECS: &str = "VPSINER_LOG_FLUSH_KEEP_ALIVE_SECS";
+const ENV_LOG_MAX_BUFFERED_LINES: &str = "VPSINER_LOG_MAX_BUFFERED_LINES";
 const ENV_DOCKER_CONTROLS: &str = "VPSINER_DOCKER_CONTROLS";
 const ENV_DOCKER_PROBE_INTERVAL_SECS: &str = "VPSINER_DOCKER_PROBE_INTERVAL_SECS";
 const ENV_DOCKER_RETRY_SECS: &str = "VPSINER_DOCKER_RETRY_SECS";
@@ -47,12 +48,13 @@ const DEFAULT_COLLECT_INTERVAL_SECS: u64 = 5;
 const MAX_COLLECT_INTERVAL_SECS: u64 = 10;
 const DEFAULT_LOG_FLUSH_DEBOUNCE_MS: u64 = 500;
 const DEFAULT_LOG_FLUSH_KEEP_ALIVE_SECS: u64 = 60;
+const DEFAULT_LOG_MAX_BUFFERED_LINES: usize = 100;
 const DEFAULT_DOCKER_CONTROLS: DockerControlsMode = DockerControlsMode::Auto;
 const DEFAULT_DOCKER_PROBE_INTERVAL_SECS: u64 = 15;
 const DEFAULT_DOCKER_RETRY_SECS: u64 = 5;
 const DEFAULT_DOCKER_REQUEST_CONCURRENCY: usize = 8;
 const DEFAULT_DOCKER_DEBOUNCE_MS: u64 = 1_000;
-const DEFAULT_LOG_CHANNEL_CAPACITY: usize = 10_000;
+const DEFAULT_LOG_CHANNEL_CAPACITY: usize = 1_000;
 const DEFAULT_SAMPLES_CHANNEL_CAPACITY: usize = 32;
 const DEFAULT_DOCKER_EVENTS_CHANNEL_CAPACITY: usize = 256;
 const DEFAULT_SQLITE_CACHE_SIZE_KB: u64 = 1_024;
@@ -122,6 +124,7 @@ pub struct Config {
     pub collect_interval: Duration,
     pub log_flush_debounce: Duration,
     pub log_flush_keep_alive: Duration,
+    pub log_max_buffered_lines: usize,
     pub docker_controls_mode: DockerControlsMode,
     pub docker_probe_interval: Duration,
     pub docker_retry_delay: Duration,
@@ -166,6 +169,10 @@ impl Config {
                 ENV_LOG_FLUSH_KEEP_ALIVE_SECS,
                 DEFAULT_LOG_FLUSH_KEEP_ALIVE_SECS,
             )),
+            log_max_buffered_lines: parse_positive_usize_or(
+                ENV_LOG_MAX_BUFFERED_LINES,
+                DEFAULT_LOG_MAX_BUFFERED_LINES,
+            ),
             docker_controls_mode: parse_or(ENV_DOCKER_CONTROLS, DEFAULT_DOCKER_CONTROLS),
             docker_probe_interval: Duration::from_secs(parse_positive_u64_or(
                 ENV_DOCKER_PROBE_INTERVAL_SECS,
@@ -299,6 +306,13 @@ impl Config {
                 self.log_flush_keep_alive.as_secs().to_string(),
                 DEFAULT_LOG_FLUSH_KEEP_ALIVE_SECS.to_string(),
                 "How long an idle per-service log flush worker stays alive before exiting",
+                "advanced",
+            ),
+            entry(
+                ENV_LOG_MAX_BUFFERED_LINES,
+                self.log_max_buffered_lines.to_string(),
+                DEFAULT_LOG_MAX_BUFFERED_LINES.to_string(),
+                "Per-service buffered log lines allowed before ingestion blocks on a write",
                 "advanced",
             ),
             entry(
@@ -487,6 +501,7 @@ mod tests {
             collect_interval: Duration::from_secs(DEFAULT_COLLECT_INTERVAL_SECS),
             log_flush_debounce: Duration::from_millis(DEFAULT_LOG_FLUSH_DEBOUNCE_MS),
             log_flush_keep_alive: Duration::from_secs(DEFAULT_LOG_FLUSH_KEEP_ALIVE_SECS),
+            log_max_buffered_lines: DEFAULT_LOG_MAX_BUFFERED_LINES,
             docker_controls_mode: DEFAULT_DOCKER_CONTROLS,
             docker_probe_interval: Duration::from_secs(DEFAULT_DOCKER_PROBE_INTERVAL_SECS),
             docker_retry_delay: Duration::from_secs(DEFAULT_DOCKER_RETRY_SECS),
@@ -508,7 +523,7 @@ mod tests {
         let names: HashSet<_> = entries.iter().map(|entry| entry.name).collect();
 
         assert_eq!(names.len(), entries.len(), "duplicate setting names");
-        assert_eq!(entries.len(), 25);
+        assert_eq!(entries.len(), 26);
         assert!(names.contains(ENV_WORKER_THREADS));
         assert!(names.contains(ENV_RUST_LOG));
         assert!(names.contains(ENV_DOCKER_HOST));

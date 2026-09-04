@@ -1,7 +1,10 @@
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use sysinfo::{CpuRefreshKind, Disks, MemoryRefreshKind, Networks, RefreshKind, System};
+use sysinfo::{
+    CpuRefreshKind, Disks, MemoryRefreshKind, Networks, ProcessRefreshKind, ProcessesToUpdate,
+    RefreshKind, System, get_current_pid,
+};
 
 use crate::error::{AppError, AppResult};
 use crate::model::metrics::HostRawSample;
@@ -12,6 +15,32 @@ fn host_refresh_kind() -> RefreshKind {
     RefreshKind::nothing()
         .with_cpu(CpuRefreshKind::everything())
         .with_memory(MemoryRefreshKind::everything())
+}
+
+/// Resident set size of this process, or `None` when the platform can't report it.
+///
+/// Scoped to our own pid and without tasks, so this stays a two-file read rather than a walk
+/// of every process (and, on Linux, of our own many threads). RSS is already the resident
+/// working set, so it does not need an extra cache subtraction like cgroup memory usage.
+fn app_rss_bytes(system: &mut System) -> Option<u64> {
+    let pid = get_current_pid().ok()?;
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        false,
+        ProcessRefreshKind::nothing().with_memory().without_tasks(),
+    );
+    system.process(pid).map(|process| process.memory())
+}
+
+/// Host memory in active use, excluding reclaimable page cache.
+///
+/// This mirrors the Docker cgroup pattern: memory visible in the kernel as cache is not counted
+/// as a "used" working-set metric. `sysinfo::System::used_memory()` can include reclaimable
+/// memory depending on OS accounting, so we prefer `total - available`.
+fn host_mem_used_without_cache(system: &System) -> u64 {
+    system
+        .total_memory()
+        .saturating_sub(system.available_memory())
 }
 
 /// Host-level metrics source (sysinfo in production).
@@ -49,6 +78,7 @@ impl HostMetricsSource for SysinfoHost {
                 .lock()
                 .map_err(|err| AppError::Host(format!("sysinfo lock poisoned: {err}")))?;
             system.refresh_specifics(host_refresh_kind());
+            let app_rss_bytes = app_rss_bytes(&mut system);
 
             let mut networks = networks
                 .lock()
@@ -91,12 +121,15 @@ impl HostMetricsSource for SysinfoHost {
             Ok(HostRawSample {
                 ts,
                 cpu_pct: f64::from(system.global_cpu_usage()),
-                mem_used: system.used_memory(),
+                mem_used: host_mem_used_without_cache(&system),
                 mem_total: system.total_memory(),
                 storage_used,
                 storage_total,
                 metrics_size: 0,
                 logs_size: 0,
+                // Patched by the collector, which owns the log channel gauge.
+                log_pressure_pct_mill: 0,
+                app_rss_bytes,
                 net_rx,
                 net_tx,
                 disk_read,
@@ -105,5 +138,21 @@ impl HostMetricsSource for SysinfoHost {
         })
         .await
         .map_err(|err| AppError::Host(format!("sysinfo sampling task failed: {err}")))?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::host_mem_used_without_cache;
+
+    #[test]
+    fn host_mem_used_without_cache_excludes_available_memory() {
+        assert_eq!(host_mem_used_without_cache(&sysinfo::System::new()), 0);
+        assert_eq!(host_mem_used_without_cache_from_values(4_096, 1_024), 3_072);
+        assert_eq!(host_mem_used_without_cache_from_values(1_024, 2_048), 0);
+    }
+
+    fn host_mem_used_without_cache_from_values(total: u64, available: u64) -> u64 {
+        total.saturating_sub(available)
     }
 }

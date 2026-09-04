@@ -64,6 +64,8 @@ struct HostGauges {
     net_tx_rate_mill: OptionalGauge,
     disk_read_rate_mill: OptionalGauge,
     disk_write_rate_mill: OptionalGauge,
+    log_pressure_pct_mill: OptionalGauge,
+    app_rss_bytes: OptionalGauge,
 }
 
 #[derive(Default)]
@@ -98,6 +100,8 @@ impl HostGauges {
         self.net_tx_rate_mill.add(sample.net_tx_rate_mill);
         self.disk_read_rate_mill.add(sample.disk_read_rate_mill);
         self.disk_write_rate_mill.add(sample.disk_write_rate_mill);
+        self.log_pressure_pct_mill.add(sample.log_pressure_pct_mill);
+        self.app_rss_bytes.add(sample.app_rss_bytes);
     }
 
     fn finish(&self, ts: i64, bucket_ms: u64, max_gap_pct: u8) -> Option<HostSample> {
@@ -116,6 +120,8 @@ impl HostGauges {
             net_tx_rate_mill: self.net_tx_rate_mill.mean_rate(),
             disk_read_rate_mill: self.disk_read_rate_mill.mean_rate(),
             disk_write_rate_mill: self.disk_write_rate_mill.mean_rate(),
+            log_pressure_pct_mill: self.log_pressure_pct_mill.mean_rate(),
+            app_rss_bytes: self.app_rss_bytes.mean_rate(),
         })
     }
 }
@@ -261,6 +267,8 @@ mod tests {
             net_tx_rate_mill: Some(400_000),
             disk_read_rate_mill: Some(500_000),
             disk_write_rate_mill: Some(600_000),
+            log_pressure_pct_mill: Some(1_000),
+            app_rss_bytes: Some(40_000_000),
         }
     }
 

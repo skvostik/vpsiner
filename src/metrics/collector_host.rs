@@ -1,10 +1,13 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{sync::Arc, time::Duration};
 
 use crate::{
     logs::store::LogStore,
     metrics::{
         bucket_watcher::{BucketWatcher, MetricsSource},
-        bucketizer::{Bucketizer, CounterBucketizer, GaugeBucketizer, buffer_capacity},
+        bucketizer::{
+            Bucketizer, CounterBucketizer, GaugeBucketizer, MaxBucketizer, buffer_capacity,
+        },
         downsampling::bucket_end,
         host::HostMetricsSource,
         snapshot::MetricsSnapshotState,
@@ -34,6 +37,8 @@ struct HostBucketizer {
     bck_net_tx_rate_mill: CounterBucketizer,
     bck_disk_read_rate_mill: CounterBucketizer,
     bck_disk_write_rate_mill: CounterBucketizer,
+    bck_log_pressure_pct_mill: MaxBucketizer,
+    bck_app_rss_bytes: MaxBucketizer,
 }
 
 impl HostBucketizer {
@@ -51,6 +56,8 @@ impl HostBucketizer {
             bck_net_tx_rate_mill: CounterBucketizer::new(capacity, bucket_len_ms),
             bck_disk_read_rate_mill: CounterBucketizer::new(capacity, bucket_len_ms),
             bck_disk_write_rate_mill: CounterBucketizer::new(capacity, bucket_len_ms),
+            bck_log_pressure_pct_mill: MaxBucketizer::new(capacity, bucket_len_ms),
+            bck_app_rss_bytes: MaxBucketizer::new(capacity, bucket_len_ms),
         }
     }
 
@@ -67,6 +74,11 @@ impl HostBucketizer {
             .push(sample.ts, sample.disk_read);
         self.bck_disk_write_rate_mill
             .push(sample.ts, sample.disk_write);
+        self.bck_log_pressure_pct_mill
+            .push(sample.ts, sample.log_pressure_pct_mill);
+        if let Some(rss) = sample.app_rss_bytes {
+            self.bck_app_rss_bytes.push(sample.ts, rss);
+        }
     }
 
     fn collect(&self, bucket_end: TimestampMs) -> Option<HostSample> {
@@ -81,6 +93,9 @@ impl HostBucketizer {
             net_tx_rate_mill: self.bck_net_tx_rate_mill.collect(bucket_end),
             disk_read_rate_mill: self.bck_disk_read_rate_mill.collect(bucket_end),
             disk_write_rate_mill: self.bck_disk_write_rate_mill.collect(bucket_end),
+            // Deliberately not `?`: a missing peak must not discard the whole host sample.
+            log_pressure_pct_mill: self.bck_log_pressure_pct_mill.collect(bucket_end),
+            app_rss_bytes: self.bck_app_rss_bytes.collect(bucket_end),
         })
     }
 }
@@ -118,6 +133,7 @@ pub(crate) async fn collect_host_once(
     logs: &Arc<dyn LogStore>,
     snapshot: &Arc<MetricsSnapshotState>,
     bucket_watcher: &Arc<BucketWatcher>,
+    log_pressure_pct_mill: &Arc<AtomicUsize>,
 ) {
     match host.sample().await {
         Ok(mut sample) => {
@@ -135,6 +151,7 @@ pub(crate) async fn collect_host_once(
                     return;
                 }
             };
+            sample.log_pressure_pct_mill = log_pressure_pct_mill.swap(0, Ordering::Relaxed) as u64;
             snapshot.record_host(&sample);
 
             let Some(bucketed_sample) = state.observe(&sample) else {

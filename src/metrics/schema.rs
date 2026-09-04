@@ -14,6 +14,7 @@ use crate::model::{
     service_id::ServiceId,
     time::TimeRange,
 };
+use crate::sqlite::add_column_if_missing;
 
 /// Bound on rows per multi-row insert; SQLite allows 32766 bound parameters.
 const INSERT_CHUNK_ROWS: usize = 3_000;
@@ -76,13 +77,19 @@ pub async fn create_host_table(pool: &SqlitePool, resolution: MetricsResolution)
             net_rx_rate_mill INTEGER,
             net_tx_rate_mill INTEGER,
             disk_read_rate_mill INTEGER,
-            disk_write_rate_mill INTEGER
+            disk_write_rate_mill INTEGER,
+            log_pressure_pct_mill INTEGER,
+            app_rss_bytes INTEGER
         )",
         host_table(resolution)
     )))
     .execute(pool)
     .await
     .map_err(storage)?;
+
+    let table = host_table(resolution);
+    add_column_if_missing(pool, &table, "log_pressure_pct_mill", "INTEGER").await?;
+    add_column_if_missing(pool, &table, "app_rss_bytes", "INTEGER").await?;
 
     Ok(())
 }
@@ -141,11 +148,19 @@ pub async fn insert_host(
         .disk_write_rate_mill
         .map(|value| sqlite_integer(value, "disk_write_rate_mill"))
         .transpose()?;
+    let log_pressure_pct_mill = sample
+        .log_pressure_pct_mill
+        .map(|value| sqlite_integer(value, "log_pressure_pct_mill"))
+        .transpose()?;
+    let app_rss_bytes = sample
+        .app_rss_bytes
+        .map(|value| sqlite_integer(value, "app_rss_bytes"))
+        .transpose()?;
 
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "{} INTO {}
-                 (ts, cpu_pct_mill, mem_used, storage_used, metrics_size, logs_size, net_rx_rate_mill, net_tx_rate_mill, disk_read_rate_mill, disk_write_rate_mill)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 (ts, cpu_pct_mill, mem_used, storage_used, metrics_size, logs_size, net_rx_rate_mill, net_tx_rate_mill, disk_read_rate_mill, disk_write_rate_mill, log_pressure_pct_mill, app_rss_bytes)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         insert_verb(resolution),
         host_table(resolution)
     )))
@@ -159,6 +174,8 @@ pub async fn insert_host(
     .bind(net_tx_rate_mill)
     .bind(disk_read_rate_mill)
     .bind(disk_write_rate_mill)
+    .bind(log_pressure_pct_mill)
+    .bind(app_rss_bytes)
     .execute(pool)
     .await
     .map_err(storage)?;
@@ -260,6 +277,8 @@ fn host_sample_from_row(row: sqlx::sqlite::SqliteRow) -> AppResult<HostSample> {
         net_tx_rate_mill: rate(&row, "net_tx_rate_mill")?,
         disk_read_rate_mill: rate(&row, "disk_read_rate_mill")?,
         disk_write_rate_mill: rate(&row, "disk_write_rate_mill")?,
+        log_pressure_pct_mill: rate(&row, "log_pressure_pct_mill")?,
+        app_rss_bytes: rate(&row, "app_rss_bytes")?,
     })
 }
 
@@ -299,7 +318,7 @@ pub async fn select_host(
     range: TimeRange,
 ) -> AppResult<Vec<HostSample>> {
     let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "SELECT ts, cpu_pct_mill, mem_used, storage_used, metrics_size, logs_size, net_rx_rate_mill, net_tx_rate_mill, disk_read_rate_mill, disk_write_rate_mill
+        "SELECT ts, cpu_pct_mill, mem_used, storage_used, metrics_size, logs_size, net_rx_rate_mill, net_tx_rate_mill, disk_read_rate_mill, disk_write_rate_mill, log_pressure_pct_mill, app_rss_bytes
            FROM {}
            WHERE ts >= ? AND ts <= ?
          ORDER BY ts ASC",
@@ -420,6 +439,73 @@ mod tests {
             blk_read_rate_mill: None,
             blk_write_rate_mill: None,
         }
+    }
+
+    #[tokio::test]
+    async fn adds_missing_columns_to_a_pre_existing_host_table() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query(
+            "CREATE TABLE host_metrics_10s (
+                ts INTEGER PRIMARY KEY,
+                cpu_pct_mill INTEGER NOT NULL,
+                mem_used INTEGER NOT NULL,
+                storage_used INTEGER NOT NULL,
+                metrics_size INTEGER NOT NULL,
+                logs_size INTEGER NOT NULL,
+                net_rx_rate_mill INTEGER,
+                net_tx_rate_mill INTEGER,
+                disk_read_rate_mill INTEGER,
+                disk_write_rate_mill INTEGER
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Running twice must be a no-op the second time.
+        for _ in 0..2 {
+            create_host_table(&pool, MetricsResolution::TenSeconds)
+                .await
+                .unwrap();
+        }
+
+        let columns: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info('host_metrics_10s')")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert!(columns.iter().any(|name| name == "log_pressure_pct_mill"));
+        assert!(columns.iter().any(|name| name == "app_rss_bytes"));
+
+        let sample = HostSample {
+            ts: 10_000,
+            cpu_pct_mill: 1,
+            mem_used: 2,
+            storage_used: 3,
+            metrics_size: 4,
+            logs_size: 5,
+            net_rx_rate_mill: None,
+            net_tx_rate_mill: None,
+            disk_read_rate_mill: None,
+            disk_write_rate_mill: None,
+            log_pressure_pct_mill: Some(42_000),
+            app_rss_bytes: Some(40_000_000),
+        };
+        insert_host(&pool, MetricsResolution::TenSeconds, sample)
+            .await
+            .unwrap();
+
+        let selected = select_host(
+            &pool,
+            MetricsResolution::TenSeconds,
+            TimeRange {
+                from: 0,
+                to: 10_000,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(selected, vec![sample]);
     }
 
     #[tokio::test]

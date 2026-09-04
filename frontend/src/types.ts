@@ -31,6 +31,8 @@ export interface HostPoint {
   net_tx_rate: number | null
   disk_read_rate: number | null
   disk_write_rate: number | null
+  log_pressure_pct: number | null
+  app_rss_bytes: number | null
 }
 
 export interface CurrentHostPoint extends HostPoint {

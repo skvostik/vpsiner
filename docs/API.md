@@ -31,6 +31,8 @@ Applies to the three time-series endpoints (`/api/metrics/host`, `/api/metrics/c
 - Empty buckets are omitted.
 - Gauge metrics (e.g. `cpu_pct`, `mem_used`, `storage_used`, `metrics_size`, `logs_size`) are averaged across the samples within a bucket.
 - Rate metrics (e.g. `net_rx_rate`, `net_tx_rate`, `disk_read_rate`, `disk_write_rate`, `blk_read_rate`, `blk_write_rate`) are derived once, when a `10s` bucket is written: the counter is interpolated at both bucket boundaries and the slope between them is the bucket's rate. Coarser resolutions average those stored `10s` rates.
+- `log_pressure_pct` is a peak rather than an average: a `10s` bucket holds the largest value sampled inside it, and coarser resolutions average those stored `10s` peaks.
+- `app_rss_bytes` follows the same peak-then-average rule as `log_pressure_pct`.
 - Rate metrics are `null` when the underlying counters could not produce a rate for the bucket — for example the first bucket after a container starts, or a bucket spanning a counter reset. A `null` rate means "unknown", not "zero".
 
 ## 1) Health check
@@ -281,6 +283,8 @@ Metric semantics:
 - `metrics_size` is the on-disk size of Vpsiner's metrics database at sample time
 - `logs_size` is the combined on-disk size of Vpsiner's log databases at sample time
 - `net_rx_rate`, `net_tx_rate`, `disk_read_rate`, and `disk_write_rate` are bytes per second or `null`; see "Metrics point semantics" above
+- `log_pressure_pct` is how full the internal docker log channel got, on a `0..100` scale, or `null` when no sample landed in the bucket. It reaches `100` while log ingestion is applying backpressure to the Docker daemon
+- `app_rss_bytes` is Vpsiner's own resident set size in bytes, or `null` when the platform cannot report it. It is sampled at the collection interval, so a spike shorter than that interval can be missed
 
 Ordering:
 - samples MUST be returned in ascending timestamp order: `ts ASC`

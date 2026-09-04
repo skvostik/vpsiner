@@ -60,6 +60,38 @@ pub async fn open_pool(
         .map_err(storage)
 }
 
+/// Adds a nullable column to a table created by an older version, if it isn't there yet.
+///
+/// SQLite treats `ADD COLUMN` on a nullable column as a metadata-only change, so this stays
+/// cheap regardless of table size.
+pub async fn add_column_if_missing(
+    pool: &SqlitePool,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> AppResult<()> {
+    let existing: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT name FROM pragma_table_info('{table}')"
+    )))
+    .fetch_all(pool)
+    .await
+    .map_err(storage)?;
+
+    if existing.iter().any(|name| name == column) {
+        return Ok(());
+    }
+
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "ALTER TABLE {table} ADD COLUMN {column} {definition}"
+    )))
+    .execute(pool)
+    .await
+    .map_err(storage)?;
+
+    tracing::info!(table, column, "added missing column");
+    Ok(())
+}
+
 /// Returns free pages to the filesystem in bounded steps so a large retention
 /// delete never blocks the connection for one long stretch.
 ///

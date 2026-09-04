@@ -21,7 +21,15 @@ const props = defineProps<{
 const host = computed(() => props.snapshot.host)
 
 function points(
-  key: 'cpu_pct' | 'mem_used' | 'net_rx_rate' | 'net_tx_rate' | 'disk_read_rate' | 'disk_write_rate'
+  key:
+    | 'cpu_pct'
+    | 'mem_used'
+    | 'net_rx_rate'
+    | 'net_tx_rate'
+    | 'disk_read_rate'
+    | 'disk_write_rate'
+    | 'log_pressure_pct'
+    | 'app_rss_bytes'
 ) {
   return props.history.map((sample) => ({ ts: sample.ts, value: sample[key] }))
 }
@@ -38,6 +46,8 @@ const networkReceivedPoints = computed(() => points('net_rx_rate'))
 const networkSentPoints = computed(() => points('net_tx_rate'))
 const diskReadPoints = computed(() => points('disk_read_rate'))
 const diskWritePoints = computed(() => points('disk_write_rate'))
+const logPressurePoints = computed(() => points('log_pressure_pct'))
+const appRssPoints = computed(() => points('app_rss_bytes'))
 const databaseSizeSeries = computed<ChartSeries[]>(() => [
   {
     name: 'Metrics database',
@@ -116,6 +126,14 @@ function formatStorageSummary(sample?: CurrentHostPoint | null) {
 function formatDatabaseStorageSummary(sample?: HostPoint | null) {
   return sample ? formatBytes(sample.metrics_size + sample.logs_size) : '—'
 }
+
+function formatLogPressureSummary(sample?: HostPoint | null) {
+  return sample && sample.log_pressure_pct != null ? `${sample.log_pressure_pct.toFixed(1)}%` : '—'
+}
+
+function formatAppRssSummary(sample?: HostPoint | null) {
+  return sample && sample.app_rss_bytes != null ? formatBytes(sample.app_rss_bytes) : '—'
+}
 </script>
 
 <template>
@@ -193,6 +211,26 @@ function formatDatabaseStorageSummary(sample?: HostPoint | null) {
     >
       <n-statistic label="Database storage" :value="formatDatabaseStorageSummary(host)" />
       <MetricChart :series="databaseSizeSeries" :format-value="formatBytes" />
+    </n-card>
+    <n-card
+      size="small"
+      :bordered="false"
+      class="min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
+    >
+      <n-statistic label="Log backpressure" :value="formatLogPressureSummary(host)" />
+      <MetricChart
+        :points="logPressurePoints"
+        color="#8b5cf6"
+        :format-value="(value) => `${value.toFixed(1)}%`"
+      />
+    </n-card>
+    <n-card
+      size="small"
+      :bordered="false"
+      class="min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
+    >
+      <n-statistic label="Vpsiner memory" :value="formatAppRssSummary(host)" />
+      <MetricChart :points="appRssPoints" color="#ec4899" :format-value="formatBytes" />
     </n-card>
   </div>
 </template>

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use async_trait::async_trait;
@@ -70,6 +70,8 @@ struct Inner {
     samples_tx: mpsc::Sender<Vec<ContainerRawSample>>,
     logs_rx: Mutex<Option<mpsc::Receiver<LogLine>>>,
     samples_rx: Mutex<Option<mpsc::Receiver<Vec<ContainerRawSample>>>>,
+    /// Peak `logs_tx` fill since the metrics collector last read it; see `spawn_container_log_task`.
+    log_pressure_pct_mill: Arc<AtomicUsize>,
     metadata: Arc<dyn MetadataStore>,
     services: Arc<ServiceRegistry>,
     retention_weeks: u32,
@@ -93,6 +95,7 @@ impl BollardDocker {
         metadata: Arc<dyn MetadataStore>,
         services: Arc<ServiceRegistry>,
         retention_weeks: u32,
+        log_pressure_pct_mill: Arc<AtomicUsize>,
     ) -> Self {
         let host = docker_host.into();
         let docker = if host.starts_with("unix://") {
@@ -135,6 +138,7 @@ impl BollardDocker {
             samples_tx,
             logs_rx: Mutex::new(Some(logs_rx)),
             samples_rx: Mutex::new(Some(samples_rx)),
+            log_pressure_pct_mill,
             metadata,
             services,
             retention_weeks,
@@ -451,6 +455,7 @@ fn spawn_log_observer(registry: Weak<Inner>, interval: Duration) {
 
             let docker = registry_ref.docker.clone();
             let sender = registry_ref.logs_tx.clone();
+            let log_pressure_pct_mill = registry_ref.log_pressure_pct_mill.clone();
             let metadata = registry_ref.metadata.clone();
             let services = registry_ref.services.clone();
             let retention_weeks = registry_ref.retention_weeks;
@@ -486,6 +491,7 @@ fn spawn_log_observer(registry: Weak<Inner>, interval: Duration) {
                                 metadata.clone(),
                                 services.clone(),
                                 retention_weeks,
+                                log_pressure_pct_mill.clone(),
                             ),
                         },
                     );
@@ -528,6 +534,7 @@ fn spawn_container_log_task(
     metadata: Arc<dyn MetadataStore>,
     services: Arc<ServiceRegistry>,
     retention_weeks: u32,
+    log_pressure_pct_mill: Arc<AtomicUsize>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let sid = match services.id_of(&container.service).await {
@@ -594,9 +601,24 @@ fn spawn_container_log_task(
                 if sender.send(line).await.is_err() {
                     return;
                 }
+                log_pressure_pct_mill
+                    .fetch_max(channel_pressure_pct_mill(&sender), Ordering::Relaxed);
             }
         }
     })
+}
+
+/// How full the shared log channel is, as a percentage in milli-units.
+///
+/// Reads 100% while ingestion is blocked on a write, which is what backpressure looks like
+/// from the producer side.
+fn channel_pressure_pct_mill(sender: &mpsc::Sender<LogLine>) -> usize {
+    let max_capacity = sender.max_capacity();
+    if max_capacity == 0 {
+        return 0;
+    }
+    let depth = max_capacity - sender.capacity();
+    depth * 100_000 / max_capacity
 }
 
 fn spawn_sample_observer(
