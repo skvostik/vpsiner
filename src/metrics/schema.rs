@@ -36,8 +36,7 @@ fn sqlite_integer(value: u64, column: &str) -> AppResult<i64> {
 }
 
 fn unsigned_integer(value: i64, column: &str) -> AppResult<u64> {
-    u64::try_from(value)
-        .map_err(|_| AppError::Storage(format!("{column} is negative")))
+    u64::try_from(value).map_err(|_| AppError::Storage(format!("{column} is negative")))
 }
 
 fn service_id(value: i64) -> AppResult<ServiceId> {
@@ -204,12 +203,28 @@ pub async fn insert_containers(
             row.push_bind(sample.ts)
                 .push_bind(sample.cid.as_bytes().as_slice())
                 .push_bind(i64::from(sample.service.as_u32()))
-                .push_bind(sqlite_integer(sample.cpu_pct_mill, "cpu_pct_mill").expect("validated before transaction"))
-                .push_bind(sqlite_integer(sample.mem_used, "mem_used").expect("validated before transaction"))
-                .push_bind(sample.net_rx_rate_mill.map(|value| sqlite_integer(value, "net_rx_rate_mill").expect("validated before transaction")))
-                .push_bind(sample.net_tx_rate_mill.map(|value| sqlite_integer(value, "net_tx_rate_mill").expect("validated before transaction")))
-                .push_bind(sample.blk_read_rate_mill.map(|value| sqlite_integer(value, "blk_read_rate_mill").expect("validated before transaction")))
-                .push_bind(sample.blk_write_rate_mill.map(|value| sqlite_integer(value, "blk_write_rate_mill").expect("validated before transaction")));
+                .push_bind(
+                    sqlite_integer(sample.cpu_pct_mill, "cpu_pct_mill")
+                        .expect("validated before transaction"),
+                )
+                .push_bind(
+                    sqlite_integer(sample.mem_used, "mem_used")
+                        .expect("validated before transaction"),
+                )
+                .push_bind(sample.net_rx_rate_mill.map(|value| {
+                    sqlite_integer(value, "net_rx_rate_mill").expect("validated before transaction")
+                }))
+                .push_bind(sample.net_tx_rate_mill.map(|value| {
+                    sqlite_integer(value, "net_tx_rate_mill").expect("validated before transaction")
+                }))
+                .push_bind(sample.blk_read_rate_mill.map(|value| {
+                    sqlite_integer(value, "blk_read_rate_mill")
+                        .expect("validated before transaction")
+                }))
+                .push_bind(sample.blk_write_rate_mill.map(|value| {
+                    sqlite_integer(value, "blk_write_rate_mill")
+                        .expect("validated before transaction")
+                }));
         });
         builder
             .build()

@@ -4,6 +4,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
+use dashmap::DashMap;
 use tokio::sync::mpsc;
 
 use crate::error::AppResult;
@@ -26,7 +27,7 @@ struct Inner {
     flush_watcher: Arc<LogFlushWatcher>,
     debounce: Duration,
     keep_alive: Duration,
-    services: Mutex<HashMap<String, ServiceHandle>>,
+    services: DashMap<String, ServiceHandle>,
 }
 
 struct ServiceHandle {
@@ -73,7 +74,7 @@ impl LogBuffer {
             flush_watcher,
             debounce,
             keep_alive,
-            services: Mutex::new(HashMap::new()),
+            services: DashMap::new(),
         });
         let buffer = Self { inner };
         for (service, state) in seeded {
@@ -84,7 +85,7 @@ impl LogBuffer {
 
     fn seed_service(&self, service: String, state: ServiceState) {
         let state = Arc::new(Mutex::new(state));
-        self.inner.services.lock().unwrap().insert(
+        self.inner.services.insert(
             service,
             ServiceHandle {
                 state,
@@ -94,27 +95,22 @@ impl LogBuffer {
     }
 
     fn service_state(&self, service: &str) -> Arc<Mutex<ServiceState>> {
-        let mut services = self.inner.services.lock().unwrap();
-        if !services.contains_key(service) {
-            services.insert(
-                service.to_string(),
-                ServiceHandle {
-                    state: Arc::new(Mutex::new(ServiceState::default())),
-                    flush_tx: None,
-                },
-            );
-        }
-        services
-            .get(service)
-            .expect("service entry must exist")
+        self.inner
+            .services
+            .entry(service.to_string())
+            .or_insert_with(|| ServiceHandle {
+                state: Arc::new(Mutex::new(ServiceState::default())),
+                flush_tx: None,
+            })
             .state
             .clone()
     }
 
     fn schedule_flush(&self, service: &str) {
         let (state, flush_tx) = {
-            let mut services = self.inner.services.lock().unwrap();
-            let handle = services
+            let mut handle = self
+                .inner
+                .services
                 .get_mut(service)
                 .expect("service entry must exist before scheduling flush");
             if handle.flush_tx.is_none() {
@@ -168,10 +164,8 @@ impl LogBuffer {
         let handles: Vec<(String, Arc<Mutex<ServiceState>>)> = self
             .inner
             .services
-            .lock()
-            .unwrap()
             .iter()
-            .map(|(service, handle)| (service.clone(), handle.state.clone()))
+            .map(|handle| (handle.key().clone(), handle.state.clone()))
             .collect();
         for (service, state) in handles {
             self.inner.flush_service(&service, &state).await;
@@ -246,8 +240,6 @@ impl Inner {
     fn request_service_flush(&self, service: &str) {
         let sender = self
             .services
-            .lock()
-            .unwrap()
             .get(service)
             .and_then(|handle| handle.flush_tx.clone());
         if let Some(flush_tx) = sender {
@@ -291,8 +283,7 @@ fn spawn_flush_worker(
                         return;
                     };
 
-                    let mut services = inner_ref.services.lock().unwrap();
-                    let Some(handle) = services.get_mut(&service) else {
+                    let Some(mut handle) = inner_ref.services.get_mut(&service) else {
                         return;
                     };
 
