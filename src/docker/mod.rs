@@ -439,6 +439,27 @@ struct LogTask {
     handle: JoinHandle<()>,
 }
 
+fn clamp_to_i32(value: i64) -> i32 {
+    match i32::try_from(value) {
+        Ok(value) => value,
+        Err(_) if value < 0 => i32::MIN,
+        Err(_) => i32::MAX,
+    }
+}
+
+fn log_since_secs(
+    checkpoint: Option<crate::logs::metadata::LogCheckpoint>,
+    now: time::OffsetDateTime,
+    retention_weeks: u32,
+) -> i32 {
+    let cutoff_secs = crate::retention::retention_cutoff_ms(now, retention_weeks).div_euclid(1_000);
+    let checkpoint_secs = checkpoint.map(|checkpoint| checkpoint.ts.div_euclid(1_000));
+    let since_secs = checkpoint_secs
+        .map(|checkpoint_secs| checkpoint_secs.max(cutoff_secs))
+        .unwrap_or(cutoff_secs);
+    clamp_to_i32(since_secs)
+}
+
 fn spawn_container_log_task(
     docker: Docker,
     container: ObservedContainer,
@@ -447,20 +468,29 @@ fn spawn_container_log_task(
     retention_weeks: u32,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let since_secs = match metadata.checkpoint(&container.service, &container.id).await {
-            Ok(Some(checkpoint)) => checkpoint.ts.div_euclid(1_000) as i32,
-            // No checkpoint yet: backfill from the start of the current retention window,
-            // since that's the oldest data we'd keep anyway.
-            Ok(None) => crate::retention::retention_cutoff_ms(
-                time::OffsetDateTime::now_utc(),
-                retention_weeks,
-            )
-            .div_euclid(1_000) as i32,
+        let checkpoint = match metadata.checkpoint(&container.service, &container.id).await {
+            Ok(checkpoint) => checkpoint,
             Err(err) => {
                 tracing::error!(container = %container.log_id(), error = %err, "failed to read log checkpoint; log task will respawn");
                 return;
             }
         };
+
+        let now = time::OffsetDateTime::now_utc();
+        let cutoff_secs =
+            crate::retention::retention_cutoff_ms(now, retention_weeks).div_euclid(1_000);
+        if let Some(checkpoint) = checkpoint
+            && checkpoint.ts.div_euclid(1_000) < cutoff_secs
+        {
+            tracing::debug!(
+                container = %container.log_id(),
+                checkpoint = %crate::logs::format_timestamp_ms(checkpoint.ts),
+                cutoff = %crate::logs::format_timestamp_ms(cutoff_secs * 1_000),
+                "clamping stale log checkpoint to retention cutoff"
+            );
+        }
+
+        let since_secs = log_since_secs(checkpoint, now, retention_weeks);
         tracing::info!(container = %container.log_id(), since = %crate::logs::format_timestamp_ms(i64::from(since_secs) * 1_000), "spawning log task");
         let options = LogsOptionsBuilder::default()
             .follow(true)
@@ -573,4 +603,57 @@ fn spawn_sample_observer(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{clamp_to_i32, log_since_secs};
+    use crate::logs::metadata::LogCheckpoint;
+
+    #[test]
+    fn uses_cutoff_when_checkpoint_is_older_than_retention_window() {
+        let now = time::OffsetDateTime::new_utc(
+            time::Date::from_calendar_date(2026, time::Month::August, 23).unwrap(),
+            time::Time::MIDNIGHT,
+        );
+
+        let since_secs = log_since_secs(
+            Some(LogCheckpoint {
+                ts: 1_000,
+                line_hash: 0,
+            }),
+            now,
+            4,
+        );
+
+        let expected_cutoff_secs =
+            crate::retention::retention_cutoff_ms(now, 4).div_euclid(1_000) as i32;
+        assert_eq!(since_secs, expected_cutoff_secs);
+    }
+
+    #[test]
+    fn keeps_recent_checkpoint_when_it_is_newer_than_cutoff() {
+        let now = time::OffsetDateTime::new_utc(
+            time::Date::from_calendar_date(2026, time::Month::August, 23).unwrap(),
+            time::Time::MIDNIGHT,
+        );
+        let recent_checkpoint = crate::retention::retention_cutoff_ms(now, 4) + 5_000;
+
+        let since_secs = log_since_secs(
+            Some(LogCheckpoint {
+                ts: recent_checkpoint,
+                line_hash: 0,
+            }),
+            now,
+            4,
+        );
+
+        assert_eq!(since_secs, (recent_checkpoint / 1_000) as i32);
+    }
+
+    #[test]
+    fn clamps_large_values_to_i32_bounds() {
+        assert_eq!(clamp_to_i32(i64::from(i32::MAX) + 1), i32::MAX);
+        assert_eq!(clamp_to_i32(i64::from(i32::MIN) - 1), i32::MIN);
+    }
 }
