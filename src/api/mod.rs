@@ -20,6 +20,7 @@ pub struct HealthResponse {
     pub sample_interval_ms: u64,
     pub retention_weeks: u32,
     pub docker_controls_available: bool,
+    pub docker_connected: bool,
 }
 
 pub fn router() -> Router<AppState> {
@@ -63,5 +64,6 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
         sample_interval_ms: state.config.collect_interval.as_millis() as u64,
         retention_weeks: state.config.retention_weeks,
         docker_controls_available: state.docker.controls_available(),
+        docker_connected: state.docker.connected(),
     })
 }

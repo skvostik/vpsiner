@@ -7,7 +7,7 @@ import { NButton, NEmpty, NTooltip } from 'naive-ui'
 import LogFilterBar from '../components/logs/LogFilterBar.vue'
 import LiveStatusIcon from '../components/LiveStatusIcon.vue'
 import LogViewer from '../components/logs/LogViewer.vue'
-import { backendOnline } from '../composables/useBackendHealth'
+import { backendOnline, dockerConnected } from '../composables/useBackendHealth'
 import { useLogs } from '../composables/useLogs'
 import { usePageTitle } from '../composables/usePageTitle'
 import type { Services, LogLevel, LogLine, LogStream } from '../types'
@@ -76,8 +76,9 @@ const {
   updateCustomTo,
 } = logsState
 const selectedServiceSummary = computed(() => services.value[selectedService.value])
-const pageStatus = computed<'live' | 'history' | 'stopped'>(() => {
+const pageStatus = computed<'live' | 'history' | 'stopped' | 'docker-error'>(() => {
   if (!backendOnline.value || !selectedService.value) return 'stopped'
+  if (!dockerConnected.value) return 'docker-error'
   if (!selectedServiceSummary.value?.live) return 'stopped'
   return tailing.value ? 'live' : 'history'
 })

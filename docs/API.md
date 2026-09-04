@@ -50,7 +50,8 @@ Example response:
   "port": 8080,
   "sample_interval_ms": 10000,
   "retention_weeks": 12,
-  "docker_controls_available": true
+  "docker_controls_available": true,
+  "docker_connected": true
 }
 ```
 
@@ -63,6 +64,8 @@ Example response:
 `retention_weeks` is the configured metrics and logs retention window in weeks.
 
 `docker_controls_available` indicates whether the `/api/containers/{id}/start|stop|restart` endpoints are currently available. Clients should poll `/api/health` and show/hide container lifecycle controls based on this flag. This is enforced server-side: while `docker_controls_available` is `false`, action endpoints return `403 Forbidden`.
+
+`docker_connected` indicates whether the backend could reach the Docker socket/proxy on its last probe (run every `VPSINER_DOCKER_PROBE_INTERVAL_SECS`). While it is `false`, container data and metrics are stale and action endpoints return `502 Bad Gateway`.
 
 ---
 
@@ -252,6 +255,7 @@ Idempotency:
 
 Availability:
 - returns `403 Forbidden` when `docker_controls_available` (see `GET /api/health`) is `false`
+- returns `502 Bad Gateway` when `docker_connected` (see `GET /api/health`) is `false`
 
 Parameters:
 - `id` (path) – full container ID
@@ -946,7 +950,8 @@ data: {"items":[{"ts":1720003600000,"service":"project-web","cid":"8af7d6c1273d"
   "port": 8080,
   "sample_interval_ms": 10000,
   "retention_weeks": 12,
-  "docker_controls_available": true
+  "docker_controls_available": true,
+  "docker_connected": true
 }
 ```
 

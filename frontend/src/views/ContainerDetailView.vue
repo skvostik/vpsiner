@@ -10,7 +10,11 @@ import MetricsWindowPicker from '../components/MetricsWindowPicker.vue'
 import { api } from '../api'
 import { colorForKey } from '../colors'
 import { formatBytes, formatRate, formatUptime } from '../format'
-import { backendOnline, dockerControlsAvailable } from '../composables/useBackendHealth'
+import {
+  backendOnline,
+  dockerConnected,
+  dockerControlsAvailable,
+} from '../composables/useBackendHealth'
 import { useContainerMetricsStream } from '../composables/useContainerMetricsStream'
 import { pendingAction, runContainerAction } from '../composables/useContainerActions'
 import { useContainersStream } from '../composables/useContainersStream'
@@ -152,8 +156,9 @@ const { containers: liveContainerSamples } = useContainerMetricsStream(
 const containerSamples = computed(() =>
   isLive.value ? liveContainerSamples.value : restContainerSamples.value
 )
-const pageStatus = computed<'live' | 'history' | 'stopped'>(() => {
+const pageStatus = computed<'live' | 'history' | 'stopped' | 'docker-error'>(() => {
   if (!backendOnline.value) return 'stopped'
+  if (!dockerConnected.value) return 'docker-error'
   if (!container.value || !['running', 'restarting'].includes(container.value.state))
     return 'stopped'
   return isLive.value ? 'live' : 'history'

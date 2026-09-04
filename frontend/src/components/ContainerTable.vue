@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { NButton, NCard, NEmpty, NSpin, NTag, NTooltip, useMessage } from 'naive-ui'
 import { Play, RotateCcw, Square } from '@lucide/vue'
 
-import { dockerControlsAvailable } from '../composables/useBackendHealth'
+import { dockerConnected, dockerControlsAvailable } from '../composables/useBackendHealth'
 import { pendingAction, runContainerAction } from '../composables/useContainerActions'
 import { useNow } from '../composables/useNow'
 import { formatBytes, formatRate, formatUptime } from '../format'
@@ -18,6 +18,11 @@ const message = useMessage()
 const now = useNow()
 
 const canControl = computed(() => dockerControlsAvailable.value)
+const emptyDescription = computed(() =>
+  dockerConnected.value
+    ? 'No visible containers found'
+    : 'Cannot reach the Docker socket or proxy, so the container list is unavailable'
+)
 
 function supportsStart(state: ContainerState) {
   return !['running', 'restarting'].includes(state)
@@ -190,6 +195,6 @@ function stateType(state: ContainerState) {
       </article>
     </n-card>
   </div>
-  <n-empty v-else-if="!loading" description="No visible containers found" />
+  <n-empty v-else-if="!loading" :description="emptyDescription" />
   <div v-else class="flex justify-center py-12"><n-spin /></div>
 </template>

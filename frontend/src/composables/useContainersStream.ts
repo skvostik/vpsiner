@@ -1,6 +1,6 @@
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-import { reportSseIssue } from './useBackendHealth'
+import { dockerConnected, reportSseIssue } from './useBackendHealth'
 import { reconnectDelayMs } from './streamConfig'
 import type { ContainerDiff, ContainerSummary } from '../types'
 
@@ -56,6 +56,16 @@ function connect() {
     }
   }
 }
+
+// The backend keeps serving its last known containers while Docker is unreachable, so drop them.
+// Reconnecting on recovery pulls a fresh snapshot; a diff alone would not refill the cleared cache.
+watch(dockerConnected, (connected) => {
+  if (!connected) {
+    containersById.value = {}
+    return
+  }
+  if (consumers > 0) connect()
+})
 
 export function useContainersStream() {
   onMounted(() => {
