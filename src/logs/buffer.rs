@@ -211,8 +211,7 @@ impl Inner {
             (lines, checkpoints)
         };
 
-        let retry_lines = lines.clone();
-        if let Err(err) = self.logs.append(service, lines).await {
+        if let Err(err) = self.logs.append(service, &lines).await {
             tracing::warn!(service = %service, error = %err, "failed to persist container logs; scheduling retry");
 
             // Preserve failed lines and keep their relative order ahead of any newer lines.
@@ -220,11 +219,11 @@ impl Inner {
                 let mut guard = state.lock().unwrap();
                 if !guard.lines.is_empty() {
                     let mut buffered = std::mem::take(&mut guard.lines);
-                    let mut retry = retry_lines;
+                    let mut retry = lines;
                     retry.append(&mut buffered);
                     guard.lines = retry;
                 } else {
-                    guard.lines = retry_lines;
+                    guard.lines = lines;
                 }
             }
 

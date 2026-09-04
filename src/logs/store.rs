@@ -27,7 +27,7 @@ pub trait LogStore: Send + Sync + 'static {
 
     async fn delete_before(&self, cutoff_ms: i64) -> AppResult<Vec<String>>;
 
-    async fn append(&self, service: &str, lines: Vec<LogLine>) -> AppResult<()>;
+    async fn append(&self, service: &str, lines: &[LogLine]) -> AppResult<()>;
     async fn query(&self, service: &str, filter: LogFilter) -> AppResult<LogPage>;
 
     /// Releases every cached week-database connection.
@@ -255,8 +255,8 @@ impl LogStore for SqliteLogStore {
         Ok(removed)
     }
 
-    async fn append(&self, service: &str, lines: Vec<LogLine>) -> AppResult<()> {
-        let mut by_week = HashMap::<String, Vec<LogLine>>::new();
+    async fn append(&self, service: &str, lines: &[LogLine]) -> AppResult<()> {
+        let mut by_week = HashMap::<String, Vec<&LogLine>>::new();
         for line in lines {
             if let Some(week) = week_database_name(line.ts) {
                 by_week.entry(week).or_default().push(line);
@@ -640,7 +640,7 @@ mod tests {
     async fn stores_and_returns_line() {
         let store = test_store("line");
         let plain = line(1_700_000_000_000, "plain message");
-        store.append("group", vec![plain]).await.unwrap();
+        store.append("group", &vec![plain]).await.unwrap();
 
         let page = store.query("group", LogFilter::default()).await.unwrap();
 
@@ -655,7 +655,7 @@ mod tests {
         let stdout = line(ts, "[INFO] stdout message");
         let mut stderr = line(ts + 1, "[ERROR] stderr message");
         stderr.stream = LogStream::Stderr;
-        store.append("group", vec![stdout, stderr]).await.unwrap();
+        store.append("group", &vec![stdout, stderr]).await.unwrap();
 
         let week = week_database_name(ts).unwrap();
         let path = store.root.join(safe_service_path("group")).join(&week);
@@ -701,7 +701,7 @@ mod tests {
         let store = test_store("ts-relative");
         let ts = 1_700_000_000_000;
         store
-            .append("group", vec![line(ts, "relative")])
+            .append("group", &vec![line(ts, "relative")])
             .await
             .unwrap();
 
@@ -725,7 +725,7 @@ mod tests {
         store
             .append(
                 "group",
-                vec![line(boundary - 1, "before"), line(boundary, "at boundary")],
+                &vec![line(boundary - 1, "before"), line(boundary, "at boundary")],
             )
             .await
             .unwrap();
@@ -760,7 +760,7 @@ mod tests {
     async fn text_search_matches_line() {
         let store = test_store("search");
         let colored = line(1_700_000_000_000, "duration_ms=42");
-        store.append("group", vec![colored]).await.unwrap();
+        store.append("group", &vec![colored]).await.unwrap();
 
         let filter = LogFilter {
             query: Some("duration_ms=42".to_string()),
@@ -778,7 +778,7 @@ mod tests {
         store
             .append(
                 "group",
-                vec![
+                &vec![
                     line(1_700_000_000_000, "connection timeout"),
                     line(1_700_000_000_001, "connection refused"),
                     line(1_700_000_000_002, "healthy response"),
@@ -807,7 +807,10 @@ mod tests {
     async fn text_search_auto_closes_unclosed_quotes_and_sanitizes_syntax() {
         let store = test_store("fts-syntax");
         store
-            .append("group", vec![line(1_700_000_000_000, "connection timeout")])
+            .append(
+                "group",
+                &vec![line(1_700_000_000_000, "connection timeout")],
+            )
             .await
             .unwrap();
 
@@ -846,7 +849,7 @@ mod tests {
         store
             .append(
                 "group",
-                vec![
+                &vec![
                     line(1_700_000_000_000, "duration_ms=42"),
                     line(1_700_000_000_001, "duration ms=42"),
                 ],
@@ -876,7 +879,7 @@ mod tests {
         store
             .append(
                 "group",
-                vec![line(old, "old"), line(middle, "middle"), line(new, "new")],
+                &vec![line(old, "old"), line(middle, "middle"), line(new, "new")],
             )
             .await
             .unwrap();
@@ -900,7 +903,7 @@ mod tests {
         store
             .append(
                 "group",
-                vec![line(old, "old"), line(middle, "middle"), line(new, "new")],
+                &vec![line(old, "old"), line(middle, "middle"), line(new, "new")],
             )
             .await
             .unwrap();
@@ -925,7 +928,7 @@ mod tests {
         store
             .append(
                 "group",
-                vec![line(old, "old"), line(middle, "middle"), line(new, "new")],
+                &vec![line(old, "old"), line(middle, "middle"), line(new, "new")],
             )
             .await
             .unwrap();
@@ -976,7 +979,7 @@ mod tests {
     async fn exhausted_forward_page_echoes_its_cursor() {
         let store = test_store("exhausted");
         store
-            .append("group", vec![line(1_700_000_000_000, "only")])
+            .append("group", &vec![line(1_700_000_000_000, "only")])
             .await
             .unwrap();
         let page = store.query("group", LogFilter::default()).await.unwrap();
@@ -1001,7 +1004,7 @@ mod tests {
         let store = test_store("retention");
         let ts = 1_700_000_000_000;
         store
-            .append("group", vec![line(ts, "doomed")])
+            .append("group", &vec![line(ts, "doomed")])
             .await
             .unwrap();
         assert_eq!(
@@ -1032,7 +1035,7 @@ mod tests {
         let store = Arc::new(test_store("retention-lock"));
         let ts = 1_700_000_000_000;
         store
-            .append("group", vec![line(ts, "doomed")])
+            .append("group", &vec![line(ts, "doomed")])
             .await
             .unwrap();
         let path = store
@@ -1069,9 +1072,11 @@ mod tests {
         let second = SqliteLogStore::new(&root, 1_024, Duration::from_secs(5), Duration::ZERO);
         let ts = 1_700_000_000_000;
 
+        let first_lines = vec![line(ts, "first")];
+        let second_lines = vec![line(ts + 1, "second")];
         let (first_result, second_result) = tokio::join!(
-            first.append("group", vec![line(ts, "first")]),
-            second.append("group", vec![line(ts + 1, "second")]),
+            first.append("group", &first_lines),
+            second.append("group", &second_lines),
         );
 
         first_result.unwrap();
