@@ -20,7 +20,8 @@ fn host_refresh_kind() -> RefreshKind {
 /// Resident set size of this process, or `None` when the platform can't report it.
 ///
 /// Scoped to our own pid and without tasks, so this stays a two-file read rather than a walk
-/// of every process (and, on Linux, of our own many threads).
+/// of every process (and, on Linux, of our own many threads). RSS is already the resident
+/// working set, so it does not need an extra cache subtraction like cgroup memory usage.
 fn app_rss_bytes(system: &mut System) -> Option<u64> {
     let pid = get_current_pid().ok()?;
     system.refresh_processes_specifics(
@@ -29,6 +30,17 @@ fn app_rss_bytes(system: &mut System) -> Option<u64> {
         ProcessRefreshKind::nothing().with_memory().without_tasks(),
     );
     system.process(pid).map(|process| process.memory())
+}
+
+/// Host memory in active use, excluding reclaimable page cache.
+///
+/// This mirrors the Docker cgroup pattern: memory visible in the kernel as cache is not counted
+/// as a "used" working-set metric. `sysinfo::System::used_memory()` can include reclaimable
+/// memory depending on OS accounting, so we prefer `total - available`.
+fn host_mem_used_without_cache(system: &System) -> u64 {
+    system
+        .total_memory()
+        .saturating_sub(system.available_memory())
 }
 
 /// Host-level metrics source (sysinfo in production).
@@ -109,7 +121,7 @@ impl HostMetricsSource for SysinfoHost {
             Ok(HostRawSample {
                 ts,
                 cpu_pct: f64::from(system.global_cpu_usage()),
-                mem_used: system.used_memory(),
+                mem_used: host_mem_used_without_cache(&system),
                 mem_total: system.total_memory(),
                 storage_used,
                 storage_total,
@@ -126,5 +138,21 @@ impl HostMetricsSource for SysinfoHost {
         })
         .await
         .map_err(|err| AppError::Host(format!("sysinfo sampling task failed: {err}")))?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::host_mem_used_without_cache;
+
+    #[test]
+    fn host_mem_used_without_cache_excludes_available_memory() {
+        assert_eq!(host_mem_used_without_cache(&sysinfo::System::new()), 0);
+        assert_eq!(host_mem_used_without_cache_from_values(4_096, 1_024), 3_072);
+        assert_eq!(host_mem_used_without_cache_from_values(1_024, 2_048), 0);
+    }
+
+    fn host_mem_used_without_cache_from_values(total: u64, available: u64) -> u64 {
+        total.saturating_sub(available)
     }
 }
