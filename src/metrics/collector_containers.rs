@@ -8,6 +8,7 @@ use crate::metrics::{
 use crate::model::{
     container_id::ContainerId,
     metrics::{ContainerRawSample, ContainerSample, MetricsResolution},
+    service_id::ServiceId,
     time::TimestampMs,
 };
 
@@ -73,12 +74,12 @@ impl ContainerBucketizer {
     fn collect(
         &self,
         bucket_end: TimestampMs,
-        service: &str,
+        service: ServiceId,
         cid: ContainerId,
     ) -> Option<ContainerSample> {
         Some(ContainerSample {
             ts: bucket_end,
-            service: service.to_owned(),
+            service,
             cid,
             cpu_pct_mill: self.cpu_pct_mill(bucket_end)?,
             mem_used: self.bck_mem_used.collect(bucket_end)?,
@@ -91,7 +92,7 @@ impl ContainerBucketizer {
 }
 
 struct ContainerEntry {
-    service: String,
+    service: ServiceId,
     bucketizer: ContainerBucketizer,
     idle_flushes: u32,
 }
@@ -133,11 +134,11 @@ impl ContainerCollectorState {
                 .containers
                 .entry(sample.cid)
                 .or_insert_with(|| ContainerEntry {
-                    service: sample.service.clone(),
+                    service: sample.service,
                     bucketizer: ContainerBucketizer::new(self.collect_interval),
                     idle_flushes: 0,
                 });
-            entry.service.clone_from(&sample.service);
+            entry.service = sample.service;
             entry.bucketizer.push(sample);
         }
         self.last_raw_bucket_end = Some(current_bucket_end);
@@ -152,7 +153,7 @@ impl ContainerCollectorState {
     fn flush(&mut self, bucket_end: TimestampMs) -> Vec<ContainerSample> {
         let mut bucketed = Vec::with_capacity(self.containers.len());
         self.containers.retain(|cid, entry| {
-            match entry.bucketizer.collect(bucket_end, &entry.service, *cid) {
+            match entry.bucketizer.collect(bucket_end, entry.service, *cid) {
                 Some(sample) => {
                     entry.idle_flushes = 0;
                     bucketed.push(sample);
@@ -182,7 +183,7 @@ mod tests {
         let seconds = (ts / 1_000) as u64;
         ContainerRawSample {
             ts,
-            service: "web".into(),
+            service: ServiceId::from_u32(1),
             cid: test_cid(cid),
             cpu_usage_ns: seconds * 250_000_000,
             system_cpu_usage_ns: seconds * 1_000_000_000,

@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use sqlx::SqlitePool;
 
 use crate::error::{AppError, AppResult};
+use crate::metadata::ServiceRegistry;
 use crate::metrics::downsampling::sum_by_bucket;
 use crate::metrics::{rollup, schema};
 use crate::model::{
@@ -15,6 +16,7 @@ use crate::model::{
         ContainerGroupMetrics, ContainerPoint, ContainerSample, HostPoint, HostSample,
         MetricsResolution,
     },
+    service_id::ServiceId,
     time::TimeRange,
 };
 use crate::sqlite::{open_pool, reclaim_free_pages};
@@ -53,6 +55,8 @@ pub trait MetricsStore: Send + Sync + 'static {
 pub struct SqliteMetricsStore {
     db_path: PathBuf,
     pool: SqlitePool,
+    /// Resolves the stored `sid` back to a service name on read.
+    services: Arc<ServiceRegistry>,
     /// Newest `10s` bucket written per source; a change of coarse bucket triggers a rollup.
     last_host_ts: Mutex<Option<i64>>,
     last_containers_ts: Mutex<Option<i64>>,
@@ -63,6 +67,7 @@ impl SqliteMetricsStore {
     /// Opens the single long-lived connection used for the lifetime of the process.
     pub async fn connect(
         db_path: impl AsRef<Path>,
+        services: Arc<ServiceRegistry>,
         cache_size_kb: u64,
         busy_timeout: Duration,
         downsample_max_gap_pct: u8,
@@ -75,6 +80,7 @@ impl SqliteMetricsStore {
         let store = Self {
             db_path,
             pool,
+            services,
             last_host_ts: Mutex::new(None),
             last_containers_ts: Mutex::new(None),
             downsample_max_gap_pct,
@@ -199,12 +205,12 @@ impl MetricsStore for SqliteMetricsStore {
         resolution: MetricsResolution,
     ) -> AppResult<HashMap<String, ContainerGroupMetrics>> {
         let mut by_service_and_container: HashMap<
-            String,
+            ServiceId,
             HashMap<ContainerId, Vec<ContainerSample>>,
         > = HashMap::new();
         for sample in schema::select_containers(&self.pool, resolution, range).await? {
             by_service_and_container
-                .entry(sample.service.clone())
+                .entry(sample.service)
                 .or_default()
                 .entry(sample.cid)
                 .or_default()
@@ -212,19 +218,27 @@ impl MetricsStore for SqliteMetricsStore {
         }
 
         let mut by_service = HashMap::new();
-        for (service, by_container) in by_service_and_container {
+        for (sid, by_container) in by_service_and_container {
+            // Only reachable if retention reclaimed the sid between the read and the resolve.
+            let Some(service) = self.services.name(sid) else {
+                tracing::warn!(%sid, "dropping metrics for a service missing from the dictionary");
+                continue;
+            };
             let mut containers: HashMap<ContainerId, Vec<ContainerPoint>> = HashMap::new();
             for (cid, mut samples) in by_container {
                 samples.sort_by_key(|sample| sample.ts);
                 let points = samples
                     .into_iter()
                     .filter(|sample| sample.ts >= range.from)
-                    .map(ContainerPoint::from)
+                    .map(|sample| ContainerPoint::from_sample(sample, service.to_string()))
                     .collect();
                 containers.insert(cid, points);
             }
             let sum = sum_by_bucket(containers.values());
-            by_service.insert(service, ContainerGroupMetrics { sum, containers });
+            by_service.insert(
+                service.to_string(),
+                ContainerGroupMetrics { sum, containers },
+            );
         }
 
         Ok(by_service)
@@ -239,6 +253,7 @@ impl MetricsStore for SqliteMetricsStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metadata::SqliteMetadataStore;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn test_directory(name: &str) -> std::path::PathBuf {
@@ -250,7 +265,16 @@ mod tests {
     }
 
     async fn test_store(db_path: impl AsRef<Path>) -> SqliteMetricsStore {
-        SqliteMetricsStore::connect(db_path, 1_024, Duration::from_secs(5), 40)
+        let db_path = db_path.as_ref().to_path_buf();
+        let metadata = SqliteMetadataStore::connect(
+            db_path.with_file_name("metadata.db"),
+            1_024,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        let services = Arc::new(ServiceRegistry::load(Arc::new(metadata)).await.unwrap());
+        SqliteMetricsStore::connect(db_path, services, 1_024, Duration::from_secs(5), 40)
             .await
             .unwrap()
     }
@@ -270,10 +294,10 @@ mod tests {
         }
     }
 
-    fn container_sample(ts: i64, service: &str) -> ContainerSample {
+    fn container_sample(ts: i64, service: ServiceId) -> ContainerSample {
         ContainerSample {
             ts,
-            service: service.into(),
+            service,
             cid: ContainerId::parse("abc123abc123").unwrap(),
             cpu_pct_mill: 25_000,
             mem_used: 1_000,
@@ -288,14 +312,16 @@ mod tests {
     async fn persists_and_queries_samples_by_range() {
         let directory = test_directory("range");
         let store = test_store(directory.join("metrics.db")).await;
+        let web = store.services.id_of("web").await.unwrap();
+        let worker = store.services.id_of("worker").await.unwrap();
 
         store.insert_host(host_sample(10_000)).await.unwrap();
         store.insert_host(host_sample(20_000)).await.unwrap();
         store
             .insert_containers(vec![
-                container_sample(10_000, "web"),
-                container_sample(20_000, "worker"),
-                container_sample(30_000, "web"),
+                container_sample(10_000, web),
+                container_sample(20_000, worker),
+                container_sample(30_000, web),
             ])
             .await
             .unwrap();
@@ -378,6 +404,7 @@ mod tests {
     async fn container_rates_round_trip_as_null_when_missing() {
         let directory = test_directory("container-null-rates");
         let store = test_store(directory.join("metrics.db")).await;
+        let web = store.services.id_of("web").await.unwrap();
 
         store
             .insert_containers(vec![ContainerSample {
@@ -385,7 +412,7 @@ mod tests {
                 net_tx_rate_mill: None,
                 blk_read_rate_mill: None,
                 blk_write_rate_mill: None,
-                ..container_sample(10_000, "web")
+                ..container_sample(10_000, web)
             }])
             .await
             .unwrap();
@@ -448,10 +475,11 @@ mod tests {
     async fn deleting_before_a_cutoff_reclaims_pages() {
         let directory = test_directory("retention");
         let store = test_store(directory.join("metrics.db")).await;
+        let web = store.services.id_of("web").await.unwrap();
 
         store.insert_host(host_sample(10_000)).await.unwrap();
         store
-            .insert_containers(vec![container_sample(10_000, "web")])
+            .insert_containers(vec![container_sample(10_000, web)])
             .await
             .unwrap();
 

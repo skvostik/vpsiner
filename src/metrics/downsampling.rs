@@ -6,6 +6,7 @@ use crate::model::container_id::ContainerId;
 use crate::model::metrics::{
     ContainerPoint, ContainerSample, GroupPoint, HostSample, MetricsResolution,
 };
+use crate::model::service_id::ServiceId;
 
 /// The end of the half-open `(bucket_end - bucket_ms, bucket_end]` window containing `ts`.
 pub(crate) fn bucket_end(ts: i64, bucket_ms: u64) -> i64 {
@@ -155,14 +156,14 @@ struct ContainerGauges {
     net_tx_rate_mill: OptionalGauge,
     blk_read_rate_mill: OptionalGauge,
     blk_write_rate_mill: OptionalGauge,
-    service: String,
+    service: ServiceId,
     cid: ContainerId,
 }
 
 impl ContainerGauges {
     fn add(&mut self, sample: &ContainerSample) {
         if self.count == 0 {
-            self.service = sample.service.clone();
+            self.service = sample.service;
             self.cid = sample.cid;
         }
         self.count += 1;
@@ -182,7 +183,7 @@ impl ContainerGauges {
         let count = self.count as u128;
         Some(ContainerSample {
             ts,
-            service: self.service.clone(),
+            service: self.service,
             cid: self.cid,
             cpu_pct_mill: (self.cpu_pct_mill / count) as u64,
             mem_used: (self.mem_used / count) as u64,
@@ -275,7 +276,7 @@ mod tests {
         let _ = label;
         ContainerSample {
             ts,
-            service: "web".into(),
+            service: ServiceId::from_u32(1),
             cid: ContainerId::parse("aaaaaaaaaaaa").unwrap(),
             cpu_pct_mill: 25_000,
             mem_used: 1_000,
@@ -371,7 +372,10 @@ mod tests {
     }
 
     fn points(samples: Vec<ContainerSample>) -> Vec<ContainerPoint> {
-        samples.into_iter().map(ContainerPoint::from).collect()
+        samples
+            .into_iter()
+            .map(|sample| ContainerPoint::from_sample(sample, "web".to_string()))
+            .collect()
     }
 
     #[test]

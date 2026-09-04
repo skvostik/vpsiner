@@ -6,7 +6,7 @@ use crate::config::Config;
 use crate::docker::DockerService;
 use crate::logs::flush_watcher::LogFlushWatcher;
 use crate::logs::store::LogStore;
-use crate::metadata::MetadataStore;
+use crate::metadata::{MetadataStore, ServiceRegistry};
 use crate::metrics::bucket_watcher::BucketWatcher;
 use crate::metrics::host::HostMetricsSource;
 use crate::metrics::snapshot::MetricsSnapshotState;
@@ -20,6 +20,7 @@ pub struct AppState {
     pub metrics: Arc<dyn MetricsStore>,
     pub logs: Arc<dyn LogStore>,
     pub metadata: Arc<dyn MetadataStore>,
+    pub services: Arc<ServiceRegistry>,
     pub host: Arc<dyn HostMetricsSource>,
     pub snapshot: Arc<MetricsSnapshotState>,
     pub bucket_watcher: Arc<BucketWatcher>,
@@ -35,9 +36,13 @@ impl AppState {
         metrics: Arc<dyn MetricsStore>,
         logs: Arc<dyn LogStore>,
         metadata: Arc<dyn MetadataStore>,
+        services: Arc<ServiceRegistry>,
         host: Arc<dyn HostMetricsSource>,
     ) -> Self {
-        let snapshot = Arc::new(MetricsSnapshotState::new(config.collect_interval));
+        let snapshot = Arc::new(MetricsSnapshotState::new(
+            services.clone(),
+            config.collect_interval,
+        ));
         let bucket_watcher = Arc::new(BucketWatcher::new());
         let log_flush_watcher = Arc::new(LogFlushWatcher::new());
         Self {
@@ -46,6 +51,7 @@ impl AppState {
             metrics,
             logs,
             metadata,
+            services,
             host,
             snapshot,
             bucket_watcher,

@@ -5,4 +5,5 @@ pub mod container_id;
 pub mod containers;
 pub mod logs;
 pub mod metrics;
+pub mod service_id;
 pub mod time;

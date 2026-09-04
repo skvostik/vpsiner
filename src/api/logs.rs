@@ -87,9 +87,20 @@ pub(crate) fn parse_streams(value: Option<String>) -> AppResult<Vec<LogStream>> 
 pub async fn list_groups(
     State(state): State<AppState>,
 ) -> AppResult<Json<BTreeMap<String, ServiceStatus>>> {
-    let stored = state.metadata.list_service_log_watermarks().await?;
+    let stored = resolve_watermarks(&state).await?;
     let containers = state.docker.containers_info()?;
     Ok(Json(merge_services(stored, containers)))
+}
+
+/// Turns stored `ServiceId` watermarks back into the names the API is keyed by.
+pub(crate) async fn resolve_watermarks(state: &AppState) -> AppResult<BTreeMap<String, i64>> {
+    Ok(state
+        .metadata
+        .list_service_log_watermarks()
+        .await?
+        .into_iter()
+        .filter_map(|(sid, ts)| Some((state.services.name(sid)?.to_string(), ts)))
+        .collect())
 }
 
 pub(crate) fn merge_services(

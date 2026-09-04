@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use crate::error::AppResult;
 use crate::logs::flush_watcher::LogFlushWatcher;
 use crate::logs::store::LogStore;
-use crate::metadata::MetadataStore;
+use crate::metadata::{MetadataStore, ServiceRegistry};
 use crate::model::{container_id::ContainerId, logs::LogLine};
 
 /// Owns in-memory buffering, per-container two-level dedup, and per-service debounced flushing to
@@ -22,6 +22,7 @@ pub struct LogBuffer {
 struct Inner {
     logs: Arc<dyn LogStore>,
     metadata: Arc<dyn MetadataStore>,
+    services_registry: Arc<ServiceRegistry>,
     flush_watcher: Arc<LogFlushWatcher>,
     debounce: Duration,
     keep_alive: Duration,
@@ -45,6 +46,7 @@ impl LogBuffer {
     pub async fn new(
         logs: Arc<dyn LogStore>,
         metadata: Arc<dyn MetadataStore>,
+        services_registry: Arc<ServiceRegistry>,
         flush_watcher: Arc<LogFlushWatcher>,
         debounce: Duration,
         keep_alive: Duration,
@@ -53,8 +55,12 @@ impl LogBuffer {
         tracing::info!("preloading log buffer checkpoints from metadata store");
         let mut seeded: HashMap<String, ServiceState> = HashMap::new();
         for entry in metadata.list_log_checkpoints().await? {
+            // A checkpoint whose sid retention already reclaimed has nothing left to dedup.
+            let Some(service) = services_registry.name(entry.sid) else {
+                continue;
+            };
             seeded
-                .entry(entry.service)
+                .entry(service.to_string())
                 .or_default()
                 .checkpoints
                 .insert(entry.cid, (entry.checkpoint.ts, entry.checkpoint.line_hash));
@@ -63,6 +69,7 @@ impl LogBuffer {
         let inner = Arc::new(Inner {
             logs,
             metadata,
+            services_registry,
             flush_watcher,
             debounce,
             keep_alive,
@@ -215,14 +222,19 @@ impl Inner {
             self.request_service_flush(service);
             return; // don't advance checkpoints for data that didn't land
         }
+        // Interning here rather than in `push` keeps the ingestion hot path synchronous.
+        let sid = match self.services_registry.id_of(service).await {
+            Ok(sid) => sid,
+            Err(err) => {
+                tracing::error!(service = %service, error = %err, "failed to intern service name");
+                self.flush_watcher.notify(service);
+                return;
+            }
+        };
         for (cid, ts, line_hash) in checkpoints {
             if let Err(err) = self
                 .metadata
-                .advance_log_checkpoint(
-                    service,
-                    cid,
-                    crate::metadata::LogCheckpoint { ts, line_hash },
-                )
+                .advance_log_checkpoint(sid, cid, crate::metadata::LogCheckpoint { ts, line_hash })
                 .await
             {
                 tracing::error!(service = %service, cid = %cid, error = %err, "failed to persist last-received checkpoint");

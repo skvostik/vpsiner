@@ -28,6 +28,7 @@ pub async fn run_ingestion(
     docker: Arc<dyn DockerService>,
     logs: Arc<dyn LogStore>,
     metadata: Arc<dyn MetadataStore>,
+    services: Arc<crate::metadata::ServiceRegistry>,
     flush_watcher: Arc<LogFlushWatcher>,
     flush_debounce: Duration,
     flush_keep_alive: Duration,
@@ -36,6 +37,7 @@ pub async fn run_ingestion(
     let buffer = match LogBuffer::new(
         logs,
         metadata,
+        services,
         flush_watcher,
         flush_debounce,
         flush_keep_alive,

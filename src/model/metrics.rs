@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use super::container_id::ContainerId;
+use super::service_id::ServiceId;
 use super::time::{TimeRange, TimestampMs};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -38,7 +39,8 @@ pub struct HostSample {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContainerRawSample {
     pub ts: TimestampMs,
-    pub service: String,
+    #[serde(skip)]
+    pub service: ServiceId,
     pub cid: ContainerId,
     /// Cumulative CPU time consumed by the container, from `cpu_stats.cpu_usage.total_usage`.
     pub cpu_usage_ns: u64,
@@ -55,7 +57,8 @@ pub struct ContainerRawSample {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContainerSample {
     pub ts: TimestampMs,
-    pub service: String,
+    #[serde(skip)]
+    pub service: ServiceId,
     pub cid: ContainerId,
     pub cpu_pct_mill: u64,
     pub mem_used: u64,
@@ -119,6 +122,7 @@ pub struct CurrentHostPoint {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContainerPoint {
     pub ts: TimestampMs,
+    /// Resolved from `ServiceId` at the API boundary; empty until then.
     pub service: String,
     pub cpu_pct: f64,
     pub mem_used: u64,
@@ -180,11 +184,12 @@ impl From<HostRawSample> for CurrentHostPoint {
     }
 }
 
-impl From<ContainerSample> for ContainerPoint {
-    fn from(sample: ContainerSample) -> Self {
+impl ContainerPoint {
+    /// `service` must be the name the sample's `ServiceId` resolves to.
+    pub fn from_sample(sample: ContainerSample, service: String) -> Self {
         Self {
             ts: sample.ts,
-            service: sample.service,
+            service,
             cpu_pct: sample.cpu_pct_mill as f64 / 1_000.0,
             mem_used: sample.mem_used,
             net_rx_rate: from_mill(sample.net_rx_rate_mill),
@@ -234,6 +239,13 @@ impl MetricsResolution {
             MetricsResolution::FiveMinutes => 300_000,
             MetricsResolution::OneHour => 3_600_000,
         }
+    }
+
+    /// Widest bucket a row can be stamped into; a stored `ts` leads its samples by up to this.
+    pub fn max_bucket_ms() -> u64 {
+        Self::COARSE
+            .into_iter()
+            .fold(0, |max, resolution| max.max(resolution.bucket_ms()))
     }
 
     pub fn as_str(self) -> &'static str {

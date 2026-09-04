@@ -1,11 +1,12 @@
 //! Latest-value metrics with server-computed rates, kept in memory for `/api/metrics/current`.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::sync::watch;
 
+use crate::metadata::ServiceRegistry;
 use crate::metrics::downsampling::add_optional;
 use crate::metrics::rate::optional_rate;
 use crate::model::{
@@ -45,18 +46,21 @@ struct ContainersState {
 pub struct MetricsSnapshotState {
     host: Mutex<HostState>,
     containers: Mutex<ContainersState>,
+    /// Resolves each sample's `ServiceId` back to the name the API serializes.
+    services: Arc<ServiceRegistry>,
     stale_after_ms: i64,
     host_revision_tx: watch::Sender<u64>,
     containers_revision_tx: watch::Sender<u64>,
 }
 
 impl MetricsSnapshotState {
-    pub fn new(collect_interval: Duration) -> Self {
+    pub fn new(services: Arc<ServiceRegistry>, collect_interval: Duration) -> Self {
         let (host_revision_tx, _) = watch::channel(0);
         let (containers_revision_tx, _) = watch::channel(0);
         Self {
             host: Mutex::new(HostState::default()),
             containers: Mutex::new(ContainersState::default()),
+            services,
             stale_after_ms: (collect_interval.as_millis() as i64) * i64::from(STALE_INTERVALS),
             host_revision_tx,
             containers_revision_tx,
@@ -149,7 +153,11 @@ impl MetricsSnapshotState {
                 sample.cid,
                 ContainerPoint {
                     ts: sample.ts,
-                    service: sample.service.clone(),
+                    service: self
+                        .services
+                        .name(sample.service)
+                        .map(|name| name.to_string())
+                        .unwrap_or_default(),
                     cpu_pct,
                     mem_used: sample.mem_used,
                     net_rx_rate,
@@ -245,9 +253,22 @@ impl MetricsSnapshotState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::service_id::ServiceId;
 
     fn state() -> MetricsSnapshotState {
-        MetricsSnapshotState::new(Duration::from_secs(10))
+        MetricsSnapshotState::new(
+            ServiceRegistry::fixture(&["web", "db"]),
+            Duration::from_secs(10),
+        )
+    }
+
+    /// Must mirror the order of the fixture above.
+    fn test_sid(service: &str) -> ServiceId {
+        match service {
+            "web" => ServiceId::from_u32(1),
+            "db" => ServiceId::from_u32(2),
+            other => panic!("add {other} to the registry fixture"),
+        }
     }
 
     fn host_sample(ts: TimestampMs, net_rx: u64) -> HostRawSample {
@@ -277,7 +298,7 @@ mod tests {
         let seconds = (ts / 1_000) as u64;
         ContainerRawSample {
             ts,
-            service: service.into(),
+            service: test_sid(service),
             cid: test_cid(cid),
             cpu_usage_ns: seconds * 50_000_000,
             system_cpu_usage_ns: seconds * 1_000_000_000,

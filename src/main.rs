@@ -102,9 +102,15 @@ async fn async_main() {
         .await
         .expect("failed to open metadata database"),
     );
+    let services = Arc::new(
+        metadata::ServiceRegistry::load(metadata.clone())
+            .await
+            .expect("failed to load service dictionary"),
+    );
     let metrics = Arc::new(
         SqliteMetricsStore::connect(
             db_version::metrics_dir(&config.data_path).join("metrics.db"),
+            services.clone(),
             config.sqlite_cache_size_kb,
             config.sqlite_busy_timeout,
             config.downsample_max_gap_pct,
@@ -128,6 +134,7 @@ async fn async_main() {
             config.docker_debounce,
             config.docker_controls_mode,
             metadata.clone(),
+            services.clone(),
             config.retention_weeks,
         )),
         metrics,
@@ -138,6 +145,7 @@ async fn async_main() {
             config.sqlite_keep_alive,
         )),
         metadata,
+        services,
         Arc::new(SysinfoHost::default()),
     );
 
@@ -149,6 +157,7 @@ async fn async_main() {
         &state.metrics,
         &state.logs,
         &state.metadata,
+        &state.services,
         config.retention_weeks,
     )
     .await;
@@ -156,6 +165,7 @@ async fn async_main() {
         state.metrics.clone(),
         state.logs.clone(),
         state.metadata.clone(),
+        state.services.clone(),
         config.retention_weeks,
     ));
 
@@ -178,6 +188,7 @@ async fn async_main() {
         state.docker.clone(),
         state.logs.clone(),
         state.metadata.clone(),
+        state.services.clone(),
         state.log_flush_watcher.clone(),
         config.log_flush_debounce,
         config.log_flush_keep_alive,
@@ -332,6 +343,7 @@ mod tests {
             Arc::new(MockMetricsStore::new()),
             Arc::new(MockLogStore::new()),
             Arc::new(MockMetadataStore::new()),
+            metadata::ServiceRegistry::fixture(&[]),
             Arc::new(MockHostMetricsSource::new()),
         );
         (state, config)
@@ -515,6 +527,7 @@ mod tests {
             Arc::new(MockMetricsStore::new()),
             Arc::new(MockLogStore::new()),
             Arc::new(MockMetadataStore::new()),
+            metadata::ServiceRegistry::fixture(&[]),
             Arc::new(MockHostMetricsSource::new()),
         );
 

@@ -11,6 +11,7 @@ use crate::error::{AppError, AppResult};
 use crate::model::{
     container_id::ContainerId,
     metrics::{ContainerSample, HostSample, MetricsResolution},
+    service_id::ServiceId,
     time::TimeRange,
 };
 
@@ -81,7 +82,7 @@ pub async fn create_container_table(
         "CREATE TABLE IF NOT EXISTS {} (
             ts INTEGER NOT NULL,
             cid BLOB NOT NULL,
-            service TEXT NOT NULL,
+            sid INTEGER NOT NULL,
             cpu_pct_mill INTEGER NOT NULL,
             mem_used INTEGER NOT NULL,
             net_rx_rate_mill INTEGER,
@@ -138,7 +139,7 @@ pub async fn insert_containers(
 
     let prefix = format!(
         "{} INTO {}
-                (ts, cid, service, cpu_pct_mill, mem_used, net_rx_rate_mill, net_tx_rate_mill, blk_read_rate_mill, blk_write_rate_mill) ",
+                (ts, cid, sid, cpu_pct_mill, mem_used, net_rx_rate_mill, net_tx_rate_mill, blk_read_rate_mill, blk_write_rate_mill) ",
         insert_verb(resolution),
         container_table(resolution)
     );
@@ -149,7 +150,7 @@ pub async fn insert_containers(
         builder.push_values(chunk, |mut row, sample| {
             row.push_bind(sample.ts)
                 .push_bind(sample.cid.as_bytes().as_slice())
-                .push_bind(sample.service.clone())
+                .push_bind(i64::from(sample.service.as_u32()))
                 .push_bind(sample.cpu_pct_mill as i64)
                 .push_bind(sample.mem_used as i64)
                 .push_bind(sample.net_rx_rate_mill.map(|rate| rate as i64))
@@ -212,7 +213,7 @@ fn container_sample_from_row(row: sqlx::sqlite::SqliteRow) -> AppResult<Containe
             ContainerId::from_bytes(&bytes)
                 .ok_or_else(|| AppError::Storage("stored cid is not 6 bytes".into()))?
         },
-        service: row.try_get("service").map_err(storage)?,
+        service: ServiceId::from_u32(row.try_get::<i64, _>("sid").map_err(storage)? as u32),
         cpu_pct_mill: count(&row, "cpu_pct_mill")?,
         mem_used: count(&row, "mem_used")?,
         net_rx_rate_mill: rate(&row, "net_rx_rate_mill")?,
@@ -249,7 +250,7 @@ pub async fn select_containers(
     range: TimeRange,
 ) -> AppResult<Vec<ContainerSample>> {
     let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "SELECT ts, cid, service, cpu_pct_mill, mem_used, net_rx_rate_mill, net_tx_rate_mill, blk_read_rate_mill, blk_write_rate_mill
+        "SELECT ts, cid, sid, cpu_pct_mill, mem_used, net_rx_rate_mill, net_tx_rate_mill, blk_read_rate_mill, blk_write_rate_mill
          FROM {}
          WHERE ts >= ? AND ts <= ?
          ORDER BY ts ASC",

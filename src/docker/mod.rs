@@ -18,7 +18,7 @@ use crate::config::DockerControlsMode;
 use crate::docker::container_registry::{ContainerObserveAction, ObservedContainer};
 use crate::docker::mapping::receiver_stream;
 use crate::error::{AppError, AppResult};
-use crate::metadata::MetadataStore;
+use crate::metadata::{MetadataStore, ServiceRegistry};
 use crate::model::{
     container_id::ContainerId,
     containers::{ContainerCommandResult, ContainerState, ContainerSummary},
@@ -71,6 +71,7 @@ struct Inner {
     logs_rx: Mutex<Option<mpsc::Receiver<LogLine>>>,
     samples_rx: Mutex<Option<mpsc::Receiver<Vec<ContainerRawSample>>>>,
     metadata: Arc<dyn MetadataStore>,
+    services: Arc<ServiceRegistry>,
     retention_weeks: u32,
 }
 
@@ -90,6 +91,7 @@ impl BollardDocker {
         docker_debounce: Duration,
         controls_mode: DockerControlsMode,
         metadata: Arc<dyn MetadataStore>,
+        services: Arc<ServiceRegistry>,
         retention_weeks: u32,
     ) -> Self {
         let host = docker_host.into();
@@ -134,6 +136,7 @@ impl BollardDocker {
             logs_rx: Mutex::new(Some(logs_rx)),
             samples_rx: Mutex::new(Some(samples_rx)),
             metadata,
+            services,
             retention_weeks,
         });
 
@@ -449,6 +452,7 @@ fn spawn_log_observer(registry: Weak<Inner>, interval: Duration) {
             let docker = registry_ref.docker.clone();
             let sender = registry_ref.logs_tx.clone();
             let metadata = registry_ref.metadata.clone();
+            let services = registry_ref.services.clone();
             let retention_weeks = registry_ref.retention_weeks;
             let running = registry_ref.container_registry.observed_containers();
             drop(registry_ref);
@@ -480,6 +484,7 @@ fn spawn_log_observer(registry: Weak<Inner>, interval: Duration) {
                                 container,
                                 sender.clone(),
                                 metadata.clone(),
+                                services.clone(),
                                 retention_weeks,
                             ),
                         },
@@ -521,13 +526,18 @@ fn spawn_container_log_task(
     container: ObservedContainer,
     sender: mpsc::Sender<LogLine>,
     metadata: Arc<dyn MetadataStore>,
+    services: Arc<ServiceRegistry>,
     retention_weeks: u32,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let checkpoint = match metadata
-            .load_log_checkpoint(&container.service, container.id)
-            .await
-        {
+        let sid = match services.id_of(&container.service).await {
+            Ok(sid) => sid,
+            Err(err) => {
+                tracing::error!(container = %container.log_id(), error = %err, "failed to intern service name; log task will respawn");
+                return;
+            }
+        };
+        let checkpoint = match metadata.load_log_checkpoint(sid, container.id).await {
             Ok(checkpoint) => checkpoint,
             Err(err) => {
                 tracing::error!(container = %container.log_id(), error = %err, "failed to read log checkpoint; log task will respawn");
@@ -615,6 +625,7 @@ fn spawn_sample_observer(
             let docker = registry_ref.docker.clone();
             let registry_client = registry_ref.container_registry.clone();
             let sender = registry_ref.samples_tx.clone();
+            let services = registry_ref.services.clone();
             drop(registry_ref);
 
             let running = registry_client.observed_containers();
@@ -636,11 +647,19 @@ fn spawn_sample_observer(
             let samples = futures_util::stream::iter(running)
                 .map(|container| {
                     let docker = docker.clone();
+                    let services = services.clone();
                     async move {
+                        let sid = match services.id_of(&container.service).await {
+                            Ok(sid) => sid,
+                            Err(err) => {
+                                tracing::warn!(container = %container.log_id(), error = %err, "failed to intern service name");
+                                return None;
+                            }
+                        };
                         match sample_container_stats(&docker, &container.full_id, request_timeout).await {
                             Ok(stats) => Some(ContainerRawSample {
                                 ts: collection_ts,
-                                service: container.service,
+                                service: sid,
                                 cid: stats.cid,
                                 cpu_usage_ns: stats.cpu_usage_ns,
                                 system_cpu_usage_ns: stats.system_cpu_usage_ns,

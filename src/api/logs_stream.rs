@@ -108,9 +108,7 @@ pub async fn groups(
 }
 
 async fn current_groups(state: &AppState) -> BTreeMap<String, ServiceStatus> {
-    let stored = state
-        .metadata
-        .list_service_log_watermarks()
+    let stored = crate::api::logs::resolve_watermarks(state)
         .await
         .unwrap_or_default();
     let containers = state.docker.containers_info().unwrap_or_default();
