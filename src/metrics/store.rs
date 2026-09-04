@@ -291,6 +291,8 @@ mod tests {
             net_tx_rate_mill: Some(400_000),
             disk_read_rate_mill: Some(500_000),
             disk_write_rate_mill: Some(600_000),
+            log_pressure_pct_mill: Some(1_000),
+            app_rss_bytes: Some(40_000_000),
         }
     }
 

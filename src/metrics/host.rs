@@ -1,7 +1,10 @@
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use sysinfo::{CpuRefreshKind, Disks, MemoryRefreshKind, Networks, RefreshKind, System};
+use sysinfo::{
+    CpuRefreshKind, Disks, MemoryRefreshKind, Networks, ProcessRefreshKind, ProcessesToUpdate,
+    RefreshKind, System, get_current_pid,
+};
 
 use crate::error::{AppError, AppResult};
 use crate::model::metrics::HostRawSample;
@@ -12,6 +15,20 @@ fn host_refresh_kind() -> RefreshKind {
     RefreshKind::nothing()
         .with_cpu(CpuRefreshKind::everything())
         .with_memory(MemoryRefreshKind::everything())
+}
+
+/// Resident set size of this process, or `None` when the platform can't report it.
+///
+/// Scoped to our own pid and without tasks, so this stays a two-file read rather than a walk
+/// of every process (and, on Linux, of our own many threads).
+fn app_rss_bytes(system: &mut System) -> Option<u64> {
+    let pid = get_current_pid().ok()?;
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        false,
+        ProcessRefreshKind::nothing().with_memory().without_tasks(),
+    );
+    system.process(pid).map(|process| process.memory())
 }
 
 /// Host-level metrics source (sysinfo in production).
@@ -49,6 +66,7 @@ impl HostMetricsSource for SysinfoHost {
                 .lock()
                 .map_err(|err| AppError::Host(format!("sysinfo lock poisoned: {err}")))?;
             system.refresh_specifics(host_refresh_kind());
+            let app_rss_bytes = app_rss_bytes(&mut system);
 
             let mut networks = networks
                 .lock()
@@ -97,6 +115,9 @@ impl HostMetricsSource for SysinfoHost {
                 storage_total,
                 metrics_size: 0,
                 logs_size: 0,
+                // Patched by the collector, which owns the log channel gauge.
+                log_pressure_pct_mill: 0,
+                app_rss_bytes,
                 net_rx,
                 net_tx,
                 disk_read,

@@ -90,6 +90,15 @@ impl SampleBuffer {
         self.samples.is_empty()
     }
 
+    /// Largest value in `(start, end]`, or `None` when no sample falls inside.
+    fn max_in(&self, start: TimestampMs, end: TimestampMs) -> Option<u64> {
+        self.samples
+            .iter()
+            .filter(|sample| sample.ts > start && sample.ts <= end)
+            .map(|sample| sample.value)
+            .max()
+    }
+
     /// Finds a boundary value from the target bucket and its immediate neighbor.
     ///
     /// An exact sample at `boundary` is used directly. Otherwise the boundary
@@ -225,6 +234,39 @@ impl Bucketizer for GaugeBucketizer {
     }
 }
 
+/// Bucketizer for peak-tracking values such as a high-water mark.
+///
+/// The produced bucket value is the largest raw sample inside the bucket window. Unlike the
+/// gauge and counter bucketizers it never interpolates, since a peak between two samples is
+/// not recoverable from their values.
+#[derive(Debug, Clone)]
+pub(crate) struct MaxBucketizer {
+    buffer: SampleBuffer,
+    bucket_len_ms: u64,
+}
+
+impl MaxBucketizer {
+    /// Creates a max bucketizer with fixed sample capacity and bucket length.
+    pub(crate) fn new(capacity: usize, bucket_len_ms: u64) -> Self {
+        Self {
+            buffer: SampleBuffer::new(capacity),
+            bucket_len_ms,
+        }
+    }
+}
+
+impl Bucketizer for MaxBucketizer {
+    fn push(&mut self, ts: TimestampMs, value: u64) {
+        self.buffer.push(ts, value);
+    }
+
+    fn collect(&self, bucket_end: TimestampMs) -> Option<u64> {
+        let bucket_len_ms = i64::try_from(self.bucket_len_ms).ok()?;
+        let bucket_start = bucket_end.checked_sub(bucket_len_ms)?;
+        self.buffer.max_in(bucket_start, bucket_end)
+    }
+}
+
 /// Bucketizer for monotonic counters.
 ///
 /// The produced bucket value is the slope between interpolated start/end
@@ -333,6 +375,37 @@ mod tests {
 
         let values: Vec<u64> = buffer.samples.iter().map(|sample| sample.value).collect();
         assert_eq!(values, vec![20, 30, 40]);
+    }
+
+    #[test]
+    fn max_bucketizer_returns_the_peak_inside_the_bucket_window() {
+        let mut bucketizer = MaxBucketizer::new(16, 10_000);
+        // Belongs to the previous bucket, so its larger value must be ignored.
+        bucketizer.push(5_000, 900);
+        bucketizer.push(12_000, 100);
+        bucketizer.push(14_000, 700);
+        bucketizer.push(18_000, 400);
+        // Belongs to the next bucket.
+        bucketizer.push(25_000, 800);
+
+        assert_eq!(bucketizer.collect(20_000), Some(700));
+    }
+
+    #[test]
+    fn max_bucketizer_includes_the_closing_boundary_sample() {
+        let mut bucketizer = MaxBucketizer::new(16, 10_000);
+        bucketizer.push(10_000, 500);
+        bucketizer.push(20_000, 300);
+
+        assert_eq!(bucketizer.collect(20_000), Some(300));
+    }
+
+    #[test]
+    fn max_bucketizer_returns_none_for_an_empty_bucket() {
+        let mut bucketizer = MaxBucketizer::new(16, 10_000);
+        bucketizer.push(5_000, 900);
+
+        assert_eq!(bucketizer.collect(20_000), None);
     }
 
     #[test]

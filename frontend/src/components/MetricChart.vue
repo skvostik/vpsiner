@@ -37,7 +37,11 @@ use([CanvasRenderer, LineChart, GridComponent, TooltipComponent, LegendComponent
 const chartSeries = computed(
   () => props.series ?? [{ name: 'Value', points: props.points ?? [], color: props.color }]
 )
-const hasData = computed(() => chartSeries.value.some((entry) => entry.points.length >= 2))
+// Counting points alone would render an empty frame for a series that is present but all-null,
+// such as a metric added by a schema migration.
+const hasData = computed(() =>
+  chartSeries.value.some((entry) => entry.points.filter((point) => point.value != null).length >= 2)
+)
 
 function escapeHtml(value: string) {
   return value.replace(

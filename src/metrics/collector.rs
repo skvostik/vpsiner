@@ -42,6 +42,7 @@ pub async fn run_host(
     snapshot: Arc<MetricsSnapshotState>,
     bucket_watcher: Arc<BucketWatcher>,
     interval: Duration,
+    log_pressure_pct_mill: Arc<std::sync::atomic::AtomicUsize>,
 ) {
     let mut ticker = tokio::time::interval(interval);
     let mut state = HostCollectorState::new(interval);
@@ -54,6 +55,7 @@ pub async fn run_host(
             &logs,
             &snapshot,
             &bucket_watcher,
+            &log_pressure_pct_mill,
         )
         .await;
     }
@@ -94,6 +96,8 @@ mod tests {
                     net_tx: 600,
                     disk_read: 700,
                     disk_write: 800,
+                    log_pressure_pct_mill: 0,
+                    app_rss_bytes: None,
                 },
                 HostRawSample {
                     ts: 5_000,
@@ -108,6 +112,8 @@ mod tests {
                     net_tx: 1_600,
                     disk_read: 1_700,
                     disk_write: 1_800,
+                    log_pressure_pct_mill: 0,
+                    app_rss_bytes: None,
                 },
                 HostRawSample {
                     ts: 15_000,
@@ -122,6 +128,8 @@ mod tests {
                     net_tx: 2_600,
                     disk_read: 2_700,
                     disk_write: 2_800,
+                    log_pressure_pct_mill: 0,
+                    app_rss_bytes: None,
                 },
             ]
             .into_iter(),
@@ -166,6 +174,7 @@ mod tests {
                 &logs,
                 &snapshot,
                 &bucket_watcher,
+                &Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             )
             .await;
         }

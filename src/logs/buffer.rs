@@ -27,6 +27,9 @@ struct Inner {
     flush_watcher: Arc<LogFlushWatcher>,
     debounce: Duration,
     keep_alive: Duration,
+    /// Past this depth `push` persists inline, which stalls the bounded docker log channel and
+    /// pushes backpressure all the way to the daemon.
+    max_buffered_lines: usize,
     services: DashMap<String, ServiceHandle>,
 }
 
@@ -51,8 +54,9 @@ impl LogBuffer {
         flush_watcher: Arc<LogFlushWatcher>,
         debounce: Duration,
         keep_alive: Duration,
+        max_buffered_lines: usize,
     ) -> AppResult<Self> {
-        tracing::info!(debounce = ?debounce, keep_alive = ?keep_alive, "initializing log buffer");
+        tracing::info!(debounce = ?debounce, keep_alive = ?keep_alive, max_buffered_lines, "initializing log buffer");
         tracing::info!("preloading log buffer checkpoints from metadata store");
         let mut seeded: HashMap<String, ServiceState> = HashMap::new();
         for entry in metadata.list_log_checkpoints().await? {
@@ -74,6 +78,7 @@ impl LogBuffer {
             flush_watcher,
             debounce,
             keep_alive,
+            max_buffered_lines,
             services: DashMap::new(),
         });
         let buffer = Self { inner };
@@ -142,10 +147,13 @@ impl LogBuffer {
     /// debounced flush for its service: strictly-older lines are dropped, exact repeats at the
     /// boundary timestamp are dropped, anything else (including a distinct line sharing the
     /// same timestamp) is accepted.
-    pub fn push(&self, line: LogLine) {
+    ///
+    /// Once the service backlog reaches the configured maximum this awaits the flush rather than
+    /// debouncing it, so a backfilling caller cannot outrun persistence.
+    pub async fn push(&self, line: LogLine) {
         let service = line.service.clone();
         let state = self.service_state(&service);
-        {
+        let buffered = {
             let mut guard = state.lock().unwrap();
             let hash = hash_line(&line);
             if let Some(&(ts_last, hash_last)) = guard.checkpoints.get(&line.cid) {
@@ -155,7 +163,14 @@ impl LogBuffer {
             }
             guard.checkpoints.insert(line.cid, (line.ts, hash));
             guard.lines.push(line);
+            guard.lines.len()
+        };
+
+        if buffered >= self.inner.max_buffered_lines {
+            self.inner.flush_service(&service, &state).await;
+            return;
         }
+
         self.schedule_flush(&service);
     }
 

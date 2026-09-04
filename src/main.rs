@@ -118,6 +118,7 @@ async fn async_main() {
         .await
         .expect("failed to open metrics database"),
     );
+    let log_pressure_pct_mill = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let state = AppState::new(
         config.clone(),
         Arc::new(BollardDocker::new(
@@ -136,6 +137,7 @@ async fn async_main() {
             metadata.clone(),
             services.clone(),
             config.retention_weeks,
+            log_pressure_pct_mill.clone(),
         )),
         metrics,
         Arc::new(SqliteLogStore::new(
@@ -176,6 +178,7 @@ async fn async_main() {
         state.snapshot.clone(),
         state.bucket_watcher.clone(),
         config.collect_interval,
+        log_pressure_pct_mill,
     ));
     let container_metrics_task = tokio::spawn(metrics::collector::run_containers(
         state.docker.clone(),
@@ -192,6 +195,7 @@ async fn async_main() {
         state.log_flush_watcher.clone(),
         config.log_flush_debounce,
         config.log_flush_keep_alive,
+        config.log_max_buffered_lines,
     ));
 
     let metadata_store = state.metadata.clone();
@@ -320,12 +324,13 @@ mod tests {
             collect_interval: std::time::Duration::from_secs(10),
             log_flush_debounce: std::time::Duration::from_millis(500),
             log_flush_keep_alive: std::time::Duration::from_secs(60),
+            log_max_buffered_lines: 100,
             docker_controls_mode: crate::config::DockerControlsMode::Disabled,
             docker_probe_interval: std::time::Duration::from_secs(60),
             docker_retry_delay: std::time::Duration::from_secs(5),
             docker_request_concurrency: 8,
             docker_debounce: std::time::Duration::from_millis(1_000),
-            log_channel_capacity: 10_000,
+            log_channel_capacity: 1_000,
             samples_channel_capacity: 32,
             docker_events_channel_capacity: 256,
             sqlite_cache_size_kb: 1_024,

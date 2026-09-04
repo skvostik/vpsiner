@@ -32,6 +32,7 @@ pub async fn run_ingestion(
     flush_watcher: Arc<LogFlushWatcher>,
     flush_debounce: Duration,
     flush_keep_alive: Duration,
+    max_buffered_lines: usize,
 ) {
     tracing::info!("log ingestion initialized");
     let buffer = match LogBuffer::new(
@@ -41,6 +42,7 @@ pub async fn run_ingestion(
         flush_watcher,
         flush_debounce,
         flush_keep_alive,
+        max_buffered_lines,
     )
     .await
     {
@@ -53,7 +55,7 @@ pub async fn run_ingestion(
 
     let mut receiver = docker.logs();
     while let Some(line) = receiver.next().await {
-        buffer.push(line);
+        buffer.push(line).await;
     }
     buffer.flush_all().await;
 }
