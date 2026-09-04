@@ -56,9 +56,7 @@ struct HostGauges {
     gap: GapTracker,
     cpu_pct_mill: u128,
     mem_used: u128,
-    mem_total: u128,
     storage_used: u128,
-    storage_total: u128,
     metrics_size: u128,
     logs_size: u128,
     net_rx_rate_mill: OptionalGauge,
@@ -92,9 +90,7 @@ impl HostGauges {
         self.gap.observe(sample.ts);
         self.cpu_pct_mill += sample.cpu_pct_mill as u128;
         self.mem_used += sample.mem_used as u128;
-        self.mem_total += sample.mem_total as u128;
         self.storage_used += sample.storage_used as u128;
-        self.storage_total += sample.storage_total as u128;
         self.metrics_size += sample.metrics_size as u128;
         self.logs_size += sample.logs_size as u128;
         self.net_rx_rate_mill.add(sample.net_rx_rate_mill);
@@ -112,9 +108,7 @@ impl HostGauges {
             ts,
             cpu_pct_mill: (self.cpu_pct_mill / count) as u64,
             mem_used: (self.mem_used / count) as u64,
-            mem_total: (self.mem_total / count) as u64,
             storage_used: (self.storage_used / count) as u64,
-            storage_total: (self.storage_total / count) as u64,
             metrics_size: (self.metrics_size / count) as u64,
             logs_size: (self.logs_size / count) as u64,
             net_rx_rate_mill: self.net_rx_rate_mill.mean_rate(),
@@ -157,7 +151,6 @@ struct ContainerGauges {
     gap: GapTracker,
     cpu_pct_mill: u128,
     mem_used: u128,
-    mem_limit: u128,
     net_rx_rate_mill: OptionalGauge,
     net_tx_rate_mill: OptionalGauge,
     blk_read_rate_mill: OptionalGauge,
@@ -176,7 +169,6 @@ impl ContainerGauges {
         self.gap.observe(sample.ts);
         self.cpu_pct_mill += sample.cpu_pct_mill as u128;
         self.mem_used += sample.mem_used as u128;
-        self.mem_limit += sample.mem_limit as u128;
         self.net_rx_rate_mill.add(sample.net_rx_rate_mill);
         self.net_tx_rate_mill.add(sample.net_tx_rate_mill);
         self.blk_read_rate_mill.add(sample.blk_read_rate_mill);
@@ -194,7 +186,6 @@ impl ContainerGauges {
             cid: self.cid,
             cpu_pct_mill: (self.cpu_pct_mill / count) as u64,
             mem_used: (self.mem_used / count) as u64,
-            mem_limit: (self.mem_limit / count) as u64,
             net_rx_rate_mill: self.net_rx_rate_mill.mean_rate(),
             net_tx_rate_mill: self.net_tx_rate_mill.mean_rate(),
             blk_read_rate_mill: self.blk_read_rate_mill.mean_rate(),
@@ -241,7 +232,6 @@ pub fn sum_by_bucket<'a>(series: impl Iterator<Item = &'a Vec<ContainerPoint>>) 
             });
             total.cpu_pct += point.cpu_pct;
             total.mem_used = total.mem_used.saturating_add(point.mem_used);
-            total.mem_limit = total.mem_limit.saturating_add(point.mem_limit);
             add_optional(&mut total.net_rx_rate, point.net_rx_rate);
             add_optional(&mut total.net_tx_rate, point.net_tx_rate);
             add_optional(&mut total.blk_read_rate, point.blk_read_rate);
@@ -263,9 +253,7 @@ mod tests {
             ts,
             cpu_pct_mill: 12_500,
             mem_used: 100,
-            mem_total: 200,
             storage_used: 700,
-            storage_total: 800,
             metrics_size: 900,
             logs_size: 1_000,
             net_rx_rate_mill: Some(300_000),
@@ -291,7 +279,6 @@ mod tests {
             cid: ContainerId::parse("aaaaaaaaaaaa").unwrap(),
             cpu_pct_mill: 25_000,
             mem_used: 1_000,
-            mem_limit: 2_000,
             net_rx_rate_mill: Some(net_rx_rate_mill),
             net_tx_rate_mill: Some(4_000_000),
             blk_read_rate_mill: Some(5_000_000),

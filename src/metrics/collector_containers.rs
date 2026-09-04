@@ -20,7 +20,6 @@ struct ContainerBucketizer {
     /// Not bucketized: the online CPU count essentially never changes mid-run.
     last_cpu_count: u32,
     bck_mem_used: GaugeBucketizer,
-    bck_mem_limit: GaugeBucketizer,
     bck_net_rx_rate_mill: CounterBucketizer,
     bck_net_tx_rate_mill: CounterBucketizer,
     bck_blk_read_rate_mill: CounterBucketizer,
@@ -37,7 +36,6 @@ impl ContainerBucketizer {
             bck_system_cpu_usage_ns: CounterBucketizer::new(capacity, bucket_len_ms),
             last_cpu_count: 1,
             bck_mem_used: GaugeBucketizer::new(capacity, bucket_len_ms),
-            bck_mem_limit: GaugeBucketizer::new(capacity, bucket_len_ms),
             bck_net_rx_rate_mill: CounterBucketizer::new(capacity, bucket_len_ms),
             bck_net_tx_rate_mill: CounterBucketizer::new(capacity, bucket_len_ms),
             bck_blk_read_rate_mill: CounterBucketizer::new(capacity, bucket_len_ms),
@@ -51,7 +49,6 @@ impl ContainerBucketizer {
             .push(sample.ts, sample.system_cpu_usage_ns);
         self.last_cpu_count = sample.cpu_count;
         self.bck_mem_used.push(sample.ts, sample.mem_used);
-        self.bck_mem_limit.push(sample.ts, sample.mem_limit);
         self.bck_net_rx_rate_mill.push(sample.ts, sample.net_rx);
         self.bck_net_tx_rate_mill.push(sample.ts, sample.net_tx);
         self.bck_blk_read_rate_mill.push(sample.ts, sample.blk_read);
@@ -85,7 +82,6 @@ impl ContainerBucketizer {
             cid,
             cpu_pct_mill: self.cpu_pct_mill(bucket_end)?,
             mem_used: self.bck_mem_used.collect(bucket_end)?,
-            mem_limit: self.bck_mem_limit.collect(bucket_end)?,
             net_rx_rate_mill: self.bck_net_rx_rate_mill.collect(bucket_end),
             net_tx_rate_mill: self.bck_net_tx_rate_mill.collect(bucket_end),
             blk_read_rate_mill: self.bck_blk_read_rate_mill.collect(bucket_end),
@@ -192,7 +188,6 @@ mod tests {
             system_cpu_usage_ns: seconds * 1_000_000_000,
             cpu_count: 1,
             mem_used: 1_000,
-            mem_limit: 2_000,
             net_rx: counter,
             net_tx: counter,
             blk_read: counter,

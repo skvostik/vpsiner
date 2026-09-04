@@ -5,7 +5,12 @@ import { NCard, NStatistic } from 'naive-ui'
 import MetricChart, { type ChartSeries } from './MetricChart.vue'
 import { colorForKey } from '../colors'
 import { formatBytes, formatRate } from '../format'
-import type { ContainerMetricsByService, HostPoint, MetricsSnapshot } from '../types'
+import type {
+  ContainerMetricsByService,
+  CurrentHostPoint,
+  HostPoint,
+  MetricsSnapshot,
+} from '../types'
 
 const props = defineProps<{
   snapshot: MetricsSnapshot
@@ -26,7 +31,7 @@ const memoryPoints = computed(() => points('mem_used'))
 const storagePoints = computed(() =>
   props.history.map((sample) => ({
     ts: sample.ts,
-    value: sample.storage_total ? (sample.storage_used / sample.storage_total) * 100 : 0,
+    value: sample.storage_used,
   }))
 )
 const networkReceivedPoints = computed(() => points('net_rx_rate'))
@@ -94,7 +99,7 @@ const containerMemorySummary = computed(() => {
   return formatBytes(used)
 })
 
-function formatMemorySummary(sample?: HostPoint | null) {
+function formatMemorySummary(sample?: CurrentHostPoint | null) {
   return sample ? `${formatBytes(sample.mem_used)} / ${formatBytes(sample.mem_total)}` : '—'
 }
 
@@ -102,7 +107,7 @@ function formatCpuSummary(sample?: HostPoint | null) {
   return sample ? `${sample.cpu_pct.toFixed(1)}%` : '—'
 }
 
-function formatStorageSummary(sample?: HostPoint | null) {
+function formatStorageSummary(sample?: CurrentHostPoint | null) {
   return sample && sample.storage_total
     ? `${formatBytes(sample.storage_used)} / ${formatBytes(sample.storage_total)}`
     : '—'
@@ -141,7 +146,7 @@ function formatDatabaseStorageSummary(sample?: HostPoint | null) {
       class="order-7 min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
     >
       <n-statistic label="Storage used / total" :value="formatStorageSummary(host)" />
-      <MetricChart :points="storagePoints" :format-value="(value) => `${value.toFixed(1)}%`" />
+      <MetricChart :points="storagePoints" :format-value="formatBytes" />
     </n-card>
     <n-card
       size="small"

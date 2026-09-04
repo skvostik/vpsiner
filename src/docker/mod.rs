@@ -646,7 +646,6 @@ fn spawn_sample_observer(
                                 system_cpu_usage_ns: stats.system_cpu_usage_ns,
                                 cpu_count: stats.cpu_count,
                                 mem_used: stats.mem_used,
-                                mem_limit: stats.mem_limit,
                                 net_rx: stats.net_rx,
                                 net_tx: stats.net_tx,
                                 blk_read: stats.blk_read,

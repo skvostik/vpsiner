@@ -219,7 +219,6 @@ pub(super) fn map_container_stats(
         system_cpu_usage_ns,
         cpu_count,
         mem_used: mem_usage.saturating_sub(mem_cache),
-        mem_limit: memory_stats.and_then(|stats| stats.limit).unwrap_or(0),
         net_rx,
         net_tx,
         blk_read,

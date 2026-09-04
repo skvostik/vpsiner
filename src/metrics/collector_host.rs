@@ -27,9 +27,7 @@ pub(crate) fn cpu_pct_mill(cpu_pct: f64) -> u64 {
 struct HostBucketizer {
     bck_cpu_pct_mill: GaugeBucketizer,
     bck_mem_used: GaugeBucketizer,
-    bck_mem_total: GaugeBucketizer,
     bck_storage_used: GaugeBucketizer,
-    bck_storage_total: GaugeBucketizer,
     bck_metrics_size: GaugeBucketizer,
     bck_logs_size: GaugeBucketizer,
     bck_net_rx_rate_mill: CounterBucketizer,
@@ -46,9 +44,7 @@ impl HostBucketizer {
         Self {
             bck_cpu_pct_mill: GaugeBucketizer::new(capacity, bucket_len_ms),
             bck_mem_used: GaugeBucketizer::new(capacity, bucket_len_ms),
-            bck_mem_total: GaugeBucketizer::new(capacity, bucket_len_ms),
             bck_storage_used: GaugeBucketizer::new(capacity, bucket_len_ms),
-            bck_storage_total: GaugeBucketizer::new(capacity, bucket_len_ms),
             bck_metrics_size: GaugeBucketizer::new(capacity, bucket_len_ms),
             bck_logs_size: GaugeBucketizer::new(capacity, bucket_len_ms),
             bck_net_rx_rate_mill: CounterBucketizer::new(capacity, bucket_len_ms),
@@ -62,9 +58,7 @@ impl HostBucketizer {
         self.bck_cpu_pct_mill
             .push(sample.ts, cpu_pct_mill(sample.cpu_pct));
         self.bck_mem_used.push(sample.ts, sample.mem_used);
-        self.bck_mem_total.push(sample.ts, sample.mem_total);
         self.bck_storage_used.push(sample.ts, sample.storage_used);
-        self.bck_storage_total.push(sample.ts, sample.storage_total);
         self.bck_metrics_size.push(sample.ts, sample.metrics_size);
         self.bck_logs_size.push(sample.ts, sample.logs_size);
         self.bck_net_rx_rate_mill.push(sample.ts, sample.net_rx);
@@ -80,9 +74,7 @@ impl HostBucketizer {
             ts: bucket_end,
             cpu_pct_mill: self.bck_cpu_pct_mill.collect(bucket_end)?,
             mem_used: self.bck_mem_used.collect(bucket_end)?,
-            mem_total: self.bck_mem_total.collect(bucket_end)?,
             storage_used: self.bck_storage_used.collect(bucket_end)?,
-            storage_total: self.bck_storage_total.collect(bucket_end)?,
             metrics_size: self.bck_metrics_size.collect(bucket_end)?,
             logs_size: self.bck_logs_size.collect(bucket_end)?,
             net_rx_rate_mill: self.bck_net_rx_rate_mill.collect(bucket_end),

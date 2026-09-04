@@ -338,12 +338,7 @@ usePageTitle(() => container.value?.name || service.value || 'Container')
             :bordered="false"
             class="min-w-0 border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
           >
-            <n-statistic
-              label="Memory used / limit"
-              :value="
-                latest ? `${formatBytes(latest.mem_used)} / ${formatBytes(latest.mem_limit)}` : '—'
-              "
-            />
+            <n-statistic label="Memory used" :value="latest ? formatBytes(latest.mem_used) : '—'" />
             <MetricChart :series="memorySeries" :format-value="formatBytes" />
           </n-card>
           <n-card

@@ -26,9 +26,7 @@ pub struct HostSample {
     pub ts: TimestampMs,
     pub cpu_pct_mill: u64,
     pub mem_used: u64,
-    pub mem_total: u64,
     pub storage_used: u64,
-    pub storage_total: u64,
     pub metrics_size: u64,
     pub logs_size: u64,
     pub net_rx_rate_mill: Option<u64>,
@@ -48,7 +46,6 @@ pub struct ContainerRawSample {
     pub system_cpu_usage_ns: u64,
     pub cpu_count: u32,
     pub mem_used: u64,
-    pub mem_limit: u64,
     pub net_rx: u64,
     pub net_tx: u64,
     pub blk_read: u64,
@@ -62,7 +59,6 @@ pub struct ContainerSample {
     pub cid: ContainerId,
     pub cpu_pct_mill: u64,
     pub mem_used: u64,
-    pub mem_limit: u64,
     pub net_rx_rate_mill: Option<u64>,
     pub net_tx_rate_mill: Option<u64>,
     pub blk_read_rate_mill: Option<u64>,
@@ -95,6 +91,20 @@ pub struct HostPoint {
     pub ts: TimestampMs,
     pub cpu_pct: f64,
     pub mem_used: u64,
+    pub storage_used: u64,
+    pub metrics_size: u64,
+    pub logs_size: u64,
+    pub net_rx_rate: Option<f64>,
+    pub net_tx_rate: Option<f64>,
+    pub disk_read_rate: Option<f64>,
+    pub disk_write_rate: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct CurrentHostPoint {
+    pub ts: TimestampMs,
+    pub cpu_pct: f64,
+    pub mem_used: u64,
     pub mem_total: u64,
     pub storage_used: u64,
     pub storage_total: u64,
@@ -112,7 +122,6 @@ pub struct ContainerPoint {
     pub service: String,
     pub cpu_pct: f64,
     pub mem_used: u64,
-    pub mem_limit: u64,
     pub net_rx_rate: Option<f64>,
     pub net_tx_rate: Option<f64>,
     pub blk_read_rate: Option<f64>,
@@ -124,7 +133,6 @@ pub struct GroupPoint {
     pub ts: TimestampMs,
     pub cpu_pct: f64,
     pub mem_used: u64,
-    pub mem_limit: u64,
     pub net_rx_rate: Option<f64>,
     pub net_tx_rate: Option<f64>,
     pub blk_read_rate: Option<f64>,
@@ -142,15 +150,32 @@ impl From<HostSample> for HostPoint {
             ts: sample.ts,
             cpu_pct: sample.cpu_pct_mill as f64 / 1_000.0,
             mem_used: sample.mem_used,
-            mem_total: sample.mem_total,
             storage_used: sample.storage_used,
-            storage_total: sample.storage_total,
             metrics_size: sample.metrics_size,
             logs_size: sample.logs_size,
             net_rx_rate: from_mill(sample.net_rx_rate_mill),
             net_tx_rate: from_mill(sample.net_tx_rate_mill),
             disk_read_rate: from_mill(sample.disk_read_rate_mill),
             disk_write_rate: from_mill(sample.disk_write_rate_mill),
+        }
+    }
+}
+
+impl From<HostRawSample> for CurrentHostPoint {
+    fn from(sample: HostRawSample) -> Self {
+        Self {
+            ts: sample.ts,
+            cpu_pct: sample.cpu_pct,
+            mem_used: sample.mem_used,
+            mem_total: sample.mem_total,
+            storage_used: sample.storage_used,
+            storage_total: sample.storage_total,
+            metrics_size: sample.metrics_size,
+            logs_size: sample.logs_size,
+            net_rx_rate: None,
+            net_tx_rate: None,
+            disk_read_rate: None,
+            disk_write_rate: None,
         }
     }
 }
@@ -162,7 +187,6 @@ impl From<ContainerSample> for ContainerPoint {
             service: sample.service,
             cpu_pct: sample.cpu_pct_mill as f64 / 1_000.0,
             mem_used: sample.mem_used,
-            mem_limit: sample.mem_limit,
             net_rx_rate: from_mill(sample.net_rx_rate_mill),
             net_tx_rate: from_mill(sample.net_tx_rate_mill),
             blk_read_rate: from_mill(sample.blk_read_rate_mill),
@@ -173,7 +197,7 @@ impl From<ContainerSample> for ContainerPoint {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct MetricsSnapshot {
-    pub host: Option<HostPoint>,
+    pub host: Option<CurrentHostPoint>,
     pub containers: HashMap<ContainerId, ContainerPoint>,
     pub services: HashMap<String, GroupPoint>,
 }

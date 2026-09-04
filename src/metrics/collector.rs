@@ -182,7 +182,6 @@ mod tests {
                         system_cpu_usage_ns: second as u64 * 1_000_000_000,
                         cpu_count: 1,
                         mem_used: 100,
-                        mem_limit: 200,
                         net_rx: second as u64 * 1_000,
                         net_tx: second as u64 * 1_000,
                         blk_read: second as u64 * 1_000,

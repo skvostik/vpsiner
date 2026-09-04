@@ -66,7 +66,6 @@ pub struct ContainerStats {
     pub system_cpu_usage_ns: u64,
     pub cpu_count: u32,
     pub mem_used: u64,
-    pub mem_limit: u64,
     pub net_rx: u64,
     pub net_tx: u64,
     pub blk_read: u64,

@@ -29,7 +29,7 @@ Applies to the three time-series endpoints (`/api/metrics/host`, `/api/metrics/c
 - Returned `ts` is the bucket end.
 - Only fully elapsed buckets (`ts <= now` at request time) are returned. An open trailing bucket is omitted, even if `to` extends past it.
 - Empty buckets are omitted.
-- Gauge metrics (e.g. `cpu_pct`, `mem_used`, `mem_total`, `storage_used`, `storage_total`, `metrics_size`, `logs_size`, `mem_limit`) are averaged across the samples within a bucket.
+- Gauge metrics (e.g. `cpu_pct`, `mem_used`, `storage_used`, `metrics_size`, `logs_size`) are averaged across the samples within a bucket.
 - Rate metrics (e.g. `net_rx_rate`, `net_tx_rate`, `disk_read_rate`, `disk_write_rate`, `blk_read_rate`, `blk_write_rate`) are derived once, when a `10s` bucket is written: the counter is interpolated at both bucket boundaries and the slope between them is the bucket's rate. Coarser resolutions average those stored `10s` rates.
 - Rate metrics are `null` when the underlying counters could not produce a rate for the bucket — for example the first bucket after a container starts, or a bucket spanning a counter reset. A `null` rate means "unknown", not "zero".
 
@@ -277,7 +277,7 @@ Returns a time series of host metrics.
 Metric semantics:
 - `cpu_pct` is total host CPU utilization during the sample interval, expressed as a percentage of total logical CPU capacity
 - `cpu_pct` uses a `0..100` scale, where `100` means all logical CPUs are fully utilized
-- `mem_used`, `mem_total`, `storage_used`, `storage_total`, `metrics_size`, and `logs_size` are byte values
+- `mem_used`, `storage_used`, `metrics_size`, and `logs_size` are byte values
 - `metrics_size` is the on-disk size of Vpsiner's metrics database at sample time
 - `logs_size` is the combined on-disk size of Vpsiner's log databases at sample time
 - `net_rx_rate`, `net_tx_rate`, `disk_read_rate`, and `disk_write_rate` are bytes per second or `null`; see "Metrics point semantics" above
@@ -308,9 +308,7 @@ Example response:
       "ts": 1720000000000,
       "cpu_pct": 21.4,
       "mem_used": 2147483648,
-      "mem_total": 8589934592,
       "storage_used": 104857600,
-      "storage_total": 536870912,
       "metrics_size": 5242880,
       "logs_size": 73400320,
       "net_rx_rate": 15432.0,
@@ -330,7 +328,7 @@ Example response:
 
 Returns the latest known value for the host, for every currently sampled container, and for every `service`. This is the endpoint to use for list and overview UIs that need one current number per entity; it is not a time series and cannot be used to plot history.
 
-The records are the same `HostPoint`, `ContainerPoint`, and `GroupPoint` types the time-series endpoints return, so clients can share one model. See "Metrics point semantics" above for the rate rules.
+The current host record includes `mem_total` and `storage_total`; these capacity fields are live-only and are not returned by the host metrics endpoint. Container and service records contain usage values without memory limits. See "Metrics point semantics" above for the rate rules.
 
 Parameters: none. This endpoint takes no `from`, `to`, or `resolution`, and is not subject to the bucket semantics described above — values reflect the most recent raw sample, and rates are computed from the two most recent samples.
 
@@ -367,9 +365,7 @@ Example response:
     "ts": 1720003600000,
     "cpu_pct": 21.4,
     "mem_used": 2147483648,
-    "mem_total": 8589934592,
     "storage_used": 104857600,
-    "storage_total": 536870912,
     "metrics_size": 5242880,
     "logs_size": 73400320,
     "net_rx_rate": 15432.0,
@@ -383,7 +379,6 @@ Example response:
       "service": "project-web",
       "cpu_pct": 12.8,
       "mem_used": 402653184,
-      "mem_limit": 1073741824,
       "net_rx_rate": 10500.0,
       "net_tx_rate": 7300.0,
       "blk_read_rate": 5200.0,
@@ -394,7 +389,6 @@ Example response:
       "service": "project-web",
       "cpu_pct": 7.6,
       "mem_used": 301989888,
-      "mem_limit": 1073741824,
       "net_rx_rate": 7300.0,
       "net_tx_rate": 5300.0,
       "blk_read_rate": 3600.0,
@@ -406,7 +400,6 @@ Example response:
       "ts": 1720003600000,
       "cpu_pct": 20.4,
       "mem_used": 704643072,
-      "mem_limit": 2147483648,
       "net_rx_rate": 17800.0,
       "net_tx_rate": 12600.0,
       "blk_read_rate": 8800.0,
@@ -443,7 +436,7 @@ Metric semantics:
 - `cpu_pct` is the container CPU utilization during the sample interval, expressed as a percentage of total host logical CPU capacity
 - a container using one full logical CPU on a host with `N` logical CPUs contributes approximately `100 / N` to `cpu_pct`
 - aggregated `cpu_pct` values are summed by timestamp, so service CPU usage is comparable to host CPU usage and normally does not exceed `100`, aside from sampling jitter
-- `mem_used` and `mem_limit` are byte values
+- `mem_used` is a byte value
 - `net_rx_rate`, `net_tx_rate`, `blk_read_rate`, and `blk_write_rate` are bytes per second or `null`; see "Metrics point semantics" above
 
 Aggregation rules:
@@ -484,7 +477,6 @@ Example response:
         "ts": 1720000000000,
         "cpu_pct": 20.4,
         "mem_used": 704643072,
-        "mem_limit": 2147483648,
         "net_rx_rate": 17500.0,
         "net_tx_rate": 12600.0,
         "blk_read_rate": 8800.0,
@@ -498,7 +490,6 @@ Example response:
           "service": "project-web",
           "cpu_pct": 12.8,
           "mem_used": 402653184,
-          "mem_limit": 1073741824,
           "net_rx_rate": 10500.0,
           "net_tx_rate": 7300.0,
           "blk_read_rate": 5200.0,
@@ -528,7 +519,7 @@ The response is keyed by `service`. Each value is the aggregated time series for
 Metric semantics:
 - `cpu_pct` uses the same host-normalized scale as `HostPoint.cpu_pct`
 - aggregated `cpu_pct` values are summed by timestamp and are comparable to host CPU usage
-- `mem_used` and `mem_limit` are byte values; `*_rate` fields are bytes per second
+- `mem_used` is a byte value; `*_rate` fields are bytes per second
 
 Aggregation rules:
 - each `service` time series is computed by grouping the per-container buckets by exact `service` and `ts`, then summing all numeric fields
@@ -564,7 +555,6 @@ Example response:
         "ts": 1720000000000,
         "cpu_pct": 20.4,
         "mem_used": 704643072,
-        "mem_limit": 2147483648,
         "net_rx_rate": 17500.0,
         "net_tx_rate": 12600.0,
         "blk_read_rate": 8800.0,
@@ -576,7 +566,6 @@ Example response:
         "ts": 1720000000000,
         "cpu_pct": 5.2,
         "mem_used": 671088640,
-        "mem_limit": 1073741824,
         "net_rx_rate": 3300.0,
         "net_tx_rate": 2200.0,
         "blk_read_rate": 7800.0,
@@ -792,7 +781,7 @@ Behavior:
 - afterward, emits one `append` event per newly-completed bucket at the selected `resolution` — payload is a single `HostPoint` (not an array), the new bucket's cross-section
 - a bucket with no host sample in it produces no event at all
 - `resolution` bounds how often `append` can occur: at most once per bucket boundary for that resolution (e.g. up to once every 10 seconds at `10s`, once per hour at `1h`)
-- intended for **live/rolling windows only** (see "Metrics bucket semantics" above); for a fixed historical range, use the plain `GET /api/metrics/host` endpoint instead — the client is responsible for evicting points that fall outside its own sliding window as time advances, since the server does not re-enforce `from` after the initial snapshot
+- intended for **live/rolling windows only** (see "Metrics bucket semantics" above); for a fixed range, use the plain `GET /api/metrics/host` endpoint instead — the client is responsible for evicting points that fall outside its own sliding window as time advances, since the server does not re-enforce `from` after the initial snapshot
 
 Parameters:
 - `from` (required): start time in ms
@@ -806,10 +795,10 @@ Accept: text/event-stream
 Example events:
 ```
 event: snapshot
-data: {"resolution":"10s","data":[{"ts":1720000000000,"cpu_pct":21.4,"mem_used":2147483648,"mem_total":8589934592,"storage_used":104857600,"storage_total":536870912,"metrics_size":5242880,"logs_size":73400320,"net_rx_rate":15432.0,"net_tx_rate":9650.0,"disk_read_rate":2000.0,"disk_write_rate":1500.0}]}
+data: {"resolution":"10s","data":[{"ts":1720000000000,"cpu_pct":21.4,"mem_used":2147483648,"storage_used":104857600,"metrics_size":5242880,"logs_size":73400320,"net_rx_rate":15432.0,"net_tx_rate":9650.0,"disk_read_rate":2000.0,"disk_write_rate":1500.0}]}
 
 event: append
-data: {"ts":1720000010000,"cpu_pct":22.1,"mem_used":2148000000,"mem_total":8589934592,"storage_used":104857600,"storage_total":536870912,"metrics_size":5242880,"logs_size":73400320,"net_rx_rate":15900.0,"net_tx_rate":9700.0,"disk_read_rate":2100.0,"disk_write_rate":1600.0}
+data: {"ts":1720000010000,"cpu_pct":22.1,"mem_used":2148000000,"storage_used":104857600,"metrics_size":5242880,"logs_size":73400320,"net_rx_rate":15900.0,"net_tx_rate":9700.0,"disk_read_rate":2100.0,"disk_write_rate":1600.0}
 
 ```
 
@@ -828,10 +817,10 @@ Parameters:
 Example events:
 ```
 event: snapshot
-data: {"resolution":"10s","data":{"project-web":[{"ts":1720000000000,"cpu_pct":20.4,"mem_used":704643072,"mem_limit":2147483648,"net_rx_rate":17500.0,"net_tx_rate":12600.0,"blk_read_rate":8800.0,"blk_write_rate":7400.0}]}}
+data: {"resolution":"10s","data":{"project-web":[{"ts":1720000000000,"cpu_pct":20.4,"mem_used":704643072,"net_rx_rate":17500.0,"net_tx_rate":12600.0,"blk_read_rate":8800.0,"blk_write_rate":7400.0}]}}
 
 event: append
-data: {"project-web":{"ts":1720000010000,"cpu_pct":21.0,"mem_used":705000000,"mem_limit":2147483648,"net_rx_rate":17800.0,"net_tx_rate":12700.0,"blk_read_rate":8900.0,"blk_write_rate":7500.0}}
+data: {"project-web":{"ts":1720000010000,"cpu_pct":21.0,"mem_used":705000000,"net_rx_rate":17800.0,"net_tx_rate":12700.0,"blk_read_rate":8900.0,"blk_write_rate":7500.0}}
 
 ```
 
@@ -857,10 +846,10 @@ Accept: text/event-stream
 Example events:
 ```
 event: snapshot
-data: {"resolution":"10s","data":{"sum":[{"ts":1720000000000,"cpu_pct":20.4,"mem_used":704643072,"mem_limit":2147483648,"net_rx_rate":17500.0,"net_tx_rate":12600.0,"blk_read_rate":8800.0,"blk_write_rate":7400.0}],"containers":{"8af7d6c1273d":[{"ts":1720000000000,"service":"project-web","cpu_pct":12.8,"mem_used":402653184,"mem_limit":1073741824,"net_rx_rate":10500.0,"net_tx_rate":7300.0,"blk_read_rate":5200.0,"blk_write_rate":4100.0}]}}}
+data: {"resolution":"10s","data":{"sum":[{"ts":1720000000000,"cpu_pct":20.4,"mem_used":704643072,"net_rx_rate":17500.0,"net_tx_rate":12600.0,"blk_read_rate":8800.0,"blk_write_rate":7400.0}],"containers":{"8af7d6c1273d":[{"ts":1720000000000,"service":"project-web","cpu_pct":12.8,"mem_used":402653184,"net_rx_rate":10500.0,"net_tx_rate":7300.0,"blk_read_rate":5200.0,"blk_write_rate":4100.0}]}}}
 
 event: append
-data: {"sum":{"ts":1720000010000,"cpu_pct":21.0,"mem_used":705000000,"mem_limit":2147483648,"net_rx_rate":17800.0,"net_tx_rate":12700.0,"blk_read_rate":8900.0,"blk_write_rate":7500.0},"containers":{"8af7d6c1273d":{"ts":1720000010000,"service":"project-web","cpu_pct":13.0,"mem_used":403000000,"mem_limit":1073741824,"net_rx_rate":10600.0,"net_tx_rate":7350.0,"blk_read_rate":5250.0,"blk_write_rate":4150.0}}}
+data: {"sum":{"ts":1720000010000,"cpu_pct":21.0,"mem_used":705000000,"net_rx_rate":17800.0,"net_tx_rate":12700.0,"blk_read_rate":8900.0,"blk_write_rate":7500.0},"containers":{"8af7d6c1273d":{"ts":1720000010000,"service":"project-web","cpu_pct":13.0,"mem_used":403000000,"net_rx_rate":10600.0,"net_tx_rate":7350.0,"blk_read_rate":5250.0,"blk_write_rate":4150.0}}}
 
 ```
 
@@ -1000,6 +989,22 @@ data: {"items":[{"ts":1720003600000,"service":"project-web","cid":"8af7d6c1273d"
   "ts": 1234567890123,
   "cpu_pct": 12.5,
   "mem_used": 123456789,
+  "storage_used": 123456789,
+  "metrics_size": 5242880,
+  "logs_size": 73400320,
+  "net_rx_rate": 1000.0,
+  "net_tx_rate": 2000.0,
+  "disk_read_rate": 3000.0,
+  "disk_write_rate": 4000.0
+}
+```
+
+### `CurrentHostPoint`
+```json
+{
+  "ts": 1234567890123,
+  "cpu_pct": 12.5,
+  "mem_used": 123456789,
   "mem_total": 456789123,
   "storage_used": 123456789,
   "storage_total": 456789123,
@@ -1019,7 +1024,6 @@ data: {"items":[{"ts":1720003600000,"service":"project-web","cid":"8af7d6c1273d"
   "service": "string",
   "cpu_pct": 12.5,
   "mem_used": 123456789,
-  "mem_limit": 456789123,
   "net_rx_rate": 1000.0,
   "net_tx_rate": 2000.0,
   "blk_read_rate": 3000.0,
@@ -1033,7 +1037,6 @@ data: {"items":[{"ts":1720003600000,"service":"project-web","cid":"8af7d6c1273d"
   "ts": 1234567890123,
   "cpu_pct": 12.5,
   "mem_used": 123456789,
-  "mem_limit": 456789123,
   "net_rx_rate": 1000.0,
   "net_tx_rate": 2000.0,
   "blk_read_rate": 3000.0,

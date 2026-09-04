@@ -54,9 +54,7 @@ pub async fn create_host_table(pool: &SqlitePool, resolution: MetricsResolution)
             ts INTEGER PRIMARY KEY,
             cpu_pct_mill INTEGER NOT NULL,
             mem_used INTEGER NOT NULL,
-            mem_total INTEGER NOT NULL,
             storage_used INTEGER NOT NULL,
-            storage_total INTEGER NOT NULL,
             metrics_size INTEGER NOT NULL,
             logs_size INTEGER NOT NULL,
             net_rx_rate_mill INTEGER,
@@ -86,7 +84,6 @@ pub async fn create_container_table(
             service TEXT NOT NULL,
             cpu_pct_mill INTEGER NOT NULL,
             mem_used INTEGER NOT NULL,
-            mem_limit INTEGER NOT NULL,
             net_rx_rate_mill INTEGER,
             net_tx_rate_mill INTEGER,
             blk_read_rate_mill INTEGER,
@@ -109,17 +106,15 @@ pub async fn insert_host(
 ) -> AppResult<()> {
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "{} INTO {}
-                 (ts, cpu_pct_mill, mem_used, mem_total, storage_used, storage_total, metrics_size, logs_size, net_rx_rate_mill, net_tx_rate_mill, disk_read_rate_mill, disk_write_rate_mill)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 (ts, cpu_pct_mill, mem_used, storage_used, metrics_size, logs_size, net_rx_rate_mill, net_tx_rate_mill, disk_read_rate_mill, disk_write_rate_mill)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         insert_verb(resolution),
         host_table(resolution)
     )))
     .bind(sample.ts)
     .bind(sample.cpu_pct_mill as i64)
     .bind(sample.mem_used as i64)
-    .bind(sample.mem_total as i64)
     .bind(sample.storage_used as i64)
-    .bind(sample.storage_total as i64)
     .bind(sample.metrics_size as i64)
     .bind(sample.logs_size as i64)
     .bind(sample.net_rx_rate_mill.map(|rate| rate as i64))
@@ -143,7 +138,7 @@ pub async fn insert_containers(
 
     let prefix = format!(
         "{} INTO {}
-                (ts, cid, service, cpu_pct_mill, mem_used, mem_limit, net_rx_rate_mill, net_tx_rate_mill, blk_read_rate_mill, blk_write_rate_mill) ",
+                (ts, cid, service, cpu_pct_mill, mem_used, net_rx_rate_mill, net_tx_rate_mill, blk_read_rate_mill, blk_write_rate_mill) ",
         insert_verb(resolution),
         container_table(resolution)
     );
@@ -157,7 +152,6 @@ pub async fn insert_containers(
                 .push_bind(sample.service.clone())
                 .push_bind(sample.cpu_pct_mill as i64)
                 .push_bind(sample.mem_used as i64)
-                .push_bind(sample.mem_limit as i64)
                 .push_bind(sample.net_rx_rate_mill.map(|rate| rate as i64))
                 .push_bind(sample.net_tx_rate_mill.map(|rate| rate as i64))
                 .push_bind(sample.blk_read_rate_mill.map(|rate| rate as i64))
@@ -189,9 +183,7 @@ fn host_sample_from_row(row: sqlx::sqlite::SqliteRow) -> AppResult<HostSample> {
         ts: row.try_get("ts").map_err(storage)?,
         cpu_pct_mill: count(&row, "cpu_pct_mill")?,
         mem_used: count(&row, "mem_used")?,
-        mem_total: count(&row, "mem_total")?,
         storage_used: count(&row, "storage_used")?,
-        storage_total: count(&row, "storage_total")?,
         metrics_size: count(&row, "metrics_size")?,
         logs_size: count(&row, "logs_size")?,
         net_rx_rate_mill: rate(&row, "net_rx_rate_mill")?,
@@ -223,7 +215,6 @@ fn container_sample_from_row(row: sqlx::sqlite::SqliteRow) -> AppResult<Containe
         service: row.try_get("service").map_err(storage)?,
         cpu_pct_mill: count(&row, "cpu_pct_mill")?,
         mem_used: count(&row, "mem_used")?,
-        mem_limit: count(&row, "mem_limit")?,
         net_rx_rate_mill: rate(&row, "net_rx_rate_mill")?,
         net_tx_rate_mill: rate(&row, "net_tx_rate_mill")?,
         blk_read_rate_mill: rate(&row, "blk_read_rate_mill")?,
@@ -237,7 +228,7 @@ pub async fn select_host(
     range: TimeRange,
 ) -> AppResult<Vec<HostSample>> {
     let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "SELECT ts, cpu_pct_mill, mem_used, mem_total, storage_used, storage_total, metrics_size, logs_size, net_rx_rate_mill, net_tx_rate_mill, disk_read_rate_mill, disk_write_rate_mill
+        "SELECT ts, cpu_pct_mill, mem_used, storage_used, metrics_size, logs_size, net_rx_rate_mill, net_tx_rate_mill, disk_read_rate_mill, disk_write_rate_mill
            FROM {}
            WHERE ts >= ? AND ts <= ?
          ORDER BY ts ASC",
@@ -258,7 +249,7 @@ pub async fn select_containers(
     range: TimeRange,
 ) -> AppResult<Vec<ContainerSample>> {
     let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "SELECT ts, cid, service, cpu_pct_mill, mem_used, mem_limit, net_rx_rate_mill, net_tx_rate_mill, blk_read_rate_mill, blk_write_rate_mill
+        "SELECT ts, cid, service, cpu_pct_mill, mem_used, net_rx_rate_mill, net_tx_rate_mill, blk_read_rate_mill, blk_write_rate_mill
          FROM {}
          WHERE ts >= ? AND ts <= ?
          ORDER BY ts ASC",

@@ -11,7 +11,7 @@ use crate::metrics::rate::optional_rate;
 use crate::model::{
     container_id::ContainerId,
     metrics::{
-        ContainerPoint, ContainerRawSample, ContainersSnapshot, GroupPoint, HostPoint,
+        ContainerPoint, ContainerRawSample, ContainersSnapshot, CurrentHostPoint, GroupPoint,
         HostRawSample, MetricsSnapshot,
     },
     time::TimestampMs,
@@ -30,7 +30,7 @@ fn now_ms() -> TimestampMs {
 
 #[derive(Default)]
 struct HostState {
-    current: Option<HostPoint>,
+    current: Option<CurrentHostPoint>,
     previous: Option<HostRawSample>,
 }
 
@@ -86,7 +86,7 @@ impl MetricsSnapshotState {
             None => (None, None, None, None),
         };
 
-        state.current = Some(HostPoint {
+        state.current = Some(CurrentHostPoint {
             ts: sample.ts,
             cpu_pct: sample.cpu_pct,
             mem_used: sample.mem_used,
@@ -152,7 +152,6 @@ impl MetricsSnapshotState {
                     service: sample.service.clone(),
                     cpu_pct,
                     mem_used: sample.mem_used,
-                    mem_limit: sample.mem_limit,
                     net_rx_rate,
                     net_tx_rate,
                     blk_read_rate,
@@ -169,7 +168,7 @@ impl MetricsSnapshotState {
             .send_modify(|revision| *revision += 1);
     }
 
-    pub fn current_host(&self) -> Option<HostPoint> {
+    pub fn current_host(&self) -> Option<CurrentHostPoint> {
         self.current_host_at(now_ms())
     }
 
@@ -185,7 +184,7 @@ impl MetricsSnapshotState {
         now - self.stale_after_ms
     }
 
-    fn current_host_at(&self, now: TimestampMs) -> Option<HostPoint> {
+    fn current_host_at(&self, now: TimestampMs) -> Option<CurrentHostPoint> {
         let cutoff = self.cutoff(now);
         self.host
             .lock()
@@ -217,7 +216,6 @@ impl MetricsSnapshotState {
             service.ts = service.ts.max(point.ts);
             service.cpu_pct += point.cpu_pct;
             service.mem_used = service.mem_used.saturating_add(point.mem_used);
-            service.mem_limit = service.mem_limit.saturating_add(point.mem_limit);
             add_optional(&mut service.net_rx_rate, point.net_rx_rate);
             add_optional(&mut service.net_tx_rate, point.net_tx_rate);
             add_optional(&mut service.blk_read_rate, point.blk_read_rate);
@@ -285,7 +283,6 @@ mod tests {
             system_cpu_usage_ns: seconds * 1_000_000_000,
             cpu_count: 1,
             mem_used: 100,
-            mem_limit: 200,
             net_rx,
             net_tx: 0,
             blk_read: 0,
