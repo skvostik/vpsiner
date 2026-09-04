@@ -2,11 +2,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::logs::{format_timestamp_ms, store::LogStore};
+use crate::metadata::MetadataStore;
 use crate::metrics::store::MetricsStore;
 
 pub async fn cleanup_once(
     metrics: &Arc<dyn MetricsStore>,
     logs: &Arc<dyn LogStore>,
+    metadata: &Arc<dyn MetadataStore>,
     retention_weeks: u32,
 ) {
     let cutoff_ms = retention_cutoff_ms(time::OffsetDateTime::now_utc(), retention_weeks);
@@ -14,7 +16,7 @@ pub async fn cleanup_once(
     let metrics_cleaned = metrics.delete_before(cutoff_ms).await;
     let logs_removed = logs.delete_before(cutoff_ms).await;
 
-    match (metrics_cleaned, logs_removed) {
+    match (&metrics_cleaned, &logs_removed) {
         (Ok(metrics_cleaned), Ok(logs_removed)) => {
             tracing::info!(
                 retention_weeks,
@@ -27,12 +29,32 @@ pub async fn cleanup_once(
         (Err(error), _) => tracing::error!(error = %error, "failed to clean expired metrics"),
         (_, Err(error)) => tracing::error!(error = %error, "failed to clean expired log databases"),
     }
+
+    // Only prune checkpoints once the log databases they dedup against are confirmed gone,
+    // otherwise a later logs cleanup retry would treat already-checkpointed lines as new.
+    if logs_removed.is_ok() {
+        match metadata.delete_before(cutoff_ms).await {
+            Ok(checkpoints_removed) => tracing::info!(
+                cutoff = %cutoff,
+                checkpoints_removed,
+                "retention cleanup removed stale log checkpoints"
+            ),
+            Err(error) => {
+                tracing::error!(error = %error, "failed to clean expired log checkpoints")
+            }
+        }
+    }
 }
 
-pub async fn run(metrics: Arc<dyn MetricsStore>, logs: Arc<dyn LogStore>, retention_weeks: u32) {
+pub async fn run(
+    metrics: Arc<dyn MetricsStore>,
+    logs: Arc<dyn LogStore>,
+    metadata: Arc<dyn MetadataStore>,
+    retention_weeks: u32,
+) {
     loop {
         tokio::time::sleep(Duration::from_secs(24 * 60 * 60)).await;
-        cleanup_once(&metrics, &logs, retention_weeks).await;
+        cleanup_once(&metrics, &logs, &metadata, retention_weeks).await;
     }
 }
 

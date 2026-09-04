@@ -144,10 +144,17 @@ async fn async_main() {
         retention_weeks = config.retention_weeks,
         "retention cleanup worker started"
     );
-    retention::cleanup_once(&state.metrics, &state.logs, config.retention_weeks).await;
+    retention::cleanup_once(
+        &state.metrics,
+        &state.logs,
+        &state.metadata,
+        config.retention_weeks,
+    )
+    .await;
     let retention_task = tokio::spawn(retention::run(
         state.metrics.clone(),
         state.logs.clone(),
+        state.metadata.clone(),
         config.retention_weeks,
     ));
 

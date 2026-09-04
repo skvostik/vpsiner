@@ -48,6 +48,9 @@ pub trait MetadataStore: Send + Sync + 'static {
     /// Every known (service, cid) checkpoint — used to preload dedup state on startup.
     async fn list_log_checkpoints(&self) -> AppResult<Vec<LogCheckpointEntry>>;
 
+    /// Drops checkpoints whose latest ts predates `cutoff_ms`; returns the number removed.
+    async fn delete_before(&self, cutoff_ms: i64) -> AppResult<u64>;
+
     /// Releases the persistent database connection.
     async fn close(&self);
 }
@@ -193,6 +196,15 @@ impl MetadataStore for SqliteMetadataStore {
                 })
             })
             .collect())
+    }
+
+    async fn delete_before(&self, cutoff_ms: i64) -> AppResult<u64> {
+        let result = sqlx::query("DELETE FROM log_checkpoints WHERE ts < ?")
+            .bind(cutoff_ms)
+            .execute(&self.pool)
+            .await
+            .map_err(storage)?;
+        Ok(result.rows_affected())
     }
 
     async fn close(&self) {
