@@ -70,6 +70,7 @@ Run VPSiner with access to the local Docker socket and a persistent data
 directory:
 
 ```bash
+docker pull ghcr.io/skvostik/vpsiner:latest
 docker run -d \
   --name vpsiner \
   --restart unless-stopped \
