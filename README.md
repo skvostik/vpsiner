@@ -7,7 +7,7 @@ restart containers from its web interface.
 
 It is designed for home labs and small servers: one container, one Docker host, no
 external services. With a dozen containers running, it typically uses about
-50 MB of memory.
+100 MB of memory.
 
 ![Screen recording of the main features of the VPSiner tool](https://github.com/user-attachments/assets/8c130004-cb7c-42ca-8538-625214222968)
 
