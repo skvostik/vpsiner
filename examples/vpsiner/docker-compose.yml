@@ -1,5 +1,4 @@
 services:
-
   vpsiner:
     build:
       context: ../..
@@ -23,6 +22,9 @@ services:
   docker-proxy:
     image: lscr.io/linuxserver/socket-proxy:latest
     restart: unless-stopped
+    ports:
+      # Expose the Docker proxy port to the host machine for testing purposes
+      - "127.0.0.1:2375:2375"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
