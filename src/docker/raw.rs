@@ -98,6 +98,14 @@ async fn inspect_started_at(
         .map(|value| value.unix_timestamp_nanos().div_euclid(1_000_000) as i64)
 }
 
+pub(super) async fn ping(docker: &Docker, request_timeout: std::time::Duration) -> AppResult<()> {
+    match tokio::time::timeout(request_timeout, docker.ping()).await {
+        Err(error) => Err(AppError::Docker(error.to_string())),
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(err)) => Err(AppError::Docker(err.to_string())),
+    }
+}
+
 pub(super) async fn supports_write_operations(
     docker: &Docker,
     request_timeout: std::time::Duration,

@@ -414,6 +414,7 @@ mod tests {
     async fn health_reports_the_backend_version() {
         let mut docker = MockDockerService::new();
         docker.expect_controls_available().returning(|| false);
+        docker.expect_connected().returning(|| true);
         let (state, config) = state_with_docker(docker);
         let response = build_router(state, &config)
             .oneshot(
@@ -430,6 +431,7 @@ mod tests {
         let health: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(health["version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(health["retention_weeks"], 12);
+        assert_eq!(health["docker_connected"], true);
     }
 
     #[tokio::test]

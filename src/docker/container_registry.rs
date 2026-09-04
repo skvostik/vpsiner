@@ -7,7 +7,10 @@ use futures_util::{StreamExt, stream::BoxStream};
 use std::time::Duration;
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, RwLock, Weak},
+    sync::{
+        Arc, Mutex, RwLock, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use tokio::sync::{mpsc, watch};
 
@@ -64,6 +67,7 @@ pub(super) struct BollardContainerRegistry {
 
 struct Inner {
     docker: Docker,
+    connected: Arc<AtomicBool>,
     request_concurrency: usize,
     request_timeout: Duration,
     containers_info: Arc<RwLock<Vec<ContainerSummary>>>,
@@ -137,6 +141,7 @@ impl Inner {
 impl BollardContainerRegistry {
     pub fn new(
         docker: Docker,
+        connected: Arc<AtomicBool>,
         request_concurrency: usize,
         request_timeout: Duration,
         probe_interval: Duration,
@@ -155,6 +160,7 @@ impl BollardContainerRegistry {
 
         let inner = Arc::new(Inner {
             docker,
+            connected,
             request_concurrency,
             request_timeout,
             containers_info,
@@ -180,6 +186,10 @@ impl BollardContainerRegistry {
 }
 
 impl Inner {
+    fn is_connected(&self) -> bool {
+        self.connected.load(Ordering::Relaxed)
+    }
+
     fn request_observed_update(&self) -> AppResult<()> {
         if let Err(error) = self.observed_update_tx.try_send(()) {
             if !matches!(error, mpsc::error::TrySendError::Full(_)) {
@@ -192,6 +202,10 @@ impl Inner {
     }
 
     async fn update_observed_containers_now(&self) -> AppResult<()> {
+        if !self.is_connected() {
+            tracing::debug!("skipping observed containers update while docker is unreachable");
+            return Ok(());
+        }
         tracing::debug!("updating observed containers");
 
         let mut started_observing = Vec::<ObservedContainer>::new();
@@ -270,6 +284,10 @@ impl Inner {
     }
 
     async fn update_containers_info_now(&self) -> AppResult<()> {
+        if !self.is_connected() {
+            tracing::debug!("skipping containers info update while docker is unreachable");
+            return Ok(());
+        }
         tracing::debug!("updating containers info");
         let containers = list_all_containers_details(
             &self.docker,
@@ -392,6 +410,11 @@ async fn run_containers_observer_cycle(registry: Weak<Inner>, interval: Duration
     let Some(registry_ref) = registry.upgrade() else {
         return Ok(());
     };
+
+    if !registry_ref.is_connected() {
+        tracing::debug!("skipping containers observer cycle while docker is unreachable");
+        return Ok(());
+    }
 
     registry_ref.request_observed_update()?;
     let docker = registry_ref.docker.clone();

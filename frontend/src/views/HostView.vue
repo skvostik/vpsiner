@@ -5,7 +5,7 @@ import HostOverview from '../components/HostOverview.vue'
 import LiveStatusIcon from '../components/LiveStatusIcon.vue'
 import MetricsWindowPicker from '../components/MetricsWindowPicker.vue'
 import { api, containerMetricsHistory } from '../api'
-import { useBackendHealth } from '../composables/useBackendHealth'
+import { useBackendHealth, dockerConnected } from '../composables/useBackendHealth'
 import { useContainersMetricsStream } from '../composables/useContainersMetricsStream'
 import { useHostMetricsStream } from '../composables/useHostMetricsStream'
 import { useMetricsSnapshotStream } from '../composables/useMetricsSnapshotStream'
@@ -53,8 +53,9 @@ const containerMetricHistory = computed(() =>
   isLive.value ? liveContainerMetricHistory.value : restContainerMetricHistory.value
 )
 const { backendOnline } = useBackendHealth()
-const pageStatus = computed<'live' | 'history' | 'stopped'>(() => {
+const pageStatus = computed<'live' | 'history' | 'stopped' | 'docker-error'>(() => {
   if (!backendOnline.value) return 'stopped'
+  if (!dockerConnected.value) return 'docker-error'
   return isLive.value ? 'live' : 'history'
 })
 

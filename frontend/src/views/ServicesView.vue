@@ -4,7 +4,7 @@ import { NEmpty, NInput, NSpin, NSwitch } from 'naive-ui'
 import { ChevronRight, Search } from '@lucide/vue'
 
 import LiveStatusIcon from '../components/LiveStatusIcon.vue'
-import { backendOnline } from '../composables/useBackendHealth'
+import { backendOnline, dockerConnected } from '../composables/useBackendHealth'
 import { useServicesStream } from '../composables/useServicesStream'
 import { usePageTitle } from '../composables/usePageTitle'
 
@@ -15,8 +15,9 @@ const onlyRunning = ref(false)
 const serviceSearch = ref('')
 const onlyRunningStorageKey = 'vpsiner.services.only-running.v1'
 
-const pageStatus = computed<'live' | 'history' | 'stopped'>(() => {
+const pageStatus = computed<'live' | 'history' | 'stopped' | 'docker-error'>(() => {
   if (!backendOnline.value) return 'stopped'
+  if (!dockerConnected.value) return 'docker-error'
   return document.visibilityState === 'visible' ? 'live' : 'history'
 })
 

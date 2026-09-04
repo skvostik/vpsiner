@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Circle, CircleStop } from '@lucide/vue'
+import { Circle, CircleStop, TriangleAlert } from '@lucide/vue'
 import { NTooltip } from 'naive-ui'
 
 const props = withDefaults(
   defineProps<{
     live?: boolean
-    status?: 'live' | 'history' | 'stopped'
+    status?: 'live' | 'history' | 'stopped' | 'docker-error'
     size?: number
     pulse?: boolean
   }>(),
@@ -22,6 +22,8 @@ const tooltipText = computed(() => {
       return 'Connected: browsing historical data'
     case 'stopped':
       return 'Disconnected or not live'
+    case 'docker-error':
+      return 'Docker connection is unavailable: data may be stale'
   }
 })
 const ariaLabel = computed(() => {
@@ -32,6 +34,8 @@ const ariaLabel = computed(() => {
       return 'Browsing historical data'
     case 'stopped':
       return 'Disconnected or not live'
+    case 'docker-error':
+      return 'Docker connection unavailable'
   }
 })
 </script>
@@ -44,8 +48,13 @@ const ariaLabel = computed(() => {
         :aria-label="ariaLabel"
         role="img"
       >
+        <TriangleAlert
+          v-if="resolvedStatus === 'docker-error'"
+          :size="size"
+          class="status-static text-amber-500"
+        />
         <Circle
-          v-if="resolvedStatus !== 'stopped'"
+          v-else-if="resolvedStatus !== 'stopped'"
           :size="size"
           class="fill-emerald-500 text-emerald-500"
           :class="resolvedStatus === 'live' && pulse ? 'status-live' : 'status-static'"

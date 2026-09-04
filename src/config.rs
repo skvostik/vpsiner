@@ -48,7 +48,7 @@ const MAX_COLLECT_INTERVAL_SECS: u64 = 10;
 const DEFAULT_LOG_FLUSH_DEBOUNCE_MS: u64 = 500;
 const DEFAULT_LOG_FLUSH_KEEP_ALIVE_SECS: u64 = 60;
 const DEFAULT_DOCKER_CONTROLS: DockerControlsMode = DockerControlsMode::Auto;
-const DEFAULT_DOCKER_PROBE_INTERVAL_SECS: u64 = 60;
+const DEFAULT_DOCKER_PROBE_INTERVAL_SECS: u64 = 15;
 const DEFAULT_DOCKER_RETRY_SECS: u64 = 5;
 const DEFAULT_DOCKER_REQUEST_CONCURRENCY: usize = 8;
 const DEFAULT_DOCKER_DEBOUNCE_MS: u64 = 1_000;
@@ -319,7 +319,7 @@ impl Config {
                 ENV_DOCKER_PROBE_INTERVAL_SECS,
                 self.docker_probe_interval.as_secs().to_string(),
                 DEFAULT_DOCKER_PROBE_INTERVAL_SECS.to_string(),
-                "Interval for Docker write-capability probing, log observer fallback reconciliation, and registry refresh workers",
+                "Interval for Docker connection and write-capability probing, log observer fallback reconciliation, and registry refresh workers",
                 "advanced",
             ),
             entry(

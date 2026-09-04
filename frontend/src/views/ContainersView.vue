@@ -6,7 +6,7 @@ import { Search } from '@lucide/vue'
 import ContainerTable from '../components/ContainerTable.vue'
 import LiveStatusIcon from '../components/LiveStatusIcon.vue'
 import { useContainersStream } from '../composables/useContainersStream'
-import { useBackendHealth } from '../composables/useBackendHealth'
+import { dockerConnected, useBackendHealth } from '../composables/useBackendHealth'
 import { useMetricsSnapshotStream } from '../composables/useMetricsSnapshotStream'
 import { usePageTitle } from '../composables/usePageTitle'
 import type { ContainerRow } from '../types'
@@ -16,8 +16,9 @@ usePageTitle('Containers')
 const { containers, loading } = useContainersStream()
 const { backendOnline } = useBackendHealth()
 const { snapshot } = useMetricsSnapshotStream()
-const pageStatus = computed<'live' | 'history' | 'stopped'>(() => {
+const pageStatus = computed<'live' | 'history' | 'stopped' | 'docker-error'>(() => {
   if (!backendOnline.value) return 'stopped'
+  if (!dockerConnected.value) return 'docker-error'
   return document.visibilityState === 'visible' ? 'live' : 'history'
 })
 

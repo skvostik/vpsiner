@@ -25,7 +25,7 @@ use crate::model::{
 };
 
 use self::mapping::map_log_output;
-use self::raw::{sample_container_stats, supports_write_operations};
+use self::raw::{ping, sample_container_stats, supports_write_operations};
 
 use self::container_registry::{BollardContainerRegistry, ContainerRegistry};
 
@@ -39,6 +39,9 @@ pub trait DockerService: Send + Sync + 'static {
     fn subscribe_containers_info(&self) -> watch::Receiver<u64>;
 
     fn controls_available(&self) -> bool;
+
+    /// Whether the last probe reached the Docker socket/proxy.
+    fn connected(&self) -> bool;
 
     fn logs(&self) -> BoxStream<'static, LogLine>;
 
@@ -60,6 +63,7 @@ struct Inner {
     docker: Docker,
     container_registry: Arc<dyn ContainerRegistry>,
     controls_available: Arc<AtomicBool>,
+    connected: Arc<AtomicBool>,
     logs_tx: mpsc::Sender<LogLine>,
     samples_tx: mpsc::Sender<Vec<ContainerRawSample>>,
     logs_rx: Mutex<Option<mpsc::Receiver<LogLine>>>,
@@ -99,6 +103,8 @@ impl BollardDocker {
             controls_mode,
             DockerControlsMode::Enabled
         )));
+        // Optimistic until the first probe completes, so startup does not block on Docker.
+        let connected = Arc::new(AtomicBool::new(true));
         let request_timeout = Duration::from_secs(request_timeout_secs);
         let (logs_tx, logs_rx) = mpsc::channel::<LogLine>(log_channel_capacity);
         let (samples_tx, samples_rx) =
@@ -107,6 +113,7 @@ impl BollardDocker {
         let container_registry: Arc<dyn ContainerRegistry> =
             Arc::new(BollardContainerRegistry::new(
                 docker.clone(),
+                connected.clone(),
                 request_concurrency,
                 request_timeout,
                 docker_probe_interval,
@@ -119,6 +126,7 @@ impl BollardDocker {
             docker,
             container_registry,
             controls_available,
+            connected,
             logs_tx,
             samples_tx,
             logs_rx: Mutex::new(Some(logs_rx)),
@@ -128,13 +136,7 @@ impl BollardDocker {
         });
 
         match controls_mode {
-            DockerControlsMode::Auto => {
-                spawn_write_probe(
-                    Arc::downgrade(&inner),
-                    docker_probe_interval,
-                    request_timeout,
-                );
-            }
+            DockerControlsMode::Auto => {}
             DockerControlsMode::Enabled => {
                 tracing::info!(
                     docker_controls_available = true,
@@ -148,6 +150,12 @@ impl BollardDocker {
                 );
             }
         }
+        spawn_docker_probe(
+            Arc::downgrade(&inner),
+            docker_probe_interval,
+            request_timeout,
+            controls_mode,
+        );
         spawn_log_observer(Arc::downgrade(&inner), docker_probe_interval);
         spawn_sample_observer(
             Arc::downgrade(&inner),
@@ -174,6 +182,10 @@ impl DockerService for BollardDocker {
         self.inner.controls_available.load(Ordering::Relaxed)
     }
 
+    fn connected(&self) -> bool {
+        self.inner.connected.load(Ordering::Relaxed)
+    }
+
     fn logs(&self) -> BoxStream<'static, LogLine> {
         match self.inner.logs_rx.lock().ok().and_then(|mut rx| rx.take()) {
             Some(rx) => receiver_stream(rx),
@@ -195,6 +207,7 @@ impl DockerService for BollardDocker {
     }
 
     async fn start_container(&self, id: &str) -> AppResult<ContainerCommandResult> {
+        ensure_connected(self.connected())?;
         if !self.controls_available() {
             return Err(AppError::Forbidden(
                 "container controls are disabled or unavailable on this backend".into(),
@@ -230,6 +243,7 @@ impl DockerService for BollardDocker {
     }
 
     async fn stop_container(&self, id: &str) -> AppResult<ContainerCommandResult> {
+        ensure_connected(self.connected())?;
         if !self.controls_available() {
             return Err(AppError::Forbidden(
                 "container controls are disabled or unavailable on this backend".into(),
@@ -267,6 +281,7 @@ impl DockerService for BollardDocker {
     }
 
     async fn restart_container(&self, id: &str) -> AppResult<ContainerCommandResult> {
+        ensure_connected(self.connected())?;
         if !self.controls_available() {
             return Err(AppError::Forbidden(
                 "container controls are disabled or unavailable on this backend".into(),
@@ -313,31 +328,64 @@ impl DockerService for BollardDocker {
     }
 }
 
-fn spawn_write_probe(registry: Weak<Inner>, interval: Duration, request_timeout: Duration) {
+fn ensure_connected(connected: bool) -> AppResult<()> {
+    if connected {
+        return Ok(());
+    }
+    Err(AppError::Docker(
+        "docker socket/proxy is unreachable".into(),
+    ))
+}
+
+fn spawn_docker_probe(
+    registry: Weak<Inner>,
+    interval: Duration,
+    request_timeout: Duration,
+    controls_mode: DockerControlsMode,
+) {
     tokio::spawn(async move {
-        let mut last_logged: Option<bool> = None;
+        let mut last_connected: Option<bool> = None;
+        let mut last_controls: Option<bool> = None;
         loop {
             let Some(registry_ref) = registry.upgrade() else {
-                tracing::debug!("stopping write probe worker because docker service was dropped");
+                tracing::debug!("stopping docker probe worker because docker service was dropped");
                 return;
             };
 
             let docker = registry_ref.docker.clone();
-            let flag = registry_ref.controls_available.clone();
+            let connected_flag = registry_ref.connected.clone();
+            let controls_flag = registry_ref.controls_available.clone();
             drop(registry_ref);
 
-            match supports_write_operations(&docker, request_timeout).await {
-                Ok(available) => {
-                    flag.store(available, Ordering::Relaxed);
-                    if last_logged != Some(available) {
-                        tracing::info!(
-                            docker_controls_available = available,
-                            "docker write-capability probe result"
-                        );
-                        last_logged = Some(available);
+            let ping_result = ping(&docker, request_timeout).await;
+            let connected = ping_result.is_ok();
+            connected_flag.store(connected, Ordering::Relaxed);
+            if last_connected != Some(connected) {
+                match &ping_result {
+                    Ok(()) => tracing::info!(docker_connected = true, "docker connection is up"),
+                    Err(err) => {
+                        tracing::warn!(docker_connected = false, error = %err, "docker connection is down")
                     }
                 }
-                Err(err) => tracing::warn!(error = %err, "docker write-capability probe failed"),
+                last_connected = Some(connected);
+            }
+
+            if connected && matches!(controls_mode, DockerControlsMode::Auto) {
+                match supports_write_operations(&docker, request_timeout).await {
+                    Ok(available) => {
+                        controls_flag.store(available, Ordering::Relaxed);
+                        if last_controls != Some(available) {
+                            tracing::info!(
+                                docker_controls_available = available,
+                                "docker write-capability probe result"
+                            );
+                            last_controls = Some(available);
+                        }
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, "docker write-capability probe failed")
+                    }
+                }
             }
             tokio::time::sleep(interval).await;
         }
@@ -389,6 +437,12 @@ fn spawn_log_observer(registry: Weak<Inner>, interval: Duration) {
                 tracing::debug!("stopping log observer because docker service was dropped");
                 return;
             };
+
+            if !registry_ref.connected.load(Ordering::Relaxed) {
+                drop(registry_ref);
+                tracing::debug!("skipping log observer cycle while docker is unreachable");
+                continue;
+            }
 
             let docker = registry_ref.docker.clone();
             let sender = registry_ref.logs_tx.clone();
@@ -546,6 +600,12 @@ fn spawn_sample_observer(
                 tracing::debug!("stopping sample observer because docker service was dropped");
                 return;
             };
+
+            if !registry_ref.connected.load(Ordering::Relaxed) {
+                drop(registry_ref);
+                tracing::debug!("skipping sample observer cycle while docker is unreachable");
+                continue;
+            }
 
             let docker = registry_ref.docker.clone();
             let registry_client = registry_ref.container_registry.clone();
