@@ -8,12 +8,12 @@ use tokio::sync::mpsc;
 
 use crate::error::AppResult;
 use crate::logs::flush_watcher::LogFlushWatcher;
-use crate::logs::metadata::LogMetadataStore;
 use crate::logs::store::LogStore;
+use crate::metadata::MetadataStore;
 use crate::model::{container_id::ContainerId, logs::LogLine};
 
 /// Owns in-memory buffering, per-container two-level dedup, and per-service debounced flushing to
-/// the `LogStore`/`LogMetadataStore`. Each service flushes independently so a burst in one
+/// the `LogStore`/`MetadataStore`. Each service flushes independently so a burst in one
 /// service never blocks or piles up with another.
 pub struct LogBuffer {
     inner: Arc<Inner>,
@@ -21,7 +21,7 @@ pub struct LogBuffer {
 
 struct Inner {
     logs: Arc<dyn LogStore>,
-    metadata: Arc<dyn LogMetadataStore>,
+    metadata: Arc<dyn MetadataStore>,
     flush_watcher: Arc<LogFlushWatcher>,
     debounce: Duration,
     keep_alive: Duration,
@@ -36,7 +36,7 @@ struct ServiceHandle {
 #[derive(Default)]
 struct ServiceState {
     lines: Vec<LogLine>,
-    // Last accepted (ts, content hash) per container, seeded from LogMetadataStore on startup.
+    // Last accepted (ts, content hash) per container, seeded from MetadataStore on startup.
     checkpoints: HashMap<ContainerId, (i64, u64)>,
 }
 
@@ -44,7 +44,7 @@ impl LogBuffer {
     /// Preloads every known (service, container_id) checkpoint so dedup survives restarts.
     pub async fn new(
         logs: Arc<dyn LogStore>,
-        metadata: Arc<dyn LogMetadataStore>,
+        metadata: Arc<dyn MetadataStore>,
         flush_watcher: Arc<LogFlushWatcher>,
         debounce: Duration,
         keep_alive: Duration,
@@ -52,7 +52,7 @@ impl LogBuffer {
         tracing::info!(debounce = ?debounce, keep_alive = ?keep_alive, "initializing log buffer");
         tracing::info!("preloading log buffer checkpoints from metadata store");
         let mut seeded: HashMap<String, ServiceState> = HashMap::new();
-        for (service, container_id, checkpoint) in metadata.list_checkpoints().await? {
+        for (service, container_id, checkpoint) in metadata.list_log_checkpoints().await? {
             seeded
                 .entry(service)
                 .or_default()
@@ -218,7 +218,7 @@ impl Inner {
         for (cid, ts, line_hash) in checkpoints {
             if let Err(err) = self
                 .metadata
-                .record_received(service, cid, ts, line_hash)
+                .log_received(service, cid, ts, line_hash)
                 .await
             {
                 tracing::error!(service = %service, cid = %cid, error = %err, "failed to persist last-received checkpoint");

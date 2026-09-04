@@ -18,7 +18,7 @@ use crate::config::DockerControlsMode;
 use crate::docker::container_registry::{ContainerObserveAction, ObservedContainer};
 use crate::docker::mapping::receiver_stream;
 use crate::error::{AppError, AppResult};
-use crate::logs::metadata::LogMetadataStore;
+use crate::metadata::MetadataStore;
 use crate::model::{
     container_id::ContainerId,
     containers::{ContainerCommandResult, ContainerState, ContainerSummary},
@@ -70,7 +70,7 @@ struct Inner {
     samples_tx: mpsc::Sender<Vec<ContainerRawSample>>,
     logs_rx: Mutex<Option<mpsc::Receiver<LogLine>>>,
     samples_rx: Mutex<Option<mpsc::Receiver<Vec<ContainerRawSample>>>>,
-    metadata: Arc<dyn LogMetadataStore>,
+    metadata: Arc<dyn MetadataStore>,
     retention_weeks: u32,
 }
 
@@ -89,7 +89,7 @@ impl BollardDocker {
         docker_events_channel_capacity: usize,
         docker_debounce: Duration,
         controls_mode: DockerControlsMode,
-        metadata: Arc<dyn LogMetadataStore>,
+        metadata: Arc<dyn MetadataStore>,
         retention_weeks: u32,
     ) -> Self {
         let host = docker_host.into();
@@ -504,7 +504,7 @@ fn clamp_to_i32(value: i64) -> i32 {
 }
 
 fn log_since_secs(
-    checkpoint: Option<crate::logs::metadata::LogCheckpoint>,
+    checkpoint: Option<crate::metadata::LogCheckpoint>,
     now: time::OffsetDateTime,
     retention_weeks: u32,
 ) -> i32 {
@@ -520,11 +520,14 @@ fn spawn_container_log_task(
     docker: Docker,
     container: ObservedContainer,
     sender: mpsc::Sender<LogLine>,
-    metadata: Arc<dyn LogMetadataStore>,
+    metadata: Arc<dyn MetadataStore>,
     retention_weeks: u32,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let checkpoint = match metadata.checkpoint(&container.service, container.id).await {
+        let checkpoint = match metadata
+            .log_checkpoint(&container.service, container.id)
+            .await
+        {
             Ok(checkpoint) => checkpoint,
             Err(err) => {
                 tracing::error!(container = %container.log_id(), error = %err, "failed to read log checkpoint; log task will respawn");
@@ -670,7 +673,7 @@ fn spawn_sample_observer(
 #[cfg(test)]
 mod tests {
     use super::{clamp_to_i32, log_since_secs};
-    use crate::logs::metadata::LogCheckpoint;
+    use crate::metadata::LogCheckpoint;
 
     #[test]
     fn uses_cutoff_when_checkpoint_is_older_than_retention_window() {

@@ -1,7 +1,6 @@
 pub mod buffer;
 pub mod flush_watcher;
 mod helpers;
-pub mod metadata;
 pub mod store;
 
 use futures_util::StreamExt;
@@ -11,8 +10,8 @@ use std::time::Duration;
 use crate::docker::DockerService;
 use crate::logs::buffer::LogBuffer;
 use crate::logs::flush_watcher::LogFlushWatcher;
-use crate::logs::metadata::LogMetadataStore;
 use crate::logs::store::LogStore;
+use crate::metadata::MetadataStore;
 
 pub use helpers::{
     database_week_start_ms, decode_cursor, detect_level, encode_cursor, format_timestamp_ms,
@@ -23,7 +22,7 @@ pub use helpers::{
 pub async fn run_ingestion(
     docker: Arc<dyn DockerService>,
     logs: Arc<dyn LogStore>,
-    metadata: Arc<dyn LogMetadataStore>,
+    metadata: Arc<dyn MetadataStore>,
     flush_watcher: Arc<LogFlushWatcher>,
     flush_debounce: Duration,
     flush_keep_alive: Duration,

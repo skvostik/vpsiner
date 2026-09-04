@@ -87,7 +87,7 @@ pub(crate) fn parse_streams(value: Option<String>) -> AppResult<Vec<LogStream>> 
 pub async fn list_groups(
     State(state): State<AppState>,
 ) -> AppResult<Json<BTreeMap<String, ServiceStatus>>> {
-    let stored = state.metadata.list_last_received().await?;
+    let stored = state.metadata.list_last_log_received().await?;
     let containers = state.docker.containers_info()?;
     Ok(Json(merge_services(stored, containers)))
 }

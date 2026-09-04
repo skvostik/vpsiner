@@ -21,8 +21,8 @@ pub struct LogCheckpoint {
 /// Persistence for `metadata.db` — a per-container checkpoint of the last log line received.
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
-pub trait LogMetadataStore: Send + Sync + 'static {
-    async fn record_received(
+pub trait MetadataStore: Send + Sync + 'static {
+    async fn log_received(
         &self,
         service: &str,
         container_id: ContainerId,
@@ -30,28 +30,28 @@ pub trait LogMetadataStore: Send + Sync + 'static {
         line_hash: u64,
     ) -> AppResult<()>;
 
-    async fn checkpoint(
+    async fn log_checkpoint(
         &self,
         service: &str,
         container_id: ContainerId,
     ) -> AppResult<Option<LogCheckpoint>>;
 
     /// MAX(last_received) per service, across its containers — backs the services listing.
-    async fn list_last_received(&self) -> AppResult<BTreeMap<String, i64>>;
+    async fn list_last_log_received(&self) -> AppResult<BTreeMap<String, i64>>;
 
     /// Every known (service, container_id) checkpoint — used to preload dedup state on startup.
-    async fn list_checkpoints(&self) -> AppResult<Vec<(String, ContainerId, LogCheckpoint)>>;
+    async fn list_log_checkpoints(&self) -> AppResult<Vec<(String, ContainerId, LogCheckpoint)>>;
 
     /// Releases the persistent database connection.
     async fn close(&self);
 }
 
-pub struct SqliteLogMetadataStore {
+pub struct SqliteMetadataStore {
     db_path: PathBuf,
     pool: SqlitePool,
 }
 
-impl SqliteLogMetadataStore {
+impl SqliteMetadataStore {
     /// Opens the single long-lived connection used for the lifetime of the process.
     pub async fn connect(
         db_path: impl AsRef<Path>,
@@ -104,8 +104,8 @@ impl SqliteLogMetadataStore {
 }
 
 #[async_trait]
-impl LogMetadataStore for SqliteLogMetadataStore {
-    async fn record_received(
+impl MetadataStore for SqliteMetadataStore {
+    async fn log_received(
         &self,
         service: &str,
         container_id: ContainerId,
@@ -130,7 +130,7 @@ impl LogMetadataStore for SqliteLogMetadataStore {
         Ok(())
     }
 
-    async fn checkpoint(
+    async fn log_checkpoint(
         &self,
         service: &str,
         container_id: ContainerId,
@@ -150,7 +150,7 @@ impl LogMetadataStore for SqliteLogMetadataStore {
         }))
     }
 
-    async fn list_last_received(&self) -> AppResult<BTreeMap<String, i64>> {
+    async fn list_last_log_received(&self) -> AppResult<BTreeMap<String, i64>> {
         let rows = sqlx::query(
             "SELECT service, MAX(last_received) AS last_received
              FROM container_last_received
@@ -165,7 +165,7 @@ impl LogMetadataStore for SqliteLogMetadataStore {
             .collect())
     }
 
-    async fn list_checkpoints(&self) -> AppResult<Vec<(String, ContainerId, LogCheckpoint)>> {
+    async fn list_log_checkpoints(&self) -> AppResult<Vec<(String, ContainerId, LogCheckpoint)>> {
         let rows = sqlx::query(
             "SELECT service, container_id, last_received, last_line_hash
              FROM container_last_received",
@@ -214,8 +214,8 @@ mod tests {
         std::env::temp_dir().join(format!("vpsiner-metadata-{name}-{suffix}.db"))
     }
 
-    async fn test_store(name: &str) -> SqliteLogMetadataStore {
-        SqliteLogMetadataStore::connect(test_db(name), 1_024, Duration::from_secs(5))
+    async fn test_store(name: &str) -> SqliteMetadataStore {
+        SqliteMetadataStore::connect(test_db(name), 1_024, Duration::from_secs(5))
             .await
             .unwrap()
     }
@@ -238,19 +238,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn records_and_reads_back_a_checkpoint() {
+    async fn records_and_reads_back_a_log_checkpoint() {
         let store = test_store("record").await;
         let cid = ContainerId::parse("abc123abc123").unwrap();
 
-        assert_eq!(store.checkpoint("group", cid).await.unwrap(), None);
+        assert_eq!(store.log_checkpoint("group", cid).await.unwrap(), None);
 
         store
-            .record_received("group", cid, 1_700_000_000_000, 42)
+            .log_received("group", cid, 1_700_000_000_000, 42)
             .await
             .unwrap();
 
         assert_eq!(
-            store.checkpoint("group", cid).await.unwrap(),
+            store.log_checkpoint("group", cid).await.unwrap(),
             Some(LogCheckpoint {
                 ts: 1_700_000_000_000,
                 line_hash: 42,
@@ -264,17 +264,17 @@ mod tests {
         let cid = ContainerId::parse("abc123abc123").unwrap();
 
         store
-            .record_received("group", cid, 1_700_000_000_000, 1)
+            .log_received("group", cid, 1_700_000_000_000, 1)
             .await
             .unwrap();
         // A stale write with a lower ts must not clobber the newer ts/hash pair.
         store
-            .record_received("group", cid, 1_600_000_000_000, 999)
+            .log_received("group", cid, 1_600_000_000_000, 999)
             .await
             .unwrap();
 
         assert_eq!(
-            store.checkpoint("group", cid).await.unwrap(),
+            store.log_checkpoint("group", cid).await.unwrap(),
             Some(LogCheckpoint {
                 ts: 1_700_000_000_000,
                 line_hash: 1,
@@ -282,12 +282,12 @@ mod tests {
         );
 
         store
-            .record_received("group", cid, 1_800_000_000_000, 2)
+            .log_received("group", cid, 1_800_000_000_000, 2)
             .await
             .unwrap();
 
         assert_eq!(
-            store.checkpoint("group", cid).await.unwrap(),
+            store.log_checkpoint("group", cid).await.unwrap(),
             Some(LogCheckpoint {
                 ts: 1_800_000_000_000,
                 line_hash: 2,
@@ -303,20 +303,20 @@ mod tests {
         let cid_c = ContainerId::parse("789abc789abc").unwrap();
 
         store
-            .record_received("shop-web", cid_a, 1_700_000_000_000, 1)
+            .log_received("shop-web", cid_a, 1_700_000_000_000, 1)
             .await
             .unwrap();
         store
-            .record_received("shop-web", cid_b, 1_700_000_005_000, 2)
+            .log_received("shop-web", cid_b, 1_700_000_005_000, 2)
             .await
             .unwrap();
         store
-            .record_received("shop-worker", cid_c, 1_650_000_000_000, 3)
+            .log_received("shop-worker", cid_c, 1_650_000_000_000, 3)
             .await
             .unwrap();
 
         assert_eq!(
-            store.list_last_received().await.unwrap(),
+            store.list_last_log_received().await.unwrap(),
             BTreeMap::from([
                 ("shop-web".to_string(), 1_700_000_005_000),
                 ("shop-worker".to_string(), 1_650_000_000_000),

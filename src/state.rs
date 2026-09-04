@@ -5,8 +5,8 @@ use tokio_util::sync::CancellationToken;
 use crate::config::Config;
 use crate::docker::DockerService;
 use crate::logs::flush_watcher::LogFlushWatcher;
-use crate::logs::metadata::LogMetadataStore;
 use crate::logs::store::LogStore;
+use crate::metadata::MetadataStore;
 use crate::metrics::bucket_watcher::BucketWatcher;
 use crate::metrics::host::HostMetricsSource;
 use crate::metrics::snapshot::MetricsSnapshotState;
@@ -19,7 +19,7 @@ pub struct AppState {
     pub docker: Arc<dyn DockerService>,
     pub metrics: Arc<dyn MetricsStore>,
     pub logs: Arc<dyn LogStore>,
-    pub metadata: Arc<dyn LogMetadataStore>,
+    pub metadata: Arc<dyn MetadataStore>,
     pub host: Arc<dyn HostMetricsSource>,
     pub snapshot: Arc<MetricsSnapshotState>,
     pub bucket_watcher: Arc<BucketWatcher>,
@@ -34,7 +34,7 @@ impl AppState {
         docker: Arc<dyn DockerService>,
         metrics: Arc<dyn MetricsStore>,
         logs: Arc<dyn LogStore>,
-        metadata: Arc<dyn LogMetadataStore>,
+        metadata: Arc<dyn MetadataStore>,
         host: Arc<dyn HostMetricsSource>,
     ) -> Self {
         let snapshot = Arc::new(MetricsSnapshotState::new(config.collect_interval));

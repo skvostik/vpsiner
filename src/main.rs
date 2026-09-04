@@ -4,6 +4,7 @@ mod db_version;
 mod docker;
 mod error;
 mod logs;
+mod metadata;
 mod metrics;
 mod model;
 mod retention;
@@ -18,8 +19,8 @@ use tower_http::services::{ServeDir, ServeFile};
 
 use crate::config::Config;
 use crate::docker::BollardDocker;
-use crate::logs::metadata::SqliteLogMetadataStore;
 use crate::logs::store::SqliteLogStore;
+use crate::metadata::SqliteMetadataStore;
 use crate::metrics::host::SysinfoHost;
 use crate::metrics::store::SqliteMetricsStore;
 use crate::state::AppState;
@@ -92,7 +93,7 @@ async fn async_main() {
 
     // Composition root: concrete implementations are chosen here and nowhere else.
     let metadata = Arc::new(
-        SqliteLogMetadataStore::connect(
+        SqliteMetadataStore::connect(
             db_version::metadata_dir(&config.data_path).join("metadata.db"),
             config.sqlite_cache_size_kb,
             config.sqlite_busy_timeout,
@@ -278,8 +279,8 @@ mod tests {
 
     use crate::docker::MockDockerService;
     use crate::error::AppError;
-    use crate::logs::metadata::MockLogMetadataStore;
     use crate::logs::store::MockLogStore;
+    use crate::metadata::MockMetadataStore;
     use crate::metrics::host::MockHostMetricsSource;
     use crate::metrics::store::MockMetricsStore;
     use crate::model::{
@@ -322,7 +323,7 @@ mod tests {
             Arc::new(docker),
             Arc::new(MockMetricsStore::new()),
             Arc::new(MockLogStore::new()),
-            Arc::new(MockLogMetadataStore::new()),
+            Arc::new(MockMetadataStore::new()),
             Arc::new(MockHostMetricsSource::new()),
         );
         (state, config)
@@ -505,7 +506,7 @@ mod tests {
             Arc::new(MockDockerService::new()),
             Arc::new(MockMetricsStore::new()),
             Arc::new(MockLogStore::new()),
-            Arc::new(MockLogMetadataStore::new()),
+            Arc::new(MockMetadataStore::new()),
             Arc::new(MockHostMetricsSource::new()),
         );
 
