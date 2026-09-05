@@ -62,6 +62,7 @@ const DEFAULT_SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_SQLITE_KEEP_ALIVE_SECS: u64 = 300;
 /// A bucket is discarded when its largest sample gap exceeds this share of the bucket length.
 const DEFAULT_DOWNSAMPLE_MAX_GAP_PCT: u8 = 40;
+const DEFAULT_WORKER_THREADS: usize = 2;
 
 /// Whether container start/stop/restart endpoints are exposed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -268,9 +269,9 @@ impl Config {
             ),
             entry(
                 ENV_WORKER_THREADS,
-                env::var(ENV_WORKER_THREADS).unwrap_or_default(),
-                String::new(),
-                "Overrides Tokio runtime worker-thread count; by default Tokio uses available CPU parallelism",
+                env::var(ENV_WORKER_THREADS).unwrap_or_else(|_| DEFAULT_WORKER_THREADS.to_string()),
+                DEFAULT_WORKER_THREADS.to_string(),
+                "Maximum Tokio runtime worker-thread count; actual allocation is capped by available CPU parallelism",
                 "advanced",
             ),
             entry(
@@ -426,6 +427,14 @@ impl Config {
 
 fn env_or(key: &str, default: &str) -> String {
     env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+pub(crate) fn worker_thread_limit_from_env() -> usize {
+    parse_positive_usize_or(ENV_WORKER_THREADS, DEFAULT_WORKER_THREADS)
+}
+
+pub(crate) fn rust_log_filter_from_env() -> String {
+    env_or(ENV_RUST_LOG, DEFAULT_RUST_LOG)
 }
 
 fn parse_or<T>(key: &str, default: T) -> T
