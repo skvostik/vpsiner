@@ -123,10 +123,10 @@ Example response:
   },
   {
     "name": "VPSINER_WORKER_THREADS",
-    "value": "",
-    "default": "",
-    "description": "Overrides Tokio runtime worker-thread count; by default Tokio uses available CPU parallelism",
-    "category": "common",
+    "value": "2",
+    "default": "2",
+    "description": "Maximum Tokio runtime worker-thread count; actual allocation is capped by available CPU parallelism",
+    "category": "advanced",
     "overridden": false
   }
 ]
@@ -134,8 +134,8 @@ Example response:
 
 Fields:
 - `name`: Environment variable name
-- `value`: Effective value in use, formatted in the same unit the variable accepts. Empty string when the setting is unset and has no default
-- `default`: Built-in default. Empty string when the variable has no default
+- `value`: Effective value in use, formatted in the same unit the variable accepts
+- `default`: Built-in default
 - `description`: Short human-readable description, matching the tables in the README
 - `category`: `"common"` for frequently adjusted settings, `"advanced"` for tuning knobs
 - `overridden`: `true` when the variable is present in the process environment, regardless of whether its value differs from the default
@@ -144,7 +144,7 @@ Ordering is stable and groups `common` entries before `advanced` ones, matching 
 
 ### GET `/api/config/computed`
 
-Returns live values measured from the running backend. These values are read-only and may differ from their configured inputs; for example, Tokio chooses the available CPU parallelism when `VPSINER_WORKER_THREADS` is unset.
+Returns live values measured from the running backend. These values are read-only and may differ from their configured inputs; for example, Tokio uses available CPU parallelism capped by `VPSINER_WORKER_THREADS`.
 
 Parameters: none
 
@@ -164,7 +164,7 @@ Fields:
 - `value`: Current value, formatted as a string
 - `description`: Short human-readable explanation
 
-`tokio_worker_threads` is the actual worker-thread allocation reported by the active Tokio runtime. It is not necessarily the same as the `VPSINER_WORKER_THREADS` setting: when that environment variable is unset, Tokio selects the allocation automatically.
+`tokio_worker_threads` is the actual worker-thread allocation reported by the active Tokio runtime. It is not necessarily the same as the `VPSINER_WORKER_THREADS` setting: the setting is an upper bound, and the runtime uses fewer workers when less CPU parallelism is available.
 
 ---
 
