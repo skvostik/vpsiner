@@ -1,8 +1,80 @@
 services:
-  funny-logger:
+  logger-1:
     image: ghcr.io/skvostik/funny-logger:latest
-    scale: 10
+    scale: 5
 
-  lunny-fogger:
+  logger-2:
     image: ghcr.io/skvostik/funny-logger:latest
-    scale: 10
+    scale: 5
+
+  logger-3:
+    image: ghcr.io/skvostik/funny-logger:latest
+    scale: 5
+
+  logger-4:
+    image: ghcr.io/skvostik/funny-logger:latest
+    scale: 5
+
+  logger-5:
+    image: ghcr.io/skvostik/funny-logger:latest
+    scale: 5
+
+  logger-6:
+    image: ghcr.io/skvostik/funny-logger:latest
+    scale: 5
+
+  logger-7:
+    image: ghcr.io/skvostik/funny-logger:latest
+    scale: 5
+
+  logger-8:
+    image: ghcr.io/skvostik/funny-logger:latest
+    scale: 5
+
+  logger-9:
+    image: ghcr.io/skvostik/funny-logger:latest
+    scale: 5
+
+  logger-10:
+    image: ghcr.io/skvostik/funny-logger:latest
+    scale: 5
+
+  logger-11:
+    image: ghcr.io/skvostik/funny-logger:latest
+    scale: 5
+
+  logger-12:
+    image: ghcr.io/skvostik/funny-logger:latest
+    scale: 5
+
+  logger-13:
+    image: ghcr.io/skvostik/funny-logger:latest
+    scale: 5
+
+  logger-14:
+    image: ghcr.io/skvostik/funny-logger:latest
+    scale: 5
+
+  logger-15:
+    image: ghcr.io/skvostik/funny-logger:latest
+    scale: 5
+
+  logger-16:
+    image: ghcr.io/skvostik/funny-logger:latest
+    scale: 5
+
+  logger-17:
+    image: ghcr.io/skvostik/funny-logger:latest
+    scale: 5
+
+  logger-18:
+    image: ghcr.io/skvostik/funny-logger:latest
+    scale: 5
+
+  logger-19:
+    image: ghcr.io/skvostik/funny-logger:latest
+    scale: 5
+
+  logger-20:
+    image: ghcr.io/skvostik/funny-logger:latest
+    scale: 5
