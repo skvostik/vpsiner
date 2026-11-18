@@ -117,7 +117,7 @@ Example response:
     "name": "VPSINER_DOCKER_HOST",
     "value": "http://docker-proxy:2375",
     "default": "unix:///var/run/docker.sock",
-    "description": "Docker socket or socket-proxy endpoint, for example http://docker-proxy:2375",
+    "description": "Docker socket or socket-proxy endpoint, for example http://docker-proxy:2375. Falls back to DOCKER_HOST",
     "category": "common",
     "overridden": true
   },

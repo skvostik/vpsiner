@@ -7,6 +7,8 @@ use std::time::Duration;
 use serde::Serialize;
 
 const ENV_DOCKER_HOST: &str = "VPSINER_DOCKER_HOST";
+/// The Docker CLI's own variable, used when `VPSINER_DOCKER_HOST` is not set.
+const ENV_STANDARD_DOCKER_HOST: &str = "DOCKER_HOST";
 const ENV_DOCKER_TIMEOUT_SECS: &str = "VPSINER_DOCKER_TIMEOUT_SECS";
 const ENV_DOCKER_REQUEST_TIMEOUT_SECS: &str = "VPSINER_DOCKER_REQUEST_TIMEOUT_SECS";
 const ENV_DATA_PATH: &str = "VPSINER_DATA_PATH";
@@ -143,7 +145,10 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> Self {
         Self {
-            docker_host: env_or(ENV_DOCKER_HOST, DEFAULT_DOCKER_HOST),
+            docker_host: resolve_docker_host(
+                env::var(ENV_DOCKER_HOST).ok(),
+                env::var(ENV_STANDARD_DOCKER_HOST).ok(),
+            ),
             docker_timeout_secs: parse_positive_u64_or(
                 ENV_DOCKER_TIMEOUT_SECS,
                 DEFAULT_DOCKER_TIMEOUT_SECS,
@@ -239,13 +244,17 @@ impl Config {
         let path = |value: &PathBuf| value.display().to_string();
 
         vec![
-            entry(
-                ENV_DOCKER_HOST,
-                self.docker_host.clone(),
-                DEFAULT_DOCKER_HOST.to_string(),
-                "Docker socket or socket-proxy endpoint, for example http://docker-proxy:2375",
-                "common",
-            ),
+            SettingEntry {
+                overridden: env::var_os(ENV_DOCKER_HOST).is_some()
+                    || env::var_os(ENV_STANDARD_DOCKER_HOST).is_some(),
+                ..entry(
+                    ENV_DOCKER_HOST,
+                    self.docker_host.clone(),
+                    DEFAULT_DOCKER_HOST.to_string(),
+                    "Docker socket or socket-proxy endpoint, for example http://docker-proxy:2375. Falls back to DOCKER_HOST",
+                    "common",
+                )
+            },
             entry(
                 ENV_RETENTION_WEEKS,
                 self.retention_weeks.to_string(),
@@ -425,6 +434,16 @@ impl Config {
     }
 }
 
+/// Picks the Docker endpoint: `VPSINER_DOCKER_HOST`, then `DOCKER_HOST`, then the
+/// default socket. Empty values count as unset.
+fn resolve_docker_host(vpsiner: Option<String>, standard: Option<String>) -> String {
+    [vpsiner, standard]
+        .into_iter()
+        .flatten()
+        .find(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_DOCKER_HOST.to_string())
+}
+
 fn env_or(key: &str, default: &str) -> String {
     env::var(key).unwrap_or_else(|_| default.to_string())
 }
@@ -524,6 +543,28 @@ mod tests {
             sqlite_keep_alive: Duration::from_secs(DEFAULT_SQLITE_KEEP_ALIVE_SECS),
             downsample_max_gap_pct: DEFAULT_DOWNSAMPLE_MAX_GAP_PCT,
         }
+    }
+
+    #[test]
+    fn docker_host_prefers_vpsiner_then_docker_host_then_default() {
+        let s = |v: &str| Some(v.to_string());
+        assert_eq!(
+            resolve_docker_host(
+                s("http://proxy:2375"),
+                s("unix:///run/user/1000/docker.sock")
+            ),
+            "http://proxy:2375"
+        );
+        assert_eq!(
+            resolve_docker_host(None, s("unix:///run/user/1000/docker.sock")),
+            "unix:///run/user/1000/docker.sock"
+        );
+        assert_eq!(
+            resolve_docker_host(s(""), s("unix:///run/user/1000/docker.sock")),
+            "unix:///run/user/1000/docker.sock"
+        );
+        assert_eq!(resolve_docker_host(None, s("")), DEFAULT_DOCKER_HOST);
+        assert_eq!(resolve_docker_host(None, None), DEFAULT_DOCKER_HOST);
     }
 
     #[test]

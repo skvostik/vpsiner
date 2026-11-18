@@ -1,0 +1,7 @@
+# Override for rootless Docker: mounts your user's Docker socket into the proxy.
+# Use together with docker-compose.yml:
+#   docker compose -f examples/vpsiner/docker-compose.yml -f examples/vpsiner/docker-compose.rootless.yml up --build -d
+services:
+  docker-proxy:
+    volumes:
+      - ${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR is not set}/docker.sock:/var/run/docker.sock:ro

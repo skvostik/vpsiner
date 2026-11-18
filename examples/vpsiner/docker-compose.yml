@@ -26,6 +26,7 @@ services:
       # Expose the Docker proxy port to the host machine for testing purposes
       - "127.0.0.1:2375:2375"
     volumes:
+      # Rootless Docker: add `-f examples/vpsiner/docker-compose.rootless.yml`
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
       # --- HTTP Methods ---

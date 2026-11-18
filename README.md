@@ -124,7 +124,7 @@ defaults work for the quick-start command above.
 
 | Variable                  | Default                       | Description                                                                    |
 | ------------------------- | ----------------------------- | ------------------------------------------------------------------------------ |
-| `VPSINER_DOCKER_HOST`     | `unix:///var/run/docker.sock` | Docker socket or socket-proxy endpoint, for example `http://docker-proxy:2375` |
+| `VPSINER_DOCKER_HOST`     | `unix:///var/run/docker.sock` | Docker socket or socket-proxy endpoint, for example `http://docker-proxy:2375`. Falls back to `DOCKER_HOST` |
 | `VPSINER_RETENTION_WEEKS` | `4`                           | Number of weeks of metrics and logs to retain                                  |
 | `VPSINER_DOCKER_CONTROLS` | `auto`                        | Container controls mode: `auto`, `enabled`, or `disabled`                      |
 | `VPSINER_PORT`            | `3000`                        | HTTP listen port inside the container                                          |
@@ -220,6 +220,12 @@ databases under `/data/logs/`. Mount `/data` to a named volume or host
 directory, as shown in the quick start, to preserve history when the container
 is replaced.
 
+The container runs as root by default. To run it as a non-root user, add
+`--user 65532:65532`. A new named volume already has the right owner, but a host
+directory or data written by a root container needs `chown -R 65532:65532` first.
+A directly mounted socket also needs `--group-add` with the socket's group ID.
+On a standard Docker install, that is `$(stat -c %g /var/run/docker.sock)`.
+
 Metrics and logs older than `VPSINER_RETENTION_WEEKS` are removed automatically.
 Back up the data directory if historical monitoring data matters to you.
 
@@ -264,15 +270,25 @@ For a quick production-like local smoke test (including Docker socket proxy), ru
 docker compose -f examples/vpsiner/docker-compose.yml up --build -d
 ```
 
+With rootless Docker, add the override that mounts your user's socket:
+
+```bash
+docker compose -f examples/vpsiner/docker-compose.yml \
+  -f examples/vpsiner/docker-compose.rootless.yml up --build -d
+```
+
 Then open [http://localhost:3000](http://localhost:3000). Stop it with:
 
 ```bash
 docker compose -f examples/vpsiner/docker-compose.yml down
 ```
 
-To build the same complete image used for releases:
+To build the same complete image used for releases (base images come from
+[Docker Hardened Images](https://docs.docker.com/dhi/), so log in to `dhi.io`
+with your Docker Hub account first):
 
 ```bash
+docker login dhi.io
 docker build -t vpsiner .
 ```
 
