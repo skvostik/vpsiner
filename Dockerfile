@@ -32,7 +32,7 @@ RUN touch src/main.rs \
 	&& mkdir -p /out/data /out/config
 
 # Minimal runtime: no shell or package manager.
-FROM dhi.io/alpine-base:3.22
+FROM dhi.io/alpine-base:3.24
 WORKDIR /app
 COPY --from=backend /app/target/release/vpsiner /usr/local/bin/vpsiner
 COPY --from=frontend /app/frontend/dist /usr/local/share/vpsiner/static
