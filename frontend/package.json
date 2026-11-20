@@ -12,23 +12,23 @@
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {
-    "@lucide/vue": "^1.33.0",
-    "@vueuse/core": "^14.4.0",
+    "@lucide/vue": "^1.74.0",
+    "@vueuse/core": "^15.0.0",
     "echarts": "^6.1.0",
-    "naive-ui": "^2.42.0",
+    "naive-ui": "^2.45.3",
     "vue": "^3.5.18",
-    "vue-echarts": "^8.1.0",
-    "vue-router": "^5.2.0"
+    "vue-echarts": "^8.3.2",
+    "vue-router": "^5.5.1"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4.1.11",
-    "@vitejs/plugin-vue": "^6.0.0",
-    "autoprefixer": "^10.4.20",
+    "@tailwindcss/postcss": "^4.3.5",
+    "@vitejs/plugin-vue": "^6.0.11",
+    "autoprefixer": "^10.6.2",
     "postcss": "^8.4.49",
-    "prettier": "^3.6.2",
+    "prettier": "^3.10.1",
     "tailwindcss": "^4.1.11",
     "typescript": "^6.0.3",
     "vite": "^8.2.2",
-    "vue-tsc": "^3.0.0"
+    "vue-tsc": "^3.3.14"
   }
 }
