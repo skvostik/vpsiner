@@ -36,6 +36,12 @@ jobs:
         working-directory: frontend
         run: npm run typecheck
 
+      # Includes dev dependencies (Vite, build tooling): they run in CI and
+      # during the image build. Same threshold as the Trivy scans.
+      - name: Audit frontend dependencies
+        working-directory: frontend
+        run: npm audit --audit-level=high
+
       - name: Set up Rust
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
