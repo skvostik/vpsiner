@@ -1,19 +1,8 @@
 name: QA
 
 on:
+  # No paths filter: runs on every PR, so QA can be a required check.
   pull_request:
-    types:
-      - opened
-      - synchronize
-    paths:
-      - frontend/**
-      - src/**
-      - Dockerfile
-      - .dockerignore
-      - Cargo.toml
-      - Cargo.lock
-      - .github/workflows/publish.yml
-      - .github/workflows/qa.yml
   # Pushes to main and tags run QA through publish.yml, before publishing.
   workflow_call:
 
@@ -35,17 +24,7 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Cache frontend dependencies
-        id: frontend-deps-cache
-        uses: actions/cache@v6
-        with:
-          path: frontend/node_modules
-          key: ${{ runner.os }}-node24-frontend-node-modules-${{ hashFiles('frontend/package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-node24-frontend-node-modules-
-
       - name: Install frontend dependencies
-        if: steps.frontend-deps-cache.outputs.cache-hit != 'true'
         working-directory: frontend
         run: npm ci
 
@@ -53,28 +32,32 @@ jobs:
         working-directory: frontend
         run: npm run format:check
 
+      - name: Check frontend types
+        working-directory: frontend
+        run: npm run typecheck
+
       - name: Set up Rust
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           toolchain: stable
           components: rustfmt
-
-      - name: Cache Rust dependencies and build artifacts
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+          # Also caches ~/.cargo and target (Swatinem/rust-cache).
 
       - name: Check backend formatting
         run: cargo fmt --check
 
       - name: Run backend tests
         run: cargo test --locked
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      # Checks Cargo.lock against the RustSec advisory database. Trivy scans the
+      # same crates in the image; this also reports unmaintained and yanked ones.
+      - name: Audit Rust dependencies
+        run: cargo audit
 
   trivy:
     runs-on: ubuntu-latest
@@ -103,9 +86,11 @@ jobs:
           load: true
           tags: vpsiner:scan
           cache-from: type=gha
+          # Lets the publish job reuse these layers instead of rebuilding.
+          cache-to: type=gha,mode=max
 
-      # Scans the image's OS packages. Trivy can't see the Rust binary's crates
-      # unless it is built with `cargo auditable`.
+      # Scans the image that ships: Alpine packages and the Rust crates
+      # (the Dockerfile embeds the crate list with `cargo auditable`).
       # Pinned by commit: trivy-action release tags were hijacked in 2026.
       - name: Scan image with Trivy
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0

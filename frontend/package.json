@@ -8,15 +8,16 @@
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {
     "@lucide/vue": "^1.33.0",
     "@vueuse/core": "^14.4.0",
-    "naive-ui": "^2.42.0",
     "echarts": "^6.1.0",
-    "vue-echarts": "^8.1.0",
+    "naive-ui": "^2.42.0",
     "vue": "^3.5.18",
+    "vue-echarts": "^8.1.0",
     "vue-router": "^5.2.0"
   },
   "devDependencies": {
@@ -24,10 +25,10 @@
     "@vitejs/plugin-vue": "^6.0.0",
     "autoprefixer": "^10.4.20",
     "postcss": "^8.4.49",
+    "prettier": "^3.6.2",
     "tailwindcss": "^4.1.11",
-    "typescript": "^7.0.0",
+    "typescript": "^6.0.3",
     "vite": "^8.2.2",
-    "vue-tsc": "^3.0.0",
-    "prettier": "^3.6.2"
+    "vue-tsc": "^3.0.0"
   }
 }

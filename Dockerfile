@@ -13,20 +13,29 @@ ARG APP_VERSION=0.0.1
 # C toolchain for the bundled SQLite and mimalloc builds. Rust's musl target
 # links statically, so the runtime image needs no extra libraries.
 RUN apk add --no-cache build-base
+# Embeds the crate list in the binary, so Trivy can scan the Rust dependencies.
+RUN cargo install cargo-auditable --locked --version 0.7.7
 WORKDIR /app
-COPY --from=frontend /app/frontend/dist ./frontend/dist
 COPY Cargo.toml Cargo.lock ./
+# Build the dependencies alone first: this layer stays cached until
+# Cargo.toml or Cargo.lock changes, so a code change rebuilds only vpsiner.
+RUN mkdir src && echo 'fn main() {}' > src/main.rs \
+	&& cargo auditable build --release --locked \
+	&& rm -rf src
 COPY src ./src
-RUN sed -i "/^\[package\]/,/^version = /s/^version = \".*\"/version = \"${APP_VERSION}\"/" Cargo.toml \
+# `touch`: COPY keeps the original mtime, which can be older than the
+# placeholder build above, so Cargo would skip rebuilding vpsiner.
+RUN touch src/main.rs \
+	&& sed -i "/^\[package\]/,/^version = /s/^version = \".*\"/version = \"${APP_VERSION}\"/" Cargo.toml \
 	&& sed -i "/^name = \"vpsiner\"$/{n;s/^version = \".*\"/version = \"${APP_VERSION}\"/;}" Cargo.lock \
-	&& cargo build --release --locked \
+	&& cargo auditable build --release --locked \
 	&& mkdir -p /out/data /out/config
 
 # Minimal runtime: no shell or package manager.
 FROM dhi.io/alpine-base:3.22
 WORKDIR /app
 COPY --from=backend /app/target/release/vpsiner /usr/local/bin/vpsiner
-COPY --from=backend /app/frontend/dist /usr/local/share/vpsiner/static
+COPY --from=frontend /app/frontend/dist /usr/local/share/vpsiner/static
 # Owned by the nonroot user so `--user 65532:65532` works with fresh named volumes.
 COPY --from=backend --chown=65532:65532 /out/data /data
 COPY --from=backend --chown=65532:65532 /out/config /config

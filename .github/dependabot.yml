@@ -1,4 +1,14 @@
 version: 2
+
+# Docker Hardened Images need a login. Uses the Dependabot secrets
+# (Settings -> Secrets and variables -> Dependabot), not the Actions ones.
+registries:
+  dhi:
+    type: docker-registry
+    url: dhi.io
+    username: ${{secrets.DOCKERHUB_USERNAME}}
+    password: ${{secrets.DOCKERHUB_TOKEN}}
+
 updates:
   - package-ecosystem: cargo
     directory: /
@@ -12,8 +22,24 @@ updates:
     directory: /frontend
     schedule:
       interval: weekly
+    ignore:
+      # vue-tsc (npm run typecheck) does not support TypeScript 7 yet.
+      - dependency-name: typescript
+        versions: [">=7"]
     groups:
       npm:
+        patterns: ["*"]
+
+  # Base images in the Dockerfile. Tags keep their suffix, so this bumps
+  # rust 1.98-alpine3.22-dev to 1.99-alpine3.22-dev, but a new Alpine
+  # release in the suffix (alpine3.23) has to be changed by hand.
+  - package-ecosystem: docker
+    directory: /
+    registries: [dhi]
+    schedule:
+      interval: weekly
+    groups:
+      docker:
         patterns: ["*"]
 
   # Also updates the commit-pinned trivy-action (SHA and version comment).
