@@ -1,0 +1,28 @@
+name: Vulnerability scan
+
+# Daily Trivy scan of the latest published image, to catch CVEs disclosed
+# after release. A failed run triggers GitHub's failed-workflow notification.
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  trivy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7 # for .trivyignore, if present
+      # Pinned by commit: trivy-action release tags were hijacked in 2026.
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ghcr.io/skvostik/vpsiner:latest
+          version: v0.76.2
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
