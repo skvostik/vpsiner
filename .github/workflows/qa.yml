@@ -14,6 +14,8 @@ on:
       - Cargo.lock
       - .github/workflows/publish.yml
       - .github/workflows/qa.yml
+  # Pushes to main and tags run QA through publish.yml, before publishing.
+  workflow_call:
 
 permissions:
   contents: read
@@ -78,7 +80,7 @@ jobs:
     runs-on: ubuntu-latest
     # Fork PRs get no secrets, so they cannot pull the dhi.io base images.
     # Dependabot PRs need DOCKERHUB_USERNAME and DOCKERHUB_TOKEN as Dependabot secrets.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
 
     steps:
       - name: Checkout
@@ -102,7 +104,8 @@ jobs:
           tags: vpsiner:scan
           cache-from: type=gha
 
-      # Scans the image that ships: the Rust binary's crates and the base image.
+      # Scans the image's OS packages. Trivy can't see the Rust binary's crates
+      # unless it is built with `cargo auditable`.
       # Pinned by commit: trivy-action release tags were hijacked in 2026.
       - name: Scan image with Trivy
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0

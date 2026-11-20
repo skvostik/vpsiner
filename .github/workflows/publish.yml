@@ -5,7 +5,7 @@ on:
     branches:
       - main
     tags:
-      - "*"
+      - "[0-9]+.[0-9]+.[0-9]+*"
     paths:
       - frontend/**
       - src/**
@@ -14,6 +14,7 @@ on:
       - Cargo.toml
       - Cargo.lock
       - .github/workflows/publish.yml
+      - .github/workflows/qa.yml
 
 permissions:
   contents: read
@@ -27,31 +28,49 @@ env:
   IMAGE_NAME: ghcr.io/skvostik/vpsiner
 
 jobs:
+  qa:
+    uses: ./.github/workflows/qa.yml
+    # The Trivy job needs the dhi.io credentials to build the image.
+    secrets: inherit
+
   publish:
+    needs: qa
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-
-      - name: Set up Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
-          toolchain: stable
+          fetch-depth: 0 # all tags, for the newest-release check below
 
-      - name: Cache Rust dependencies and build artifacts
-        uses: actions/cache@v6
+      # Move `latest` and the major tag (e.g. `1`) only when this is the newest
+      # stable release overall / within its major, so tagging a patch for an
+      # older line (0.4.2 after 0.5.0) doesn't move them backwards.
+      - name: Check whether this is the newest release
+        id: newest
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          stable=$(git tag --list | { grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' || true; } | sort -V)
+          major=$(echo "$GITHUB_REF_NAME" | cut -d. -f1)
+          newest=$(echo "$stable" | tail -n1)
+          newest_in_major=$(echo "$stable" | { grep "^$major\." || true; } | tail -n1)
+          echo "overall=$([ "$GITHUB_REF_NAME" = "$newest" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "in_major=$([ "$GITHUB_REF_NAME" = "$newest_in_major" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      # Tag 0.5.1 is published as 0.5.1 and 0.5 (and 1 from 1.0.0 on).
+      # Pre-releases (0.6.0-rc.1) get only their full version.
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
-      - name: Run tests
-        run: cargo test --locked
+          images: ${{ env.IMAGE_NAME }}
+          flavor: latest=false
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/0.') && steps.newest.outputs.in_major == 'true' }}
+            type=raw,value=latest,enable=${{ steps.newest.outputs.overall == 'true' }}
+            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/main' }}
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v4
@@ -76,13 +95,8 @@ jobs:
           context: .
           push: true
           build-args: |
-            ${{ startsWith(github.ref, 'refs/tags/') && format('APP_VERSION={0}', github.ref_name) || '' }}
-          tags: |
-            ${{ github.ref == 'refs/heads/main' && format('{0}:dev', env.IMAGE_NAME) || '' }}
-            ${{ startsWith(github.ref, 'refs/tags/') && format('{0}:latest', env.IMAGE_NAME) || '' }}
-            ${{ startsWith(github.ref, 'refs/tags/') && format('{0}:{1}', env.IMAGE_NAME, github.ref_name) || '' }}
+            ${{ startsWith(github.ref, 'refs/tags/') && format('APP_VERSION={0}', steps.meta.outputs.version) || '' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          labels: |
-            org.opencontainers.image.source=https://github.com/skvostik/vpsiner
-            org.opencontainers.image.revision=${{ github.sha }}
