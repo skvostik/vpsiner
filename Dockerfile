@@ -17,7 +17,7 @@ WORKDIR /app
 COPY --from=frontend /app/frontend/dist ./frontend/dist
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-RUN sed -i "0,/^version = \".*\"/s//version = \"${APP_VERSION}\"/" Cargo.toml \
+RUN sed -i "/^\[package\]/,/^version = /s/^version = \".*\"/version = \"${APP_VERSION}\"/" Cargo.toml \
 	&& sed -i "/^name = \"vpsiner\"$/{n;s/^version = \".*\"/version = \"${APP_VERSION}\"/;}" Cargo.lock \
 	&& cargo build --release --locked \
 	&& mkdir -p /out/data /out/config
